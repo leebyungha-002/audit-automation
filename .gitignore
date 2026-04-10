@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.log
+
+# Output Files
+CompanyA_Audit_Result.xlsx
+CompanyB_Audit_Result.xlsx
