@@ -2,6 +2,9 @@ node_modules/
 .env
 *.log
 
+# Playwright 로그인 세션 프로필 (로컬에만 유지)
+.browser_profile/
+
 # Output Files
 CompanyA_Audit_Result.xlsx
 CompanyB_Audit_Result.xlsx
