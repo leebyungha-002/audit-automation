@@ -591,12 +591,22 @@ function detectMonthlyAnomalies(monthlyData, threshold = 0.3) {
     for (const m of monthlyData) {
         if (debitAvg > 0 && m.debit > debitAvg * (1 + threshold)) {
             const pct = ((m.debit / debitAvg - 1) * 100).toFixed(1);
-            console.log(`  ★ 차변 이상치 — ${m.month}: ${m.debit.toLocaleString()} (평균 대비 +${pct}%)`);
+            console.log(`  ★ 차변 급증 — ${m.month}: ${m.debit.toLocaleString()} (평균 대비 +${pct}%)`);
+            anomalies.push({ month: m.month, type: '차변', amount: m.debit, avg: debitAvg });
+        }
+        if (debitAvg > 0 && m.debit > 0 && m.debit < debitAvg * (1 - threshold)) {
+            const pct = ((1 - m.debit / debitAvg) * 100).toFixed(1);
+            console.log(`  ★ 차변 급감 — ${m.month}: ${m.debit.toLocaleString()} (평균 대비 -${pct}%)`);
             anomalies.push({ month: m.month, type: '차변', amount: m.debit, avg: debitAvg });
         }
         if (creditAvg > 0 && m.credit > creditAvg * (1 + threshold)) {
             const pct = ((m.credit / creditAvg - 1) * 100).toFixed(1);
-            console.log(`  ★ 대변 이상치 — ${m.month}: ${m.credit.toLocaleString()} (평균 대비 +${pct}%)`);
+            console.log(`  ★ 대변 급증 — ${m.month}: ${m.credit.toLocaleString()} (평균 대비 +${pct}%)`);
+            anomalies.push({ month: m.month, type: '대변', amount: m.credit, avg: creditAvg });
+        }
+        if (creditAvg > 0 && m.credit > 0 && m.credit < creditAvg * (1 - threshold)) {
+            const pct = ((1 - m.credit / creditAvg) * 100).toFixed(1);
+            console.log(`  ★ 대변 급감 — ${m.month}: ${m.credit.toLocaleString()} (평균 대비 -${pct}%)`);
             anomalies.push({ month: m.month, type: '대변', amount: m.credit, avg: creditAvg });
         }
     }
@@ -1203,12 +1213,13 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
             }
         } catch { /* 자동 시작이면 무시 */ }
 
-        // 결과 대기 (최대 5분) + 다운로드 (버튼이 여러 개면 모두 저장)
+        // 결과 대기 (최대 5분) + 다운로드
+        // 월별트렌드분析: 버튼 1(금액추이)·2(건수)만 다운로드. 버튼 3(Top10)은 이상치 루프에서 처리.
+        const isMonthlyTrendTask = taskName === '월별트렌드분析';
         const dlSel = 'button:has-text("결과 다운로드"), button:has-text("엑셀 다운로드")';
         try {
             await page.waitForSelector(dlSel, { state: 'visible', timeout: 300000 });
 
-            // 페이지 내 엑셀 다운로드 버튼 전체 수집 (없으면 결과 다운로드 버튼)
             let dlBtns = await page.locator('button:has-text("엑셀 다운로드")').all();
             if (dlBtns.length === 0) dlBtns = await page.locator('button:has-text("결과 다운로드")').all();
 
@@ -1217,15 +1228,16 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
             const safeDir  = direction ? `_${direction}`  : '';
             const baseName = `${filePrefix}${safeTask}${safeAcc}${safeDir}`;
 
-            for (let i = 0; i < dlBtns.length; i++) {
-                // 버튼이 여러 개면 _1, _2 ... 접미사로 구분; 하나면 접미사 없음
+            // 월별트렌드분析은 버튼 1·2만 다운로드 (Top10 버튼 제외)
+            const downloadCount = isMonthlyTrendTask ? Math.min(dlBtns.length, 2) : dlBtns.length;
+
+            for (let i = 0; i < downloadCount; i++) {
                 const suffix   = dlBtns.length > 1 ? `_${i + 1}` : '';
                 const savePath = path.join(resultsDir, `${baseName}${suffix}.xlsx`);
 
                 try {
                     await dlBtns[i].scrollIntoViewIfNeeded();
 
-                    // page.on 방식: reject 없이 null 반환 → unhandled rejection 방지
                     const dl = await new Promise(resolve => {
                         const timer = setTimeout(() => {
                             page.off('download', onDl);
@@ -1269,10 +1281,10 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
             console.log(`  [경고] 결과 다운로드 실패: ${e.message}`);
         }
 
-        // ── 월별트렌드분析: 이상치 전수조사 → Top 10 조건부 다운로드 ──────────────
-        if (taskName === '월별트렌드분析') {
+        // ── 월별트렌드분析: 이상치 감지 → Top10(3번 버튼) 조건부 다운로드 ──────────
+        // 이상치(급증/급감 모두)가 있는 달에 대해서만 월+차대변 필터 설정 후 3번 버튼 클릭
+        if (isMonthlyTrendTask) {
             try {
-                // Step 0: Pre-Scan — 월별 차/대변 금액 추출 및 이상치 식별
                 console.log(`\n  [이상치분析] Pre-Scan 시작 — 계정: ${account}`);
                 const monthlyData = await extractMonthlyAmountsFromPage(page, taskName);
 
@@ -1282,125 +1294,86 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                     const anomalies = detectMonthlyAnomalies(monthlyData, 0.3);
 
                     if (anomalies.length === 0) {
-                        console.log(`  [이상치분析] 이상치 없음 (임계값 30%) — Top10 다운로드 생략`);
+                        console.log(`  [이상치분析] 이상치 없음 (평균 ±30%) — Top10 다운로드 생략`);
                     } else {
-                        console.log(`  [이상치분析] ${anomalies.length}건 감지 → Top10 순차 다운로드 시작`);
+                        console.log(`  [이상치분析] ${anomalies.length}건 감지 → Top10(3번 버튼) 다운로드 시작`);
                         anomalies.forEach((a, i) =>
                             console.log(`    ${i + 1}. ${a.month} [${a.type}] ${a.amount.toLocaleString()} (평균 ${Math.round(a.avg).toLocaleString()})`)
                         );
 
-                        // Top 10 섹션 컨테이너: 거래처 Top 10 영역의 다운로드 버튼만 대상
-                        const top10Container = page.locator(
-                            'section:has-text("거래처 Top"), div:has-text("거래처 Top 10"), ' +
-                            'div:has-text("월별 거래처"), section:has-text("월별 거래처")'
-                        ).last();
+                        // 3번 버튼(index 2) = 월별 거래처 Top10 엑셀 다운로드
+                        const top10Btn = page.locator('button:has-text("엑셀 다운로드")').nth(2);
+                        if (await top10Btn.count() === 0) {
+                            console.log(`  [경고] Top10 버튼(3번)을 찾지 못했습니다 — 이상치 다운로드 생략`);
+                        } else {
+                            for (const anomaly of anomalies) {
+                                const saveName = `${filePrefix}월별트렌드_${account}_${anomaly.month}_${anomaly.type}.xlsx`;
+                                const savePath = path.join(resultsDir, saveName);
+                                console.log(`\n  → [${anomaly.month}][${anomaly.type}] Top10 처리 중…`);
 
-                        for (const anomaly of anomalies) {
-                            const safeMonth = anomaly.month.replace('-', '');
-                            const saveName  = `${filePrefix}월별트렌드_${account}_${anomaly.month}_${anomaly.type}.xlsx`;
-                            const savePath  = path.join(resultsDir, saveName);
-
-                            console.log(`\n  → [${anomaly.month}][${anomaly.type}] Top10 처리 중…`);
-
-                            try {
-                                // Step A: 월 드롭다운 선택
-                                await selectTop10FilterDropdown(page, '월', anomaly.month, taskName);
-
-                                // Step B: 금액 기준(차변/대변) 선택
-                                await selectTop10FilterDropdown(page, '금액 기준', anomaly.type, taskName);
-
-                                // Step C: 테이블 갱신 대기 — 스피너 사라짐 + 데이터 행 존재 확인
                                 try {
-                                    // 로딩 스피너가 있으면 사라질 때까지 대기
-                                    await page.waitForSelector(
-                                        '[class*="loading"], [class*="spinner"], [aria-busy="true"]',
-                                        { state: 'hidden', timeout: 5000 }
-                                    ).catch(() => {/* 스피너 없으면 무시 */});
+                                    // 월 + 금액 기준(차변/대변) 드롭다운 설정
+                                    await selectTop10FilterDropdown(page, '월', anomaly.month, taskName);
+                                    await selectTop10FilterDropdown(page, '금액 기준', anomaly.type, taskName);
 
-                                    // Top10 테이블에 실제 데이터 행이 있는지 확인
-                                    await page.waitForFunction(
-                                        () => {
-                                            // 거래처 Top 섹션 내 테이블에 tbody tr이 1개 이상 있으면 OK
-                                            const tbodies = document.querySelectorAll('table tbody');
-                                            for (const tbody of tbodies) {
-                                                if (tbody.querySelectorAll('tr').length >= 1) return true;
-                                            }
-                                            return false;
-                                        },
-                                        { timeout: 8000 }
-                                    );
-                                    await page.waitForTimeout(800); // 최종 렌더링 안정화
-                                } catch {
-                                    // DOM 대기 실패 시 고정 대기로 폴백
-                                    await page.waitForTimeout(2000);
-                                }
+                                    // 테이블 갱신 대기
+                                    try {
+                                        await page.waitForSelector(
+                                            '[class*="loading"], [class*="spinner"], [aria-busy="true"]',
+                                            { state: 'hidden', timeout: 5000 }
+                                        ).catch(() => {});
+                                        await page.waitForFunction(
+                                            () => document.querySelectorAll('table tbody tr').length >= 1,
+                                            { timeout: 8000 }
+                                        );
+                                        await page.waitForTimeout(800);
+                                    } catch {
+                                        await page.waitForTimeout(2000);
+                                    }
 
-                                // Step D: Top10 섹션의 엑셀 다운로드 버튼 클릭
-                                // 우선 거래처 Top10 컨테이너 내 버튼, 없으면 페이지 내 마지막 버튼
-                                let top10DlBtn = null;
-                                try {
-                                    const containerCount = await top10Container.count();
-                                    if (containerCount > 0) {
-                                        const btnInContainer = top10Container.locator(
-                                            'button:has-text("엑셀 다운로드"), button:has-text("결과 다운로드")'
-                                        ).first();
-                                        if (await btnInContainer.count() > 0) {
-                                            top10DlBtn = btnInContainer;
+                                    // 3번 버튼 클릭 + 다운로드
+                                    await top10Btn.scrollIntoViewIfNeeded();
+                                    const dl = await new Promise(resolve => {
+                                        const timer = setTimeout(() => {
+                                            page.off('download', onDl);
+                                            resolve(null);
+                                        }, 15000);
+                                        function onDl(download) {
+                                            clearTimeout(timer);
+                                            page.off('download', onDl);
+                                            resolve(download);
+                                        }
+                                        page.on('download', onDl);
+                                        top10Btn.click().catch(() => {
+                                            clearTimeout(timer);
+                                            page.off('download', onDl);
+                                            resolve(null);
+                                        });
+                                    });
+
+                                    if (!dl) {
+                                        console.log(`  [건너뜀] ${anomaly.month} ${anomaly.type} — 다운로드 이벤트 없음`);
+                                        continue;
+                                    }
+
+                                    const dlPath = await dl.path();
+                                    for (let attempt = 1; attempt <= 5; attempt++) {
+                                        try {
+                                            fs.copyFileSync(dlPath, savePath);
+                                            console.log(`  ✓ 저장: ${saveName}`);
+                                            break;
+                                        } catch (e) {
+                                            if (e.code === 'EBUSY' && attempt < 5) {
+                                                await new Promise(r => setTimeout(r, attempt * 1000));
+                                            } else throw e;
                                         }
                                     }
-                                } catch { /* 컨테이너 탐색 실패 */ }
-
-                                if (!top10DlBtn) {
-                                    // 폴백: 페이지 내 다운로드 버튼 중 마지막 (Top10 섹션이 보통 가장 하단)
-                                    top10DlBtn = page.locator(
-                                        'button:has-text("엑셀 다운로드"), button:has-text("결과 다운로드")'
-                                    ).last();
+                                    await page.waitForTimeout(500);
+                                } catch (e) {
+                                    console.log(`  [경고] ${anomaly.month} ${anomaly.type} Top10 실패: ${e.message}`);
                                 }
-
-                                await top10DlBtn.scrollIntoViewIfNeeded();
-
-                                const dl = await new Promise(resolve => {
-                                    const timer = setTimeout(() => {
-                                        page.off('download', onDl);
-                                        resolve(null);
-                                    }, 15000);
-                                    function onDl(download) {
-                                        clearTimeout(timer);
-                                        page.off('download', onDl);
-                                        resolve(download);
-                                    }
-                                    page.on('download', onDl);
-                                    top10DlBtn.click().catch(() => {
-                                        clearTimeout(timer);
-                                        page.off('download', onDl);
-                                        resolve(null);
-                                    });
-                                });
-
-                                if (!dl) {
-                                    console.log(`  [건너뜀] ${anomaly.month} ${anomaly.type} — 다운로드 이벤트 없음`);
-                                    continue;
-                                }
-
-                                // Step E: 파일명 변경 저장
-                                const dlPath = await dl.path();
-                                for (let attempt = 1; attempt <= 5; attempt++) {
-                                    try {
-                                        fs.copyFileSync(dlPath, savePath);
-                                        console.log(`  ✓ 저장: ${saveName}`);
-                                        break;
-                                    } catch (e) {
-                                        if (e.code === 'EBUSY' && attempt < 5) {
-                                            await new Promise(r => setTimeout(r, attempt * 1000));
-                                        } else throw e;
-                                    }
-                                }
-                                await page.waitForTimeout(500);
-
-                            } catch (e) {
-                                console.log(`  [경고] ${anomaly.month} ${anomaly.type} Top10 실패: ${e.message}`);
                             }
-                        } // end for anomalies
+                        }
                     }
                 }
             } catch (e) {
