@@ -11,9 +11,18 @@ const DEFAULT_ENDPOINT_MAP = {
     '분개장 분석': '/ai-analysis',
 };
 
+// host1_xxx / HOST1_xxx → /analysis, host2_xxx / HOST2_xxx → /ai-analysis
+function getBaseMenuName(menuName) {
+    return menuName.replace(/^host_?\d+_?/i, '');
+}
+
 function getMenuEndpoint(menuName, config) {
+    if (/^host_?2_?/i.test(menuName)) return '/ai-analysis';
+    const base = getBaseMenuName(menuName);
     return config.menuEndpoints?.[menuName]
+        ?? config.menuEndpoints?.[base]
         ?? DEFAULT_ENDPOINT_MAP[menuName]
+        ?? DEFAULT_ENDPOINT_MAP[base]
         ?? '/analysis';
 }
 
@@ -23,6 +32,7 @@ function getMenuEndpoint(menuName, config) {
 const DEFAULT_MENU_LABEL_MAP = {
     '총계정원장':             '총계정원장 조회',
     '상세거래검색':           '상세 거래 검색',
+    '상세검색_시나리오':      '상세 거래 검색',   // 시나리오 시트 → 동일 UI 카드 진입
     '이중거래처분석':         '매입/매출 이중거래처 분석',
     '벤포드':                 '벤포드 법칙 분석',
     '계정연관거래처':         '계정 연관 거래처 분석',
@@ -33,12 +43,17 @@ const DEFAULT_MENU_LABEL_MAP = {
     '감사샘플링':             '감사 샘플링',
     '금감원위험분석':         '금감원 지적사례 기반 위험 분석',
     '재무제표증감':           '재무제표 증감 분석',
+    'HOST2_월별트렌드분석':   '월별 트렌드 분석',
+    'HOST2_월별트렌드':       '월별 트렌드 분석',
 };
 
 function getMenuUiLabel(menuName, config) {
+    const base = getBaseMenuName(menuName);
     return config.menuLabels?.[menuName]
+        ?? config.menuLabels?.[base]
         ?? DEFAULT_MENU_LABEL_MAP[menuName]
-        ?? menuName; // 매핑 없으면 시트명 그대로 사용
+        ?? DEFAULT_MENU_LABEL_MAP[base]
+        ?? base;
 }
 
 // ─── 전기(전년도) 계정별원장 파일 탐색 ──────────────────────────────────────────
@@ -137,6 +152,276 @@ async function uploadGeneralLedgerIfNeeded(page, config, companyDir) {
     }
 }
 
+// ─── 날짜 포맷 헬퍼 ──────────────────────────────────────────────────────────
+// ExcelJS는 날짜 셀을 JS Date 객체로 반환함. 문자열(YYYY-MM-DD 등)도 허용.
+function formatExcelDate(val) {
+    if (!val) return '';
+    if (val instanceof Date) {
+        const y = val.getFullYear();
+        const m = String(val.getMonth() + 1).padStart(2, '0');
+        const d = String(val.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+    return String(val).trim();
+}
+
+// ─── 텍스트 입력창 채우기 헬퍼 ────────────────────────────────────────────────
+// labelText(한글 레이블)와 연결된 input을 여러 전략으로 탐색 후 값 입력.
+// 성공 시 true 반환.
+async function tryFillInput(page, labelText, value) {
+    // 전략 1: aria-label / htmlFor 연결 (Playwright getByLabel)
+    try {
+        const loc = page.getByLabel(new RegExp(labelText, 'i'));
+        if (await loc.count() > 0) {
+            await loc.first().clear();
+            await loc.first().fill(value);
+            return true;
+        }
+    } catch { /* 다음 전략으로 */ }
+
+    // 전략 2: placeholder 포함
+    try {
+        const loc = page.locator(`input[placeholder*="${labelText}"]`);
+        if (await loc.count() > 0) {
+            await loc.first().clear();
+            await loc.first().fill(value);
+            return true;
+        }
+    } catch { /* 다음 전략으로 */ }
+
+    // 전략 3: label 요소가 input을 감싸거나 인접한 경우
+    try {
+        const loc = page.locator(
+            `label:has-text("${labelText}") input, ` +
+            `label:has-text("${labelText}") + input, ` +
+            `label:has-text("${labelText}") ~ input`
+        );
+        if (await loc.count() > 0) {
+            await loc.first().clear();
+            await loc.first().fill(value);
+            return true;
+        }
+    } catch { /* 실패 */ }
+
+    return false;
+}
+
+// ─── 날짜 입력 헬퍼 ───────────────────────────────────────────────────────────
+// type="date" input은 fill('YYYY-MM-DD') 로 직접 처리.
+// labelKeyword: '시작', '종료' 등 레이블에 포함된 키워드
+async function fillDateInput(page, labelKeyword, dateStr) {
+    if (!dateStr) return;
+    try {
+        const byLabel = page.getByLabel(new RegExp(labelKeyword, 'i'));
+        if (await byLabel.count() > 0) {
+            await byLabel.first().fill(dateStr);
+            await byLabel.first().press('Tab'); // 변경 이벤트 트리거
+            return;
+        }
+    } catch { /* 다음 전략 */ }
+    try {
+        const loc = page.locator(`input[placeholder*="${labelKeyword}"], input[type="date"]`).first();
+        if (await loc.count() > 0) {
+            await loc.fill(dateStr);
+            await loc.press('Tab');
+        }
+    } catch (e) {
+        console.log(`[경고] '${labelKeyword}' 날짜 입력 실패: ${e.message}`);
+    }
+}
+
+// ─── 라디오 버튼 클릭 헬퍼 ───────────────────────────────────────────────────
+// 엑셀의 텍스트와 화면의 라디오 버튼 레이블 텍스트를 직접 매칭하여 클릭.
+async function clickRadioByLabel(page, labelText, groupHint) {
+    if (!labelText) return;
+    const text = String(labelText).trim();
+    const exactRe = new RegExp(`^${text}$`);
+
+    // label → button(정확) → button(포함) → tab → role=radio 순으로 시도
+    const candidates = [
+        page.locator('label').filter({ hasText: exactRe }),
+        page.locator(`label:has-text("${text}")`),
+        page.locator('button').filter({ hasText: exactRe }),
+        page.locator(`button:has-text("${text}")`),
+        page.locator(`[role="tab"]:has-text("${text}")`),
+        page.locator(`[role="radio"]:has-text("${text}")`),
+    ];
+
+    for (const loc of candidates) {
+        try {
+            if (await loc.count().catch(() => 0) === 0) continue;
+            await loc.first().click({ timeout: 3000 });
+            await page.waitForTimeout(300);
+            console.log(`  ✓ '${text}' 선택`);
+            return;
+        } catch { /* 다음 셀렉터 */ }
+    }
+    console.log(`[경고] '${groupHint ?? ''}' 항목 '${text}' 클릭 실패 — 건너뜁니다.`);
+}
+
+// ─── 다운로드 → workbook 시트 추가 헬퍼 ─────────────────────────────────────
+// 결과 다운로드 후 sheetName 으로 workbook에 시트를 추가. 파일은 저장하지 않음.
+async function downloadAndAddSheet(page, downloadBtnSelector, sheetName, workbook, menuName) {
+    console.log(`[${menuName}] '${sheetName}' 결과 다운로드 대기 중...`);
+    await page.waitForSelector(downloadBtnSelector, { state: 'visible', timeout: 30000 });
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.click(downloadBtnSelector);
+    const download = await downloadPromise;
+    const downloadPath = await download.path();
+    console.log(`[${menuName}] 다운로드 캡처 완료.`);
+
+    const safeSheetName = sheetName.substring(0, 31).replace(/[\\/?*[\]:]/g, '_');
+    const srcBook = new ExcelJS.Workbook();
+    await srcBook.xlsx.readFile(downloadPath);
+    const srcSheet = srcBook.worksheets[0];
+
+    if (workbook.getWorksheet(safeSheetName)) workbook.removeWorksheet(safeSheetName);
+    const destSheet = workbook.addWorksheet(safeSheetName);
+    srcSheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        const destRow = destSheet.getRow(rowNumber);
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+            destRow.getCell(colNumber).value = cell.value;
+        });
+        destRow.commit();
+    });
+    console.log(`[${menuName}] '${safeSheetName}' 시트 추가 완료.`);
+}
+
+// ─── 상세검색_시나리오 전용 핸들러 ───────────────────────────────────────────
+// 동일 '작업명' 행들을 하나의 엑셀 파일로 묶고, 계정과목명을 시트명으로 사용.
+// 각 계정 처리 후 '뒤로가기'로 검색 화면으로 복귀하여 다음 계정을 이어서 처리.
+async function handleDetailSearchScenario(page, menu, config, resultsDir, filePrefix) {
+    const { menuName, tasks } = menu;
+
+    // ── 작업명 기준 그룹화 (순서 유지) ──────────────────────────────────────
+    const taskGroups = new Map();
+    for (const task of tasks) {
+        const taskName    = String(task['작업명']   ?? '').trim();
+        const accountName = String(task['계정과목'] ?? '').trim();
+        if (!taskName && !accountName) continue;
+        const key = taskName || accountName;
+        if (!taskGroups.has(key)) taskGroups.set(key, []);
+        taskGroups.get(key).push(task);
+    }
+
+    const allGroups = [...taskGroups.entries()];
+
+    for (let gi = 0; gi < allGroups.length; gi++) {
+        const [taskName, groupTasks] = allGroups[gi];
+        console.log(`\n=== [작업그룹: ${taskName}] ${groupTasks.length}개 계정 처리 시작 ===`);
+
+        const groupBook    = new ExcelJS.Workbook();
+        const safeFileName = taskName.substring(0, 50).replace(/[\\/?*[\]:]/g, '_');
+        const groupFilePath = path.join(resultsDir, `${filePrefix}${safeFileName}.xlsx`);
+
+        // 상세 거래 검색 카드 UI 레이블 (뒤로가기 후 재진입에 사용)
+        const cardUiLabel = getMenuUiLabel(menuName, config);
+        const comboSel    = config.selectors.accountCombobox || 'button[role="combobox"]';
+
+        for (let ti = 0; ti < groupTasks.length; ti++) {
+            const task        = groupTasks[ti];
+            const accountName = String(task['계정과목'] ?? '').trim();
+            const vendorName  = String(task['거래처명'] ?? '').trim();
+            const description = String(task['적요']     ?? '').trim();
+            const amountType  = String(task['금액유형'] ?? task['금액 유형'] ?? '').trim();
+            const displayType = String(task['표시방식'] ?? task['표시 방식'] ?? '').trim();
+            const startDateRaw = task['시작일'] ?? task['시작일자'] ?? task['기간시작'] ?? null;
+            const endDateRaw   = task['종료일'] ?? task['종료일자'] ?? task['기간종료'] ?? null;
+
+            if (!accountName) {
+                console.log(`[${taskName}] 계정과목 없음 — 건너뜁니다.`);
+                continue;
+            }
+            console.log(`\n--- [${taskName} / ${accountName}] 처리 시작 ---`);
+
+            try {
+                // 1. 콤보박스가 보일 때까지 대기 후 계정과목 입력
+                // (초기화는 이전 반복 종료 시점에 수행되므로 여기서는 생략)
+                await page.waitForSelector(comboSel, { state: 'visible', timeout: 10000 });
+                await page.waitForTimeout(500);
+                await page.click(comboSel);
+                await page.waitForTimeout(300);
+                await page.keyboard.press('Control+A');
+                await page.keyboard.press('Backspace');
+                await page.keyboard.type(accountName, { delay: 50 });
+                await page.waitForTimeout(500);
+                await page.keyboard.press('Enter');
+                await page.waitForTimeout(400);
+                console.log(`  계정과목: ${accountName}`);
+
+                // 3. 거래처명
+                if (vendorName) {
+                    const ok = await tryFillInput(page, '거래처명', vendorName);
+                    if (ok) console.log(`  거래처명: ${vendorName}`);
+                    else    console.log(`[경고] 거래처명 입력창을 찾지 못했습니다.`);
+                }
+
+                // 4. 적요
+                if (description) {
+                    const ok = await tryFillInput(page, '적요', description);
+                    if (ok) console.log(`  적요: ${description}`);
+                    else    console.log(`[경고] 적요 입력창을 찾지 못했습니다.`);
+                }
+
+                // 5. 날짜
+                if (startDateRaw) { const d = formatExcelDate(startDateRaw); await fillDateInput(page, '시작', d); console.log(`  시작일: ${d}`); }
+                if (endDateRaw)   { const d = formatExcelDate(endDateRaw);   await fillDateInput(page, '종료', d); console.log(`  종료일: ${d}`); }
+
+                // 6. 금액 유형 / 표시 방식 라디오 (행마다 개별 적용)
+                if (amountType)  await clickRadioByLabel(page, amountType,  '금액 유형');
+                if (displayType) await clickRadioByLabel(page, displayType, '표시 방식');
+
+                // 7. 검색
+                const searchSel = config.selectors.searchButton || 'button:has-text("검색")';
+                await page.waitForSelector(searchSel, { state: 'visible', timeout: 10000 });
+                await page.click(searchSel);
+                await page.waitForTimeout(1500);
+
+                // 8. 다운로드 → 그룹 workbook에 시트 추가
+                const downloadSel = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
+                await downloadAndAddSheet(page, downloadSel, accountName, groupBook, menuName);
+
+            } catch (e) {
+                console.log(`[경고] [${taskName} / ${accountName}] 처리 중 오류 (다음 계정으로 진행): ${e.message}`);
+            }
+
+            // 9. 다음 태스크가 있으면: [초기화] 버튼 클릭 → 폼 안정화 → 다음 계정 입력 준비
+            const isLastOverall = gi === allGroups.length - 1 && ti === groupTasks.length - 1;
+            if (!isLastOverall) {
+                const resetSel = config.selectors.resetButton;
+                if (resetSel) {
+                    try {
+                        await page.waitForSelector(resetSel, { state: 'visible', timeout: 5000 });
+                        await page.click(resetSel);
+                        await page.waitForTimeout(1000); // 폼 초기화 안정화 대기
+                        await page.waitForSelector(comboSel, { state: 'visible', timeout: 10000 });
+                        console.log(`  → [초기화] 완료, 다음 계정 입력 준비`);
+                    } catch (e) {
+                        console.log(`[경고] 초기화 버튼 클릭 실패 (다음 계정으로 진행): ${e.message}`);
+                    }
+                } else {
+                    console.log(`[경고] config.selectors.resetButton 이 설정되지 않았습니다. 초기화를 건너뜁니다.`);
+                }
+            }
+        }
+
+        // 10. 그룹 파일 저장 (OneDrive EBUSY 재시도 포함)
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+                await groupBook.xlsx.writeFile(groupFilePath);
+                console.log(`[${taskName}] 그룹 파일 저장 완료: ${path.basename(groupFilePath)}`);
+                break;
+            } catch (e) {
+                if (e.code === 'EBUSY' && attempt < 5) {
+                    console.log(`[${taskName}] 파일 잠금 감지, ${attempt}초 후 재시도...`);
+                    await new Promise(r => setTimeout(r, attempt * 1000));
+                } else { throw e; }
+            }
+        }
+    }
+}
+
 // ─── 다운로드 & 저장 헬퍼 ────────────────────────────────────────────────────
 async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawDataDir, menuName, filePrefix = '') {
     console.log(`[${menuName}] 결과 다운로드 버튼 대기 중...`);
@@ -178,8 +463,23 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
     } else {
         const finalName = targetName.startsWith(filePrefix) ? targetName : `${filePrefix}${targetName}`;
         const finalPath = path.join(rawDataDir, finalName.endsWith('.xlsx') ? finalName : `${finalName}.xlsx`);
-        fs.copyFileSync(downloadPath, finalPath);
-        console.log(`[${menuName}] 개별 파일 저장 완료: ${path.basename(finalPath)}`);
+        // OneDrive 동기화로 인한 파일 잠금(EBUSY) 대비 재시도
+        let copied = false;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+                fs.copyFileSync(downloadPath, finalPath);
+                copied = true;
+                break;
+            } catch (e) {
+                if (e.code === 'EBUSY' && attempt < 5) {
+                    console.log(`[${menuName}] 파일 잠금 감지, ${attempt}초 후 재시도... (${attempt}/5)`);
+                    await new Promise(r => setTimeout(r, attempt * 1000));
+                } else {
+                    throw e;
+                }
+            }
+        }
+        if (copied) console.log(`[${menuName}] 개별 파일 저장 완료: ${path.basename(finalPath)}`);
     }
 }
 
@@ -187,11 +487,17 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
 // 시트명("총계정원장", "총계정원장조회" 등)을 모두 처리.
 async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
     const { menuName, tasks } = menu;
+    const base = getBaseMenuName(menuName);
+
+    // ── 상세검색_시나리오 시트: 전용 핸들러로 위임 ───────────────────────────
+    if (base === '상세검색_시나리오') {
+        return handleDetailSearchScenario(page, menu, config, rawDataDir, filePrefix);
+    }
 
     // "총계정원장" 계열: 계정 콤보박스 → 대기 → 다운로드
-    const IS_LEDGER_MENU = ['총계정원장', '총계정원장조회'].includes(menuName);
+    const IS_LEDGER_MENU = ['총계정원장', '총계정원장조회'].includes(base);
     // "상세 거래 검색" / "벤포드 법칙 분석": 계정 선택 + 검색 버튼 → 다운로드
-    const IS_SEARCH_MENU = ['상세 거래 검색', '벤포드 법칙 분석'].includes(menuName);
+    const IS_SEARCH_MENU = ['상세 거래 검색', '벤포드 법칙 분석'].includes(base);
 
     if (IS_LEDGER_MENU || IS_SEARCH_MENU) {
         for (const task of tasks) {
@@ -233,7 +539,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
 
             } else {
                 // 상세 거래 검색 / 벤포드: 라디오 버튼 선택(옵션) → 검색 → 다운로드
-                if (menuName === '상세 거래 검색' && task['표시방식']) {
+                if (base === '상세 거래 검색' && task['표시방식']) {
                     const rbLabel = String(task['표시방식']);
                     try {
                         await page.locator(`label:has-text("${rbLabel}")`).click({ timeout: 5000 });
@@ -248,14 +554,14 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
                 await page.waitForTimeout(1000);
 
                 const downloadBtnSelector = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
-                const targetName = (menuName === '상세 거래 검색')
+                const targetName = (base === '상세 거래 검색')
                     ? accountName
                     : String(task['파일명'] ?? accountName);
                 await handleDownloadAndSave(page, downloadBtnSelector, targetName, rawDataDir, menuName, filePrefix);
             }
         }
 
-    } else if (menuName === '매입/매출 이중거래처 분석') {
+    } else if (base === '매입/매출 이중거래처 분석') {
         console.log(`\n--- [${menuName}] 처리 시작 ---`);
         const task = tasks[0] ?? {};
         await page.click('button:has-text("이중거래처 분석 시작")');
@@ -268,53 +574,843 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
     }
 }
 
+// ─── 월별 이상치 감지 ─────────────────────────────────────────────────────────
+// monthlyData: [{ month: 'YYYY-MM', debit: number, credit: number }, ...]
+// threshold: 0.3 → 평균 대비 30% 초과 시 이상치
+function detectMonthlyAnomalies(monthlyData, threshold = 0.3) {
+    const avg = arr => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+
+    const debitAmounts  = monthlyData.map(m => m.debit).filter(v => v > 0);
+    const creditAmounts = monthlyData.map(m => m.credit).filter(v => v > 0);
+    const debitAvg  = avg(debitAmounts);
+    const creditAvg = avg(creditAmounts);
+
+    console.log(`[이상치감지] 차변 월평균: ${Math.round(debitAvg).toLocaleString()}, 대변 월평균: ${Math.round(creditAvg).toLocaleString()}`);
+
+    const anomalies = [];
+    for (const m of monthlyData) {
+        if (debitAvg > 0 && m.debit > debitAvg * (1 + threshold)) {
+            const pct = ((m.debit / debitAvg - 1) * 100).toFixed(1);
+            console.log(`  ★ 차변 이상치 — ${m.month}: ${m.debit.toLocaleString()} (평균 대비 +${pct}%)`);
+            anomalies.push({ month: m.month, type: '차변', amount: m.debit, avg: debitAvg });
+        }
+        if (creditAvg > 0 && m.credit > creditAvg * (1 + threshold)) {
+            const pct = ((m.credit / creditAvg - 1) * 100).toFixed(1);
+            console.log(`  ★ 대변 이상치 — ${m.month}: ${m.credit.toLocaleString()} (평균 대비 +${pct}%)`);
+            anomalies.push({ month: m.month, type: '대변', amount: m.credit, avg: creditAvg });
+        }
+    }
+    return anomalies;
+}
+
+// ─── 월별 금액 데이터 추출 (다중 전략) ────────────────────────────────────────
+async function extractMonthlyAmountsFromPage(page, menuName) {
+    // 전략 1: 요약 테이블 파싱 (월 | 차변금액 | 대변금액 형태)
+    try {
+        const rows = await page.$$eval('table tr', rows =>
+            rows.map(row => {
+                const cells = [...row.querySelectorAll('td, th')].map(c => c.innerText?.trim() ?? '');
+                const monthMatch = cells[0]?.match(/\d{4}-\d{2}/);
+                if (!monthMatch) return null;
+                const parseNum = t => Number((t ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                return { month: monthMatch[0], debit: parseNum(cells[1]), credit: parseNum(cells[2]) };
+            }).filter(Boolean)
+        );
+        if (rows.length > 0) {
+            console.log(`[${menuName}] 요약 테이블 파싱: ${rows.length}개월 추출`);
+            return rows;
+        }
+    } catch { /* 다음 전략 */ }
+
+    // 전략 2: Chart.js 인스턴스 데이터 (v2/v3 모두 시도)
+    try {
+        const chartData = await page.evaluate(() => {
+            const instances = window.Chart?.instances
+                ? Object.values(window.Chart.instances)
+                : [];
+            for (const chart of instances) {
+                const labels   = chart.data?.labels ?? [];
+                const datasets = chart.data?.datasets ?? [];
+                if (!labels.length) continue;
+                const debitDs  = datasets.find(d => /차변|debit/i.test(d.label ?? ''));
+                const creditDs = datasets.find(d => /대변|credit/i.test(d.label ?? ''));
+                if (!debitDs && !creditDs) continue;
+                return labels.map((label, i) => ({
+                    month:  String(label),
+                    debit:  Number(debitDs?.data?.[i]  ?? 0),
+                    credit: Number(creditDs?.data?.[i] ?? 0),
+                }));
+            }
+            return null;
+        });
+        if (chartData?.length > 0) {
+            console.log(`[${menuName}] Chart.js 인스턴스 파싱: ${chartData.length}개월 추출`);
+            return chartData;
+        }
+    } catch { /* 다음 전략 */ }
+
+    // 전략 3: data-* 속성 또는 클래스 기반 DOM 파싱
+    try {
+        const items = await page.$$eval(
+            '[data-month], [class*="month-item"], [class*="trend-row"], [class*="monthly"]',
+            els => els.map(el => {
+                const txt       = el.dataset.month ?? el.querySelector('[class*="month"]')?.innerText ?? '';
+                const monthMatch = txt.match(/\d{4}-\d{2}/);
+                if (!monthMatch) return null;
+                const nums = [...el.querySelectorAll('[class*="amount"], [class*="debit"], [class*="credit"], td')]
+                    .map(e => Number((e.innerText ?? '').replace(/[^0-9.-]/g, '')) || 0);
+                return { month: monthMatch[0], debit: nums[0] ?? 0, credit: nums[1] ?? 0 };
+            }).filter(Boolean)
+        );
+        if (items.length > 0) {
+            console.log(`[${menuName}] DOM 속성 파싱: ${items.length}개월 추출`);
+            return items;
+        }
+    } catch { /* 실패 */ }
+
+    console.log(`[${menuName}] 월별 금액 자동 추출 실패 — 빈 배열 반환`);
+    return [];
+}
+
+// ─── TOP 10 섹션 드롭다운 선택 헬퍼 ──────────────────────────────────────────
+// labelText: '월' | '금액 기준' | '상위'
+// optionValue: 실제 선택할 텍스트 값 (예: '2025-01', '차변', 'Top 10')
+async function selectTop10FilterDropdown(page, labelText, optionValue, menuName) {
+    console.log(`[${menuName}] TOP10 필터 — '${labelText}' → '${optionValue}'`);
+
+    // 전략 1: label 인접 native <select>
+    const labelSelectors = [
+        `label:has-text("${labelText}") + select`,
+        `label:has-text("${labelText}") ~ select`,
+        `div:has(> label:has-text("${labelText}")) select`,
+        `th:has-text("${labelText}") + th select`,
+        `span:has-text("${labelText}") + select`,
+        `span:has-text("${labelText}") ~ select`,
+    ];
+    for (const sel of labelSelectors) {
+        try {
+            const el = page.locator(sel).first();
+            if (await el.count() > 0) {
+                await el.selectOption({ label: optionValue });
+                await page.waitForTimeout(1200);
+                console.log(`  ✓ '${labelText}' 네이티브 select 설정 완료`);
+                return;
+            }
+        } catch { /* 다음 셀렉터 */ }
+    }
+
+    // 전략 2: 커스텀 드롭다운 (버튼/div 클릭 → listbox 옵션 클릭)
+    const triggerSelectors = [
+        `label:has-text("${labelText}") + button`,
+        `label:has-text("${labelText}") ~ button`,
+        `div:has(> label:has-text("${labelText}")) button`,
+        `[aria-label*="${labelText}"]`,
+        `button[aria-haspopup="listbox"]:near(label:has-text("${labelText}"))`,
+    ];
+    for (const sel of triggerSelectors) {
+        try {
+            const btn = page.locator(sel).first();
+            if (await btn.count() > 0) {
+                await btn.click();
+                await page.waitForTimeout(500);
+                await page.click(
+                    `[role="listbox"] [role="option"]:has-text("${optionValue}"), ` +
+                    `ul[role="listbox"] li:has-text("${optionValue}"), ` +
+                    `div[role="option"]:has-text("${optionValue}")`
+                );
+                await page.waitForTimeout(1200);
+                console.log(`  ✓ '${labelText}' 커스텀 드롭다운 설정 완료`);
+                return;
+            }
+        } catch { /* 다음 셀렉터 */ }
+    }
+
+    console.log(`[경고] [${menuName}] '${labelText}' 드롭다운을 찾지 못했습니다.`);
+}
+
+// ─── 월별 트렌드 이상치 핸들러 ────────────────────────────────────────────────
+// HOST2_ 계열 '월별트렌드분석' 시나리오 전용.
+// 업로드 완료 후 '월별 트렌드 분석' 카드 진입 → 이상치 감지 → TOP 10 조건부 다운로드.
+async function handleMonthlyTrendAnalysis(page, menu, config, companyDir, resultsDir, filePrefix) {
+    const { menuName } = menu;
+    const companyName = config.companyName ?? path.basename(companyDir);
+
+    // 1. 분석 카드 목록에서 '월별 트렌드 분석' 카드 클릭
+    console.log(`[${menuName}] '월별 트렌드 분석' 카드 클릭 시도...`);
+    try {
+        const cardLoc = page.locator(
+            'text=월별 트렌드 분석, ' +
+            'text=월별트렌드분석, ' +
+            'text=월별 트랜드 분석'
+        ).first();
+        await cardLoc.waitFor({ state: 'visible', timeout: 15000 });
+        await cardLoc.click();
+        await page.waitForTimeout(2000);
+    } catch (e) {
+        console.log(`[경고] [${menuName}] '월별 트렌드 분석' 카드 클릭 실패: ${e.message}`);
+    }
+
+    // 2. 페이지 안정화 대기
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    // 3. 월별 금액 데이터 추출
+    const monthlyData = await extractMonthlyAmountsFromPage(page, menuName);
+    if (monthlyData.length === 0) {
+        console.log(`[${menuName}] 월별 데이터를 읽지 못했습니다. 처리 종료.`);
+        return;
+    }
+
+    // 4. 이상치 감지 (평균 대비 30% 초과)
+    const anomalies = detectMonthlyAnomalies(monthlyData, 0.3);
+    if (anomalies.length === 0) {
+        console.log(`[${menuName}] 이상치 없음 (기준: 평균 +30%). 처리 종료.`);
+        return;
+    }
+    console.log(`\n[${menuName}] === 이상치 총 ${anomalies.length}건 → TOP 10 추출 시작 ===\n`);
+
+    // 5. '월별 거래처 Top 10' 섹션으로 스크롤
+    try {
+        await page.locator(
+            'text=월별 거래처 Top 10, text=월별 거래처 TOP 10'
+        ).first().scrollIntoViewIfNeeded();
+        await page.waitForTimeout(1000);
+    } catch { /* 스크롤 실패 무시 */ }
+
+    // 6. 이상치별 필터 조작 → 다운로드
+    for (const anomaly of anomalies) {
+        console.log(`\n--- [${anomaly.month} / ${anomaly.type}] TOP 10 추출 ---`);
+
+        // 월 드롭다운 선택
+        await selectTop10FilterDropdown(page, '월', anomaly.month, menuName);
+
+        // 차/대변 드롭다운 선택
+        await selectTop10FilterDropdown(page, '금액 기준', anomaly.type, menuName);
+
+        // 필터 반영 확인: 해당 월 데이터가 테이블에 나타날 때까지 대기
+        try {
+            await page.waitForFunction(
+                month => {
+                    const rows = document.querySelectorAll('table tbody tr');
+                    return rows.length > 0 &&
+                        [...rows].some(r => r.textContent.includes(month));
+                },
+                anomaly.month,
+                { timeout: 10000 }
+            );
+        } catch {
+            await page.waitForTimeout(2000); // 폴백 대기
+        }
+
+        // 파일명: {filePrefix}월별트렌드_이상치_{YYYYMM}_{차대구분}.xlsx
+        const monthSlug = anomaly.month.replace('-', ''); // "2025-04" → "202504"
+        const saveName  = `월별트렌드_이상치_${monthSlug}_${anomaly.type}.xlsx`;
+        const savePath  = path.join(resultsDir, `${filePrefix}${saveName}`);
+
+        // TOP 10 섹션의 '엑셀 다운로드' 버튼 클릭
+        try {
+            const top10Section = page.locator('section, div').filter({
+                hasText: /월별 거래처 Top 10|월별 거래처 TOP 10/,
+            }).last();
+
+            await page.waitForSelector('button:has-text("엑셀 다운로드")', {
+                state: 'visible', timeout: 15000,
+            });
+
+            const downloadPromise = page.waitForEvent('download');
+
+            const top10Btn = top10Section.locator('button:has-text("엑셀 다운로드")').first();
+            if (await top10Btn.count() > 0) {
+                await top10Btn.click();
+            } else {
+                // fallback: 화면 내 마지막 다운로드 버튼
+                const allBtns = page.locator('button:has-text("엑셀 다운로드")');
+                await allBtns.nth(await allBtns.count() - 1).click();
+            }
+
+            const download    = await downloadPromise;
+            const downloadedPath = await download.path();
+
+            // EBUSY 재시도 (OneDrive 동기화 대비)
+            for (let attempt = 1; attempt <= 5; attempt++) {
+                try {
+                    fs.copyFileSync(downloadedPath, savePath);
+                    console.log(`[${menuName}] 저장 완료: ${path.basename(savePath)}`);
+                    break;
+                } catch (e) {
+                    if (e.code === 'EBUSY' && attempt < 5) {
+                        await new Promise(r => setTimeout(r, attempt * 1000));
+                    } else throw e;
+                }
+            }
+        } catch (e) {
+            console.log(`[경고] [${menuName}] ${anomaly.month} ${anomaly.type} 다운로드 실패: ${e.message}`);
+        }
+
+        await page.waitForTimeout(1000); // 다음 이상치 처리 전 안정화 대기
+    }
+}
+
+// ─── /ai-analysis 업로드 영역별 파일 주입 헬퍼 ──────────────────────────────
+// areaIndex: 0 = 분개장(필수), 1 = 계정별원장(선택)
+// 전략 1: 업로드 영역 레이블 근처의 input 탐색 → 전략 2: nth(areaIndex) 폴백
+async function uploadFileToZone(page, config, filePath, areaIndex, areaLabel, menuName) {
+    console.log(`[${menuName}] ${areaLabel} 파일 업로드 시작: ${path.basename(filePath)}`);
+
+    const fileInputSelector = config.selectors.fileUploadInput || 'input[type="file"]';
+
+    // 전략 1: 업로드 버튼(uploadButton)이 설정된 경우 — 첫 번째 영역(분개장)만 해당
+    if (areaIndex === 0 && config.selectors.uploadButton) {
+        try {
+            const [fileChooser] = await Promise.all([
+                page.waitForEvent('filechooser', { timeout: 10000 }),
+                page.click(config.selectors.uploadButton),
+            ]);
+            await fileChooser.setFiles(filePath);
+            console.log(`[${menuName}] ${areaLabel} 파일 선택 완료 (fileChooser 방식).`);
+            await page.waitForTimeout(1000);
+            return;
+        } catch {
+            console.log(`[${menuName}] fileChooser 방식 실패, 직접 주입 방식으로 전환합니다.`);
+        }
+    }
+
+    // 전략 2: nth(areaIndex) waitFor — DOM 렌더링 완료 후 hidden input 포함 직접 주입
+    try {
+        const nthInput = page.locator(fileInputSelector).nth(areaIndex);
+        await nthInput.waitFor({ state: 'attached', timeout: 5000 });
+        await nthInput.setInputFiles(filePath);
+        console.log(`[${menuName}] ${areaLabel} 파일 주입 완료 (setInputFiles nth=${areaIndex}).`);
+        await page.waitForTimeout(1000);
+        return;
+    } catch { /* 전략 3으로 */ }
+
+    // 전략 3: 계정별원장 섹션의 드롭존 클릭 → filechooser 이벤트
+    console.log(`[${menuName}] ${areaLabel} nth input 미발견 — 드롭존 클릭 방식으로 전환합니다.`);
+    const dropZoneSelectors = [
+        // 섹션 헤더 기준으로 내부 드롭존 탐색 (가장 정확)
+        `div:has(> h2:has-text("계정별원장"), > h3:has-text("계정별원장"), > strong:has-text("계정별원장")) div[role="button"]`,
+        // 텍스트 기준 드롭존 직접 탐색
+        `div:has-text("당기 계정별원장 파일 업로드"):not(:has(*))`,   // 자식 없는 최하위 div
+        `p:has-text("당기 계정별원장 파일 업로드")`,
+        // nth 기반 폴백
+        `[role="button"]:nth(${areaIndex})`,
+        `[tabindex="0"]:nth(${areaIndex})`,
+    ];
+    let triggered = false;
+    for (const sel of dropZoneSelectors) {
+        try {
+            const zone = page.locator(sel).first();
+            if (await zone.count().catch(() => 0) === 0) continue;
+            const [fileChooser] = await Promise.all([
+                page.waitForEvent('filechooser', { timeout: 6000 }),
+                zone.click(),
+            ]);
+            await fileChooser.setFiles(filePath);
+            console.log(`[${menuName}] ${areaLabel} 파일 선택 완료 (드롭존 클릭: "${sel}").`);
+            await page.waitForTimeout(1000);
+            triggered = true;
+            break;
+        } catch { /* 다음 셀렉터 */ }
+    }
+
+    // 전략 4: 드롭존 클릭 후 단일 input에 직접 주입 (React가 input을 재활용하는 경우)
+    if (!triggered) {
+        console.log(`[${menuName}] ${areaLabel} filechooser 미발생 — 드롭존 클릭 후 nth(0) 주입 시도.`);
+        const fallbackZone = page.locator(
+            'section:has-text("계정별원장 파일 업로드"), ' +
+            'div:has-text("계정별원장 파일 업로드 (선택사항)")'
+        ).last();
+        try {
+            await fallbackZone.click({ timeout: 3000 });
+            await page.waitForTimeout(500);
+            await page.locator(fileInputSelector).nth(0).setInputFiles(filePath);
+            console.log(`[${menuName}] ${areaLabel} 파일 주입 완료 (드롭존 클릭 후 nth=0 주입).`);
+            triggered = true;
+        } catch { /* 최종 실패 */ }
+    }
+
+    if (!triggered) {
+        console.log(`[경고] [${menuName}] ${areaLabel} 업로드 실패 — 건너뜁니다.`);
+    }
+}
+
+// ─── AI 분석 대시보드 복귀 헬퍼 ──────────────────────────────────────────────
+// 분석 완료 후 [초기화면으로] 버튼을 클릭하여 대시보드로 복귀.
+// 성공 시 true 반환 (분개장 세션 유지). 실패 시 false 반환 (세션 끊김 처리 필요).
+// ★ 절대 browser.back() 또는 URL 재접속을 사용하지 않는다 — 세션(업로드 데이터)이 소실됨.
+async function returnToAiDashboard(page, menuName) {
+    const btnSel = 'button:has-text("초기화면으로"), a:has-text("초기화면으로")';
+    try {
+        await page.waitForSelector(btnSel, { state: 'visible', timeout: 5000 });
+        await page.click(btnSel);
+        await page.waitForTimeout(1500);
+        // 대시보드 확인: 분석 카드 중 하나가 나타나면 복귀 성공
+        await page.waitForSelector(
+            'text=전표분석, text=일반사항 분석, text=월별 트렌드 분석, text=공휴일전표',
+            { timeout: 10000 }
+        );
+        console.log(`[${menuName}] ✓ [초기화면으로] 복귀 완료 — 분개장 세션 유지 중.`);
+        return true;
+    } catch (e) {
+        console.log(`[경고] [${menuName}] [초기화면으로] 실패 또는 대시보드 미복귀: ${e.message}`);
+        console.log(`[${menuName}] 세션 끊김 감지 — 다음 메뉴에서 파일 재업로드 예정.`);
+        return false;
+    }
+}
+
 // ─── /ai-analysis 엔드포인트 메뉴 핸들러 ────────────────────────────────────
-async function handleAiAnalysisMenu(page, menu, config, companyDir, rawDataDir, filePrefix) {
+// task_list 컬럼:
+//   업로드파일 / 분개장파일  → 더존 분개장 파일 경로 (필수, companyDir 기준 상대경로 또는 절대경로)
+//   계정별원장파일 / 원장파일 → 당기 계정별원장 파일 경로 (선택)
+//   결과파일명               → 다운로드 저장 파일명 (생략 시 menuName_결과 사용)
+// skipUpload: true면 파일 업로드 단계를 건너뜀 (이전 메뉴에서 세션이 유지된 경우).
+async function handleAiAnalysisMenu(page, menu, config, companyDir, rawDataDir, filePrefix, skipUpload = false) {
     const { menuName, tasks } = menu;
-    console.log(`\n=== [메뉴 진입] ${menuName} (AI 분석) ===`);
+    console.log(`\n=== [메뉴 진입] ${menuName} (AI 분석)${skipUpload ? ' [업로드 생략 — 세션 유지]' : ''} ===`);
+
+    // ── HOST2_월별트렌드 계열: 이상치 감지 핸들러로 분기 ─────────────────────────
+    const isMonthlyTrend = /월별트렌드/.test(getBaseMenuName(menuName));
+    // 대시보드에서 클릭할 분석 카드 UI 레이블
+    const uiCardLabel = getMenuUiLabel(menuName, config);
 
     for (const task of tasks) {
-        const uploadRelPath = String(task['업로드파일'] ?? task['파일명'] ?? config.uploadFileName ?? '');
-        if (!uploadRelPath) {
-            console.log(`[${menuName}] 업로드할 파일이 지정되지 않았습니다. 건너뜁니다.`);
-            continue;
-        }
 
-        const uploadFilePath = path.isAbsolute(uploadRelPath)
-            ? uploadRelPath
-            : path.join(companyDir, uploadRelPath);
-
-        if (!fs.existsSync(uploadFilePath)) {
-            console.log(`[${menuName}] 업로드 파일이 존재하지 않습니다: ${uploadFilePath}`);
-            continue;
-        }
-        console.log(`[${menuName}] 업로드 파일: ${path.basename(uploadFilePath)}`);
-
-        const fileInputSelector = config.selectors.fileUploadInput || 'input[type="file"]';
-        const uploadBtnSelector = config.selectors.uploadButton;
-
-        if (uploadBtnSelector) {
-            try {
-                const [fileChooser] = await Promise.all([
-                    page.waitForEvent('filechooser', { timeout: 10000 }),
-                    page.click(uploadBtnSelector),
-                ]);
-                await fileChooser.setFiles(uploadFilePath);
-                console.log(`[${menuName}] 파일 선택 완료 (fileChooser 방식).`);
-            } catch {
-                console.log(`[${menuName}] fileChooser 방식 실패, 직접 주입 방식으로 전환합니다.`);
-                await page.waitForSelector(fileInputSelector, { state: 'attached', timeout: 30000 });
-                await page.setInputFiles(fileInputSelector, uploadFilePath);
+        // ── 1~4. 파일 업로드 (세션이 없을 때만 수행) ─────────────────────────
+        if (!skipUpload) {
+            // 1. 분개장 파일 경로 확인 (필수)
+            const journalRelPath = String(
+                task['업로드파일'] ?? task['분개장파일'] ?? task['파일명'] ?? config.aiJournalFileName ?? config.uploadFileName ?? ''
+            );
+            if (!journalRelPath) {
+                console.log(`[${menuName}] 분개장 파일이 지정되지 않았습니다. 건너뜁니다.`);
+                continue;
             }
-        } else {
-            await page.waitForSelector(fileInputSelector, { state: 'attached', timeout: 30000 });
-            await page.setInputFiles(fileInputSelector, uploadFilePath);
-            console.log(`[${menuName}] 파일 주입 완료 (setInputFiles 방식).`);
+            const journalFilePath = path.isAbsolute(journalRelPath)
+                ? journalRelPath
+                : path.join(companyDir, journalRelPath);
+            if (!fs.existsSync(journalFilePath)) {
+                console.log(`[${menuName}] 분개장 파일이 존재하지 않습니다: ${journalFilePath}`);
+                continue;
+            }
+
+            // 2. 분개장 업로드 (첫 번째 업로드 영역)
+            await uploadFileToZone(page, config, journalFilePath, 0, '분개장', menuName);
+
+            console.log(`[${menuName}] 분개장 처리 대기 중...`);
+            try {
+                await page.waitForSelector('text=데이터 건수', { timeout: 30000 });
+                console.log(`[${menuName}] 분개장 업로드 완료.`);
+            } catch {
+                console.log(`[${menuName}] 분개장 완료 신호 미감지 — 5초 추가 대기합니다.`);
+                await page.waitForTimeout(5000);
+            }
+
+            // 3. 계정별원장 파일 업로드 (두 번째 업로드 영역, 선택)
+            const ledgerRelPath = String(task['계정별원장파일'] ?? task['원장파일'] ?? config.aiLedgerFileName ?? '');
+            if (ledgerRelPath) {
+                const ledgerFilePath = path.isAbsolute(ledgerRelPath)
+                    ? ledgerRelPath
+                    : path.join(companyDir, ledgerRelPath);
+
+                if (fs.existsSync(ledgerFilePath)) {
+                    await uploadFileToZone(page, config, ledgerFilePath, 1, '계정별원장', menuName);
+
+                    console.log(`[${menuName}] 계정별원장 처리 대기 중...`);
+                    try {
+                        await page.waitForSelector('text=시트 수', { timeout: 30000 });
+                        console.log(`[${menuName}] 계정별원장 업로드 완료.`);
+                    } catch {
+                        console.log(`[${menuName}] 계정별원장 완료 신호 미감지 — 5초 추가 대기합니다.`);
+                        await page.waitForTimeout(5000);
+                    }
+                } else {
+                    console.log(`[${menuName}] 계정별원장 파일 미발견 (건너뜀): ${ledgerFilePath}`);
+                }
+            } else {
+                console.log(`[${menuName}] 계정별원장 파일 미지정. 분개장만 업로드합니다.`);
+            }
+
+            // 4. 업로드 완료 후 분석 카드 대시보드 대기
+            try {
+                await page.waitForSelector(
+                    'text=전표분석, text=일반사항 분석, text=공휴일전표',
+                    { timeout: 15000 }
+                );
+                console.log(`[${menuName}] 분석 카드 대시보드 전환 완료.`);
+            } catch {
+                console.log(`[${menuName}] 분석 카드 미감지 — 현재 화면에서 계속 진행합니다.`);
+            }
         }
 
+        // ── 5. 대시보드에서 분석 카드 클릭 ──────────────────────────────────
+        // 월별트렌드는 handleMonthlyTrendAnalysis 내부에서 직접 처리하므로 제외.
+        if (!isMonthlyTrend) {
+            try {
+                const card = page.locator(
+                    `text="${uiCardLabel}", h2:has-text("${uiCardLabel}"), ` +
+                    `h3:has-text("${uiCardLabel}"), div:has-text("${uiCardLabel}")`
+                ).first();
+                if (await card.count() > 0) {
+                    await card.waitFor({ state: 'visible', timeout: 8000 });
+                    await card.evaluate(n => {
+                        n.removeAttribute('target');
+                        n.closest('a')?.removeAttribute('target');
+                    });
+                    await card.click();
+                    await page.waitForTimeout(2000);
+                    console.log(`[${menuName}] ✓ 분석 카드 "${uiCardLabel}" 진입 완료.`);
+                }
+            } catch (e) {
+                console.log(`[경고] [${menuName}] 분석 카드 클릭 실패, 현재 화면에서 계속합니다: ${e.message}`);
+            }
+        }
+
+        // ── 6. 메뉴 유형별 분석 실행 ─────────────────────────────────────────
+        if (isMonthlyTrend) {
+            await handleMonthlyTrendAnalysis(page, menu, config, companyDir, rawDataDir, filePrefix);
+            return; // task 반복 불필요 — 핸들러 내부에서 전체 처리
+        }
+
+        // ── 6b. Google AI Studio: "AI 심층 분석 시작" → 태스크별 카드 처리 ──
+        try {
+            const aiStartBtn = page.locator('button:has-text("AI 심층 분석 시작")').first();
+            if (await aiStartBtn.count().catch(() => 0) > 0) {
+                await aiStartBtn.click();
+                await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                await page.waitForTimeout(1500);
+                console.log(`[${menuName}] AI 심층 분석 대시보드 진입 완료.`);
+                if (tasks.some(t => t['작업명'])) {
+                    await handleGoogleAiAnalysis(page, menu, config, rawDataDir, filePrefix);
+                    return;
+                }
+            }
+        } catch { /* 없으면 기존 플로우 */ }
+
+        // 일반 AI 분석: 결과 다운로드
         const downloadBtnSelector = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
         const outputFileName = String(task['결과파일명'] ?? task['파일명'] ?? `${menuName}_결과`);
         await handleDownloadAndSave(page, downloadBtnSelector, outputFileName, rawDataDir, menuName, filePrefix);
+    }
+}
+
+// ─── Google AI Studio 심층 분석: 태스크별 카드 클릭/다운로드 ──────────────────
+async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix) {
+    const { menuName, tasks } = menu;
+
+    const TASK_UI_MAP = {
+        '일반사항분석': '일반사항 분석',
+        '공휴일전표': '공휴일전표',
+        '상대계정분석': '상대계정 분석',
+        '적요적합성분석': '적요 적합성 분석',
+        '시각화분석': '시각화 분석',
+        '월별트렌드분석': '월별 트렌드 분석',
+        '현금흐름분석': '현금 흐름 분석',
+    };
+
+    const returnToDashboard = async () => {
+        const btnSel = 'button:has-text("초기화면으로"), a:has-text("초기화면으로")';
+        try {
+            await page.waitForSelector(btnSel, { state: 'visible', timeout: 5000 });
+            await page.click(btnSel);
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            return true;
+        } catch { return false; }
+    };
+
+    for (const task of tasks) {
+        const taskName  = String(task['작업명']   ?? '').trim();
+        const account   = String(task['계정과목'] ?? '').trim();
+        const direction = String(task['거래방향'] ?? '').trim();
+        if (!taskName) continue;
+
+        const uiLabel = TASK_UI_MAP[taskName] ?? taskName;
+        const logTag  = `${taskName}${account ? `/${account}` : ''}`;
+        console.log(`\n--- [${menuName} / ${logTag}] 처리 시작 ---`);
+
+        // 카드 클릭
+        try {
+            const card = page.locator(`text="${uiLabel}"`).first();
+            if (await card.count().catch(() => 0) === 0) {
+                console.log(`  [경고] "${uiLabel}" 카드 미발견.`);
+                continue;
+            }
+            await card.waitFor({ state: 'visible', timeout: 8000 });
+            await card.click();
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            console.log(`  ✓ 카드 "${uiLabel}" 진입 완료`);
+        } catch (e) {
+            console.log(`  [경고] 카드 클릭 실패: ${e.message}`);
+            continue;
+        }
+
+        // 계정과목 필터 (combobox 없으면 일반 input 검색창으로 폴백)
+        if (account) {
+            try {
+                const comboSel = config.selectors.accountCombobox || 'button[role="combobox"]';
+                let combo = page.locator(comboSel).first();
+                if (await combo.count().catch(() => 0) === 0) {
+                    combo = page.locator('input[type="search"], input[placeholder]').first();
+                }
+                if (await combo.count().catch(() => 0) > 0) {
+                    await combo.click();
+                    await page.waitForTimeout(300);
+                    await page.keyboard.press('Control+A');
+                    await page.keyboard.press('Backspace');
+                    await page.keyboard.type(account, { delay: 50 });
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Enter');
+                    console.log(`  계정과목: ${account}`);
+
+                    // 계정 변경 후 데이터 리로드 대기
+                    // 요약 통계(총 차변 합계 등) 또는 networkidle로 갱신 확인
+                    try {
+                        await page.waitForLoadState('networkidle', { timeout: 8000 });
+                    } catch { /* networkidle 미감지 시 폴백 */ }
+                    // 차트/테이블이 해당 계정 데이터로 갱신될 때까지 추가 대기
+                    try {
+                        await page.waitForFunction(
+                            acc => {
+                                const inputs = document.querySelectorAll('input[placeholder], input[type="search"]');
+                                for (const el of inputs) {
+                                    if (el.value && el.value.includes(acc)) return true;
+                                }
+                                // 드롭다운/선택된 값 텍스트로도 확인
+                                const body = document.body.innerText;
+                                return body.includes('총 차변') || body.includes('총 분석 월 수');
+                            },
+                            account,
+                            { timeout: 5000 }
+                        );
+                    } catch { /* 폴백: 고정 대기 */ }
+                    await page.waitForTimeout(1500);
+                }
+            } catch { /* 필터 없으면 무시 */ }
+        }
+
+        // 거래방향 라디오
+        if (direction) await clickRadioByLabel(page, direction, '거래방향');
+
+        // 분석 실행 버튼 (있으면 클릭)
+        try {
+            const runBtn = page.locator('button:has-text("분석 실행"), button:has-text("분석 시작"), button:has-text("실행")').first();
+            if (await runBtn.count().catch(() => 0) > 0) {
+                await runBtn.click();
+                console.log(`  ✓ 분석 실행 클릭`);
+                await page.waitForTimeout(2000);
+            }
+        } catch { /* 자동 시작이면 무시 */ }
+
+        // 결과 대기 (최대 5분) + 다운로드 (버튼이 여러 개면 모두 저장)
+        const dlSel = 'button:has-text("결과 다운로드"), button:has-text("엑셀 다운로드")';
+        try {
+            await page.waitForSelector(dlSel, { state: 'visible', timeout: 300000 });
+
+            // 페이지 내 엑셀 다운로드 버튼 전체 수집 (없으면 결과 다운로드 버튼)
+            let dlBtns = await page.locator('button:has-text("엑셀 다운로드")').all();
+            if (dlBtns.length === 0) dlBtns = await page.locator('button:has-text("결과 다운로드")').all();
+
+            const safeTask = taskName.replace(/[\\/?*[\]:]/g, '_');
+            const safeAcc  = account   ? `_${account}`   : '';
+            const safeDir  = direction ? `_${direction}`  : '';
+            const baseName = `${filePrefix}${safeTask}${safeAcc}${safeDir}`;
+
+            for (let i = 0; i < dlBtns.length; i++) {
+                // 버튼이 여러 개면 _1, _2 ... 접미사로 구분; 하나면 접미사 없음
+                const suffix   = dlBtns.length > 1 ? `_${i + 1}` : '';
+                const savePath = path.join(resultsDir, `${baseName}${suffix}.xlsx`);
+
+                try {
+                    await dlBtns[i].scrollIntoViewIfNeeded();
+
+                    // page.on 방식: reject 없이 null 반환 → unhandled rejection 방지
+                    const dl = await new Promise(resolve => {
+                        const timer = setTimeout(() => {
+                            page.off('download', onDl);
+                            resolve(null);
+                        }, 15000);
+                        function onDl(download) {
+                            clearTimeout(timer);
+                            page.off('download', onDl);
+                            resolve(download);
+                        }
+                        page.on('download', onDl);
+                        dlBtns[i].click().catch(() => {
+                            clearTimeout(timer);
+                            page.off('download', onDl);
+                            resolve(null);
+                        });
+                    });
+
+                    if (!dl) {
+                        console.log(`  [건너뜀] 버튼 ${i + 1}: 다운로드 이벤트 없음.`);
+                        continue;
+                    }
+
+                    const dlPath = await dl.path();
+                    for (let attempt = 1; attempt <= 5; attempt++) {
+                        try {
+                            fs.copyFileSync(dlPath, savePath);
+                            console.log(`  ✓ 저장 완료: ${path.basename(savePath)}`);
+                            break;
+                        } catch (e) {
+                            if (e.code === 'EBUSY' && attempt < 5) await new Promise(r => setTimeout(r, attempt * 1000));
+                            else throw e;
+                        }
+                    }
+                    await page.waitForTimeout(500);
+                } catch (e) {
+                    console.log(`  [경고] 버튼 ${i + 1} 다운로드 실패: ${e.message}`);
+                }
+            }
+        } catch (e) {
+            console.log(`  [경고] 결과 다운로드 실패: ${e.message}`);
+        }
+
+        // ── 월별트렌드분析: 이상치 전수조사 → Top 10 조건부 다운로드 ──────────────
+        if (taskName === '월별트렌드분析') {
+            try {
+                // Step 0: Pre-Scan — 월별 차/대변 금액 추출 및 이상치 식별
+                console.log(`\n  [이상치분析] Pre-Scan 시작 — 계정: ${account}`);
+                const monthlyData = await extractMonthlyAmountsFromPage(page, taskName);
+
+                if (monthlyData.length === 0) {
+                    console.log(`  [이상치분析] 월별 데이터 추출 실패 — Top10 생략`);
+                } else {
+                    const anomalies = detectMonthlyAnomalies(monthlyData, 0.3);
+
+                    if (anomalies.length === 0) {
+                        console.log(`  [이상치분析] 이상치 없음 (임계값 30%) — Top10 다운로드 생략`);
+                    } else {
+                        console.log(`  [이상치분析] ${anomalies.length}건 감지 → Top10 순차 다운로드 시작`);
+                        anomalies.forEach((a, i) =>
+                            console.log(`    ${i + 1}. ${a.month} [${a.type}] ${a.amount.toLocaleString()} (평균 ${Math.round(a.avg).toLocaleString()})`)
+                        );
+
+                        // Top 10 섹션 컨테이너: 거래처 Top 10 영역의 다운로드 버튼만 대상
+                        const top10Container = page.locator(
+                            'section:has-text("거래처 Top"), div:has-text("거래처 Top 10"), ' +
+                            'div:has-text("월별 거래처"), section:has-text("월별 거래처")'
+                        ).last();
+
+                        for (const anomaly of anomalies) {
+                            const safeMonth = anomaly.month.replace('-', '');
+                            const saveName  = `${filePrefix}월별트렌드_${account}_${anomaly.month}_${anomaly.type}.xlsx`;
+                            const savePath  = path.join(resultsDir, saveName);
+
+                            console.log(`\n  → [${anomaly.month}][${anomaly.type}] Top10 처리 중…`);
+
+                            try {
+                                // Step A: 월 드롭다운 선택
+                                await selectTop10FilterDropdown(page, '월', anomaly.month, taskName);
+
+                                // Step B: 금액 기준(차변/대변) 선택
+                                await selectTop10FilterDropdown(page, '금액 기준', anomaly.type, taskName);
+
+                                // Step C: 테이블 갱신 대기 — 스피너 사라짐 + 데이터 행 존재 확인
+                                try {
+                                    // 로딩 스피너가 있으면 사라질 때까지 대기
+                                    await page.waitForSelector(
+                                        '[class*="loading"], [class*="spinner"], [aria-busy="true"]',
+                                        { state: 'hidden', timeout: 5000 }
+                                    ).catch(() => {/* 스피너 없으면 무시 */});
+
+                                    // Top10 테이블에 실제 데이터 행이 있는지 확인
+                                    await page.waitForFunction(
+                                        () => {
+                                            // 거래처 Top 섹션 내 테이블에 tbody tr이 1개 이상 있으면 OK
+                                            const tbodies = document.querySelectorAll('table tbody');
+                                            for (const tbody of tbodies) {
+                                                if (tbody.querySelectorAll('tr').length >= 1) return true;
+                                            }
+                                            return false;
+                                        },
+                                        { timeout: 8000 }
+                                    );
+                                    await page.waitForTimeout(800); // 최종 렌더링 안정화
+                                } catch {
+                                    // DOM 대기 실패 시 고정 대기로 폴백
+                                    await page.waitForTimeout(2000);
+                                }
+
+                                // Step D: Top10 섹션의 엑셀 다운로드 버튼 클릭
+                                // 우선 거래처 Top10 컨테이너 내 버튼, 없으면 페이지 내 마지막 버튼
+                                let top10DlBtn = null;
+                                try {
+                                    const containerCount = await top10Container.count();
+                                    if (containerCount > 0) {
+                                        const btnInContainer = top10Container.locator(
+                                            'button:has-text("엑셀 다운로드"), button:has-text("결과 다운로드")'
+                                        ).first();
+                                        if (await btnInContainer.count() > 0) {
+                                            top10DlBtn = btnInContainer;
+                                        }
+                                    }
+                                } catch { /* 컨테이너 탐색 실패 */ }
+
+                                if (!top10DlBtn) {
+                                    // 폴백: 페이지 내 다운로드 버튼 중 마지막 (Top10 섹션이 보통 가장 하단)
+                                    top10DlBtn = page.locator(
+                                        'button:has-text("엑셀 다운로드"), button:has-text("결과 다운로드")'
+                                    ).last();
+                                }
+
+                                await top10DlBtn.scrollIntoViewIfNeeded();
+
+                                const dl = await new Promise(resolve => {
+                                    const timer = setTimeout(() => {
+                                        page.off('download', onDl);
+                                        resolve(null);
+                                    }, 15000);
+                                    function onDl(download) {
+                                        clearTimeout(timer);
+                                        page.off('download', onDl);
+                                        resolve(download);
+                                    }
+                                    page.on('download', onDl);
+                                    top10DlBtn.click().catch(() => {
+                                        clearTimeout(timer);
+                                        page.off('download', onDl);
+                                        resolve(null);
+                                    });
+                                });
+
+                                if (!dl) {
+                                    console.log(`  [건너뜀] ${anomaly.month} ${anomaly.type} — 다운로드 이벤트 없음`);
+                                    continue;
+                                }
+
+                                // Step E: 파일명 변경 저장
+                                const dlPath = await dl.path();
+                                for (let attempt = 1; attempt <= 5; attempt++) {
+                                    try {
+                                        fs.copyFileSync(dlPath, savePath);
+                                        console.log(`  ✓ 저장: ${saveName}`);
+                                        break;
+                                    } catch (e) {
+                                        if (e.code === 'EBUSY' && attempt < 5) {
+                                            await new Promise(r => setTimeout(r, attempt * 1000));
+                                        } else throw e;
+                                    }
+                                }
+                                await page.waitForTimeout(500);
+
+                            } catch (e) {
+                                console.log(`  [경고] ${anomaly.month} ${anomaly.type} Top10 실패: ${e.message}`);
+                            }
+                        } // end for anomalies
+                    }
+                }
+            } catch (e) {
+                console.log(`  [경고] 월별 이상치 처리 실패: ${e.message}`);
+            }
+        }
+
+        // 대시보드 복귀
+        const returned = await returnToDashboard();
+        if (!returned) console.log(`  [경고] 대시보드 복귀 실패.`);
     }
 }
 
@@ -384,6 +1480,7 @@ async function runAudit(config, companyDir) {
         // ── 3. 메뉴 순회 ─────────────────────────────────────────────────────
         let currentEndpoint = null;
         let analysisUploadDone = false; // /analysis 파일 업로드는 한 번만
+        let aiSessionActive   = false;  // /ai-analysis 분개장 세션 유지 여부
 
         for (const menu of config.menus) {
             const menuName = menu.menuName;
@@ -395,13 +1492,25 @@ async function runAudit(config, companyDir) {
                 console.log(`\n[라우팅] ${menuName} → ${targetUrl}`);
                 await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
                 currentEndpoint = endpoint;
-                analysisUploadDone = false; // 페이지 이동 시 업로드 상태 초기화
+                analysisUploadDone = false;
+                aiSessionActive   = false; // 페이지 이동 시 분개장 세션 초기화
                 await page.waitForTimeout(1000);
             }
 
             if (endpoint === '/ai-analysis') {
-                // 분개장 등 AI 분석 메뉴 (업로드는 핸들러 내부에서 task별로 처리)
-                await handleAiAnalysisMenu(page, menu, config, companyDir, resultsDir, filePrefix);
+                // ── AI 분석: 세션 유지 시 업로드 생략, 완료 후 [초기화면으로] 복귀 ──
+                await handleAiAnalysisMenu(
+                    page, menu, config, companyDir, resultsDir, filePrefix,
+                    /* skipUpload = */ aiSessionActive
+                );
+
+                // 분석 완료 후 [초기화면으로] 버튼으로 대시보드 복귀 (세션 유지)
+                const returned = await returnToAiDashboard(page, menuName);
+                if (returned) {
+                    aiSessionActive = true;  // 다음 메뉴는 업로드 생략 가능
+                } else {
+                    aiSessionActive = false; // 세션 끊김 → 다음 메뉴에서 재업로드
+                }
 
             } else {
                 // /analysis 메뉴
@@ -417,18 +1526,61 @@ async function runAudit(config, companyDir) {
                 console.log(`\n=== [메뉴 진입] ${menuName}${uiLabel !== menuName ? ` → UI: "${uiLabel}"` : ''} ===`);
 
                 // 정확한 텍스트 매칭 우선, 없으면 부분 포함 매칭으로 폴백
-                let menuHandle = await page.$(`text="${uiLabel}"`).catch(() => null);
+                // 카드 클릭 헬퍼: button/a → 텍스트 포함 요소 순으로 탐색
+                const findMenuHandle = async () => {
+                    for (const sel of [
+                        `button:has-text("${uiLabel}")`,
+                        `a:has-text("${uiLabel}")`,
+                        `[role="button"]:has-text("${uiLabel}")`,
+                    ]) {
+                        const loc = page.locator(sel).first();
+                        if (await loc.count().catch(() => 0) > 0) return loc;
+                    }
+                    // 폴백: 텍스트를 정확히 포함하는 요소
+                    const h = await page.$(`text="${uiLabel}"`).catch(() => null)
+                        ?? await page.$(`h2:has-text("${uiLabel}"), h3:has-text("${uiLabel}"), span:has-text("${uiLabel}"), div:has-text("${uiLabel}")`).catch(() => null);
+                    return h;
+                };
+
+                // 카드 클릭 실행 (최대 2회 시도)
+                const clickMenuCard = async (handle) => {
+                    if (!handle) return;
+                    // target="_blank" 제거 후 클릭
+                    try {
+                        await page.evaluate(node => {
+                            node.removeAttribute?.('target');
+                            node.closest?.('a')?.removeAttribute('target');
+                        }, handle.elementHandle ? await handle.elementHandle() : handle);
+                    } catch { /* 무시 */ }
+                    await (handle.click ? handle.click() : page.click(handle));
+                    // 페이지 전환 안정화 대기
+                    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                    await page.waitForTimeout(1500);
+                };
+
+                let menuHandle = await findMenuHandle();
+
+                // 카드를 못 찾으면 '뒤로가기' 또는 URL 재이동 후 재탐색
                 if (!menuHandle) {
-                    menuHandle = await page.$(`h2:has-text("${uiLabel}"), h3:has-text("${uiLabel}"), span:has-text("${uiLabel}"), div:has-text("${uiLabel}")`).catch(() => null);
+                    try {
+                        const backBtn = await page.waitForSelector(
+                            'button:has-text("뒤로가기"), a:has-text("뒤로가기")',
+                            { state: 'visible', timeout: 5000 }
+                        );
+                        console.log(`[안내] "${uiLabel}" 카드 미발견 → '뒤로가기' 클릭으로 메인 화면 복귀합니다.`);
+                        await backBtn.click();
+                        await page.waitForLoadState('networkidle', { timeout: 15000 });
+                        await page.waitForTimeout(500);
+                    } catch {
+                        console.log(`[안내] '뒤로가기' 버튼 미발견 → ${targetUrl}로 URL 재이동합니다.`);
+                        await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+                        await page.waitForTimeout(1000);
+                    }
+                    menuHandle = await findMenuHandle();
                 }
 
                 if (menuHandle) {
-                    await menuHandle.evaluate(node => {
-                        node.removeAttribute('target');
-                        node.closest('a')?.removeAttribute('target');
-                    });
-                    await menuHandle.click();
-                    await page.waitForTimeout(2000);
+                    await clickMenuCard(menuHandle);
                 } else {
                     console.log(`[경고] UI에서 "${uiLabel}" 카드/버튼을 찾지 못했습니다. 현재 화면에서 바로 처리합니다.`);
                 }

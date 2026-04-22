@@ -22,8 +22,11 @@ module.exports = {
     },
 
     // ── 파일 설정 ──────────────────────────────────────────────────────────────
-    // 분개장 시트에 '업로드파일' 열이 없을 때 기본으로 사용할 업로드 파일
+    // /analysis 엔드포인트: 계정별원장 업로드 파일
     uploadFileName: 'raw_data/전계정별원장_브랜트리_25년.xlsx',
+    // /ai-analysis 엔드포인트: 분개장 파일(zone 0) / 계정별원장 파일(zone 1)
+    aiJournalFileName: 'raw_data/분개장_2025년_분석용_브랜트리.xlsx',
+    aiLedgerFileName:  'raw_data/전계정별원장_브랜트리_25년.xlsx',
     templateFileName: 'template.xlsx',
     dataStartRowIndex: 10,
 
