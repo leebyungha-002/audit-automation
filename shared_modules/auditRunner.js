@@ -589,14 +589,8 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             const dlBtn = config.selectors.benfordDownloadBtn || 'button:has-text("엑셀 다운로드")';
             await handleDownloadAndSave(page, dlBtn, targetName, rawDataDir, menuName, filePrefix);
 
-            // 5) 뒤로가기로 복귀 (다음 계정 처리를 위해)
-            if (tasks.indexOf(task) < tasks.length - 1) {
-                try {
-                    await page.click('button:has-text("뒤로가기"), a:has-text("뒤로가기")', { timeout: 3000 });
-                    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-                    await page.waitForTimeout(1000);
-                } catch { /* 뒤로가기 없으면 무시 */ }
-            }
+            // 5) 다음 계정을 위해 잠시 대기 (화면 유지 — combobox 변경으로 재분석)
+            await page.waitForTimeout(500);
         }
 
     } else if (IS_LEDGER_MENU || IS_SEARCH_MENU) {
