@@ -661,7 +661,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
         await page.click('button:has-text("이중거래처 분석 시작")');
         await page.waitForTimeout(1000);
         const fileName = String(task['파일명'] ?? base);
-        await handleDownloadAndSave(page, 'button:has-text("결과 다운로드")', fileName, rawDataDir, menuName, filePrefix);
+        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix);
 
     } else if (['외상매출매입상계', '외상매출/매입 상계 거래처 분석'].includes(base)) {
         console.log(`\n--- [${menuName}] 처리 시작 ---`);
@@ -669,7 +669,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
         await page.click('button:has-text("상계 거래처 분석 시작")');
         await page.waitForTimeout(1000);
         const fileName = String(task['파일명'] ?? base);
-        await handleDownloadAndSave(page, 'button:has-text("결과 다운로드")', fileName, rawDataDir, menuName, filePrefix);
+        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix);
 
     } else if (['전기비교', '전기 데이터 비교 분석'].includes(base)) {
         const comboboxSelector = config.selectors.accountCombobox || 'button[role="combobox"]';
