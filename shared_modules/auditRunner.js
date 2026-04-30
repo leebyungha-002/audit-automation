@@ -35,6 +35,8 @@ const DEFAULT_MENU_LABEL_MAP = {
     '상세검색_시나리오':      '상세 거래 검색',   // 시나리오 시트 → 동일 UI 카드 진입
     '이중거래처분석':         '매입/매출 이중거래처 분석',
     '벤포드':                 '벤포드 법칙 분석',
+    '벤포드법칙분석':         '벤포드 법칙 분석',
+    '벤포드법칙':             '벤포드 법칙 분석',
     '계정연관거래처':         '계정 연관 거래처 분석',
     '외상매출매입상계':       '외상매출/매입 상계 거래처 분석',
     '추정손익':               '추정 손익 분석',
@@ -496,10 +498,76 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
 
     // "총계정원장" 계열: 계정 콤보박스 → 대기 → 다운로드
     const IS_LEDGER_MENU = ['총계정원장', '총계정원장조회'].includes(base);
-    // "상세 거래 검색" / "벤포드 법칙 분석": 계정 선택 + 검색 버튼 → 다운로드
-    const IS_SEARCH_MENU = ['상세 거래 검색', '벤포드 법칙 분석'].includes(base);
+    // "벤포드 법칙 분석": 계정 선택 + 금액기준열 선택 + "분석 시작" 버튼
+    const IS_BENFORD_MENU = ['벤포드법칙분석', '벤포드법칙', '벤포드', '벤포드 법칙 분석'].includes(base);
+    // "상세 거래 검색": 계정 선택 + 검색 버튼 → 다운로드
+    const IS_SEARCH_MENU = ['상세 거래 검색'].includes(base);
 
-    if (IS_LEDGER_MENU || IS_SEARCH_MENU) {
+    if (IS_BENFORD_MENU) {
+        for (const task of tasks) {
+            const taskKeys = Object.keys(task);
+            if (taskKeys.length === 0) continue;
+
+            const accountName = String(task['계정과목'] ?? task[taskKeys[0]] ?? '').trim();
+            if (!accountName) continue;
+
+            console.log(`\n--- [벤포드 / ${accountName}] 처리 시작 ---`);
+
+            const comboboxSelector = config.selectors.accountCombobox || 'button[role="combobox"]';
+
+            // 1) 계정과목 선택 (첫 번째 combobox)
+            const combos = page.locator(comboboxSelector);
+            const comboCount = await combos.count().catch(() => 0);
+            const accountCombo = comboCount > 0 ? combos.first() : null;
+            if (accountCombo) {
+                await accountCombo.click();
+                await page.waitForTimeout(500);
+                await page.keyboard.press('Control+A');
+                await page.keyboard.press('Backspace');
+                await page.keyboard.type(accountName, { delay: 50 });
+                await page.waitForTimeout(500);
+                await page.keyboard.press('Enter');
+                await page.waitForTimeout(500);
+                console.log(`  ✓ 계정과목 '${accountName}' 선택`);
+            }
+
+            // 2) 금액 기준열 선택 (task에 '금액기준열' 또는 '기준열' 컬럼이 있으면 적용)
+            const amountCol = String(task['금액기준열'] ?? task['기준열'] ?? '').trim();
+            if (amountCol && comboCount >= 2) {
+                const colCombo = combos.nth(1);
+                await colCombo.click();
+                await page.waitForTimeout(400);
+                try {
+                    await page.locator(`[role="option"]:has-text("${amountCol}")`).first().click({ timeout: 3000 });
+                    console.log(`  ✓ 금액 기준열 '${amountCol}' 선택`);
+                } catch {
+                    await page.keyboard.press('Escape');
+                    console.log(`  [경고] 금액 기준열 '${amountCol}'을 찾지 못했습니다. 기본값 유지.`);
+                }
+                await page.waitForTimeout(400);
+            }
+
+            // 3) 분석 시작 클릭
+            await page.click('button:has-text("분석 시작")');
+            await page.waitForTimeout(2000);
+            console.log(`  ✓ 분석 시작 클릭`);
+
+            // 4) 결과 다운로드
+            const targetName = String(task['파일명'] ?? accountName);
+            const dlBtn = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
+            await handleDownloadAndSave(page, dlBtn, targetName, rawDataDir, menuName, filePrefix);
+
+            // 5) 뒤로가기로 복귀 (다음 계정 처리를 위해)
+            if (tasks.indexOf(task) < tasks.length - 1) {
+                try {
+                    await page.click('button:has-text("뒤로가기"), a:has-text("뒤로가기")', { timeout: 3000 });
+                    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                    await page.waitForTimeout(1000);
+                } catch { /* 뒤로가기 없으면 무시 */ }
+            }
+        }
+
+    } else if (IS_LEDGER_MENU || IS_SEARCH_MENU) {
         for (const task of tasks) {
             const taskKeys = Object.keys(task);
             if (taskKeys.length === 0) continue;
