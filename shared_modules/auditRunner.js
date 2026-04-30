@@ -403,7 +403,12 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
 
                 // 8. 다운로드 → 그룹 workbook에 시트 추가
                 const downloadSel = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
-                await downloadAndAddSheet(page, downloadSel, accountName, groupBook, menuName);
+                const dlVisible = await page.locator(downloadSel).waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+                if (!dlVisible) {
+                    console.log(`  [안내] '${accountName}' 검색 결과 없음 — 다운로드를 건너뜁니다.`);
+                } else {
+                    await downloadAndAddSheet(page, downloadSel, accountName, groupBook, menuName);
+                }
 
             } catch (e) {
                 console.log(`[경고] [${taskName} / ${accountName}] 처리 중 오류 (다음 계정으로 진행): ${e.message}`);
@@ -573,9 +578,9 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             await page.waitForTimeout(2000);
             console.log(`  ✓ 분석 시작 클릭`);
 
-            // 4) 결과 다운로드
+            // 4) 결과 다운로드 (벤포드 결과 섹션의 "엑셀 다운로드" 버튼)
             const targetName = String(task['파일명'] ?? accountName);
-            const dlBtn = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
+            const dlBtn = config.selectors.benfordDownloadBtn || 'button:has-text("엑셀 다운로드")';
             await handleDownloadAndSave(page, dlBtn, targetName, rawDataDir, menuName, filePrefix);
 
             // 5) 뒤로가기로 복귀 (다음 계정 처리를 위해)
