@@ -352,18 +352,40 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                 await page.waitForTimeout(400);
                 console.log(`  계정과목: ${accountName}`);
 
-                // 3. 거래처명
+                // 3. 거래처명 — 두 번째 combobox (계정과목이 첫 번째)
                 if (vendorName) {
-                    const ok = await tryFillInput(page, '거래처명', vendorName);
-                    if (ok) console.log(`  거래처명: ${vendorName}`);
-                    else    console.log(`[경고] 거래처명 입력창을 찾지 못했습니다.`);
+                    try {
+                        const vendorCombo = page.locator(comboSel).nth(1);
+                        await vendorCombo.click();
+                        await page.waitForTimeout(300);
+                        await page.keyboard.press('Control+A');
+                        await page.keyboard.press('Backspace');
+                        await page.keyboard.type(vendorName, { delay: 50 });
+                        await page.waitForTimeout(400);
+                        await page.keyboard.press('Enter');
+                        await page.waitForTimeout(300);
+                        console.log(`  거래처명: ${vendorName}`);
+                    } catch {
+                        console.log(`[경고] 거래처명 combobox를 찾지 못했습니다.`);
+                    }
                 }
 
-                // 4. 적요
+                // 4. 적요 — 세 번째 combobox
                 if (description) {
-                    const ok = await tryFillInput(page, '적요', description);
-                    if (ok) console.log(`  적요: ${description}`);
-                    else    console.log(`[경고] 적요 입력창을 찾지 못했습니다.`);
+                    try {
+                        const descCombo = page.locator(comboSel).nth(2);
+                        await descCombo.click();
+                        await page.waitForTimeout(300);
+                        await page.keyboard.press('Control+A');
+                        await page.keyboard.press('Backspace');
+                        await page.keyboard.type(description, { delay: 50 });
+                        await page.waitForTimeout(400);
+                        await page.keyboard.press('Enter');
+                        await page.waitForTimeout(300);
+                        console.log(`  적요: ${description}`);
+                    } catch {
+                        console.log(`[경고] 적요 combobox를 찾지 못했습니다.`);
+                    }
                 }
 
                 // 5. 날짜
