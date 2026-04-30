@@ -1345,11 +1345,21 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         // 거래방향 라디오
         if (direction) await clickRadioByLabel(page, direction, '거래방향');
 
-        // 분석 실행 버튼 자동 클릭 제거 — 카드 진입 후 결과 자동 표시됨 (AI API 불필요 호출 방지)
+        // 상대계정분석은 계정/방향 선택 후 "분석 실행" 버튼을 눌러야 결과가 나타남
+        if (taskName && (taskName.includes('상대계정') || menuName.includes('상대계정'))) {
+            try {
+                const runBtn = page.locator('button:has-text("분석 실행")').first();
+                if (await runBtn.count().catch(() => 0) > 0) {
+                    await runBtn.click();
+                    console.log('  ✓ 분석 실행 클릭');
+                    await page.waitForTimeout(3000);
+                }
+            } catch { /* 버튼 없으면 무시 */ }
+        }
 
         // 결과 대기 (최대 5분) + 다운로드
-        // 월별트렌드분析: 버튼 1(금액추이)·2(건수)만 다운로드. 버튼 3(Top10)은 이상치 루프에서 처리.
-        const isMonthlyTrendTask = taskName === '월별트렌드분析';
+        // 월별트렌드분석: 버튼 1(금액추이)·2(건수)만 다운로드. 버튼 3(Top10)은 이상치 루프에서 처리.
+        const isMonthlyTrendTask = taskName === '월별트렌드분석';
         const dlSel = 'button:has-text("결과 다운로드"), button:has-text("엑셀 다운로드")';
         try {
             await page.waitForSelector(dlSel, { state: 'visible', timeout: 300000 });
