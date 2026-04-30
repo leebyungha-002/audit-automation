@@ -351,40 +351,46 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                 await page.waitForTimeout(400);
                 console.log(`  계정과목: ${accountName}`);
 
-                // 3. 거래처명 — 두 번째 combobox (계정과목이 첫 번째)
-                if (vendorName) {
-                    try {
-                        const vendorCombo = page.locator(comboSel).nth(1);
-                        await vendorCombo.click();
-                        await page.waitForTimeout(300);
-                        await page.keyboard.press('Control+A');
-                        await page.keyboard.press('Backspace');
+                // 3. 거래처명 — 두 번째 combobox: 항상 먼저 지우고, 값 있으면 입력
+                try {
+                    const vendorCombo = page.locator(comboSel).nth(1);
+                    await vendorCombo.click();
+                    await page.waitForTimeout(200);
+                    await page.keyboard.press('Control+A');
+                    await page.keyboard.press('Backspace');
+                    if (vendorName) {
                         await page.keyboard.type(vendorName, { delay: 50 });
                         await page.waitForTimeout(400);
                         await page.keyboard.press('Enter');
                         await page.waitForTimeout(300);
                         console.log(`  거래처명: ${vendorName}`);
-                    } catch {
-                        console.log(`[경고] 거래처명 combobox를 찾지 못했습니다.`);
+                    } else {
+                        await page.keyboard.press('Escape');
+                        await page.waitForTimeout(200);
                     }
+                } catch {
+                    console.log(`[경고] 거래처명 combobox를 찾지 못했습니다.`);
                 }
 
-                // 4. 적요 — 세 번째 combobox
-                if (description) {
-                    try {
-                        const descCombo = page.locator(comboSel).nth(2);
-                        await descCombo.click();
-                        await page.waitForTimeout(300);
-                        await page.keyboard.press('Control+A');
-                        await page.keyboard.press('Backspace');
+                // 4. 적요 — 세 번째 combobox: 항상 먼저 지우고, 값 있으면 입력
+                try {
+                    const descCombo = page.locator(comboSel).nth(2);
+                    await descCombo.click();
+                    await page.waitForTimeout(200);
+                    await page.keyboard.press('Control+A');
+                    await page.keyboard.press('Backspace');
+                    if (description) {
                         await page.keyboard.type(description, { delay: 50 });
                         await page.waitForTimeout(400);
                         await page.keyboard.press('Enter');
                         await page.waitForTimeout(300);
                         console.log(`  적요: ${description}`);
-                    } catch {
-                        console.log(`[경고] 적요 combobox를 찾지 못했습니다.`);
+                    } else {
+                        await page.keyboard.press('Escape');
+                        await page.waitForTimeout(200);
                     }
+                } catch {
+                    console.log(`[경고] 적요 combobox를 찾지 못했습니다.`);
                 }
 
                 // 5. 날짜
