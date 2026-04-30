@@ -677,6 +677,46 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
         const fileName = String(task['파일명'] ?? base);
         await handleDownloadAndSave(page, 'button:has-text("결과 다운로드")', fileName, rawDataDir, menuName, filePrefix);
 
+    } else if (['전기비교', '전기 데이터 비교 분석'].includes(base)) {
+        const comboboxSelector = config.selectors.accountCombobox || 'button[role="combobox"]';
+        for (const task of tasks) {
+            const accountName = String(task['분석할 계정과목'] ?? task['계정과목'] ?? '').trim();
+            const amountType  = String(task['금액 기준열']    ?? task['금액유형']   ?? '').trim();
+            if (!accountName) continue;
+
+            console.log(`\n--- [전기비교 / ${accountName}] 처리 시작 ---`);
+
+            // 1. 계정명 combobox 선택 (자동 분석 트리거)
+            await page.waitForSelector(comboboxSelector, { state: 'visible', timeout: 10000 });
+            await page.click(comboboxSelector);
+            await page.waitForTimeout(300);
+            await page.keyboard.press('Control+A');
+            await page.keyboard.press('Backspace');
+            await page.keyboard.type(accountName, { delay: 50 });
+            await page.waitForTimeout(500);
+            await page.keyboard.press('Enter');
+            await page.waitForTimeout(1500);
+            console.log(`  ✓ 계정 '${accountName}' 선택`);
+
+            // 2. 금액 유형 라디오 (차변만 / 대변만 / 차변+대변 모두)
+            if (amountType) {
+                await clickRadioByLabel(page, amountType, '금액 유형');
+                await page.waitForTimeout(1000);
+            }
+
+            // 3. 비교표 다운로드
+            const targetName = String(task['파일명'] ?? `전기비교_${accountName}`);
+            await handleDownloadAndSave(page, 'button:has-text("비교표 다운로드")', targetName, rawDataDir, menuName, filePrefix);
+
+            // 4. 다음 계정 처리 위해 초기화
+            if (tasks.indexOf(task) < tasks.length - 1) {
+                try {
+                    await page.click('button:has-text("초기화"), a:has-text("초기화")', { timeout: 3000 });
+                    await page.waitForTimeout(800);
+                } catch { /* 초기화 버튼 없으면 무시 */ }
+            }
+        }
+
     } else {
         console.log(`[${menuName}] 구현되지 않은 메뉴 형식입니다. 생략합니다.`);
     }
