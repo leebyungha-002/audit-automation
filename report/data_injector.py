@@ -14,7 +14,9 @@ import os
 import re
 import datetime
 from collections import defaultdict
+from io import BytesIO
 from openpyxl import load_workbook
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
 
 # Windows 콘솔 한글·특수문자 출력 보장
@@ -315,6 +317,26 @@ def inject_pivot_aging(ws_src, wb_tgt, tgt_sheet_name, start_cell):
     return len(data_rows)
 
 
+# ─── 이미지 복사 ─────────────────────────────────────────────────────────────
+
+def inject_image(ws_src, ws_tgt, start_cell):
+    """소스 시트의 첫 번째 이미지를 대상 시트의 start_cell 위치에 복사한다.
+
+    소스에 이미지가 없으면 로그만 남기고 0을 반환한다.
+    주의: 소스 워크북은 반드시 read_only=False 로 열어야 _images 가 채워진다.
+    """
+    if not getattr(ws_src, '_images', None):
+        print('    [MOVE_IMAGE] 소스 시트에 이미지 없음 — 건너뜀')
+        return 0
+
+    src_img = ws_src._images[0]
+    img_bytes = src_img._data()
+    new_img = XLImage(BytesIO(img_bytes))
+    new_img.anchor = start_cell
+    ws_tgt.add_image(new_img)
+    return 1
+
+
 # ─── 경로 헬퍼 ───────────────────────────────────────────────────────────────
 
 def updated_path(original_path):
@@ -385,8 +407,10 @@ def main():
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
 
         # ── 소스 시트 로드 ─────────────────────────────────────────────────
+        # MOVE_IMAGE 는 read_only 모드에서 _images 가 채워지지 않으므로 full 모드로 열기
         try:
-            wb_src = load_workbook(src_path, data_only=True, read_only=True)
+            wb_src = load_workbook(src_path, data_only=True,
+                                   read_only=(remarks != 'MOVE_IMAGE'))
         except Exception as e:
             msg = f'소스 파일 오픈 실패: {e}'
             print(f'    [오류] {msg}')
@@ -451,6 +475,11 @@ def main():
                 injected = inject_pivot_aging(ws_src, wb_tgt, tgt_sheet, start_cell)
                 success += 1
                 print(f'    [완료] 피벗 {injected}행 주입')
+            elif remarks == 'MOVE_IMAGE':
+                print(f'    [Image] 이미지 복사 → {tgt_sheet} @ {start_cell}')
+                injected = inject_image(ws_src, ws_tgt, start_cell)
+                success += 1
+                print(f'    [완료] 이미지 {injected}개 복사')
             else:
                 if src_range:
                     print(f'    소스 범위 지정 : {src_range}')
