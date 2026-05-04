@@ -1450,7 +1450,14 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                         if (await top10Btn.count() === 0) {
                             console.log(`  [경고] Top10 버튼(3번)을 찾지 못했습니다 — 이상치 다운로드 생략`);
                         } else {
-                            for (const anomaly of anomalies) {
+                            const seen = new Set();
+                            const uniqueAnomalies = anomalies.filter(a => {
+                                const key = `${a.month}_${a.type}`;
+                                if (seen.has(key)) return false;
+                                seen.add(key);
+                                return true;
+                            });
+                            for (const anomaly of uniqueAnomalies) {
                                 const saveName = `${filePrefix}월별트렌드_${account}_${anomaly.month}_${anomaly.type}.xlsx`;
                                 const savePath = path.join(resultsDir, saveName);
                                 console.log(`\n  → [${anomaly.month}][${anomaly.type}] Top10 처리 중…`);
