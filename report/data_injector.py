@@ -377,14 +377,15 @@ def _extract_first_image_zip(src_path, sheet_name):
             if not drawing_file or drawing_file not in znames:
                 return None, None
 
-            # 4. drawing → 첫 번째 blip rId (EMF/PNG/JPEG 모두 blip 경로 사용)
+            # 4. drawing → 첫 번째 blip rId (PNG/JPEG 등 래스터 이미지)
+            #    blip 없으면 Chart/Shape 객체일 가능성 → 'no_blip' 마커 반환
             img_rid = None
             for blip in rxl(drawing_file).iter(_tag(NS_A, 'blip')):
                 img_rid = blip.get(_tag(NS_R, 'embed'))
                 if img_rid:
                     break
             if not img_rid:
-                return None, None
+                return None, 'no_blip'  # drawing은 있지만 래스터 이미지 아님(Chart 등)
 
             # 5. drawing rels → 이미지 파일
             drels_path = _rels(drawing_file)
@@ -426,7 +427,11 @@ def inject_image(ws_src, src_path, src_sheet, ws_tgt, start_cell):
     img_bytes, ext = _extract_first_image_zip(src_path, src_sheet)
 
     if img_bytes is None:
-        print('    [MOVE_IMAGE] ZIP 추출 실패 — 이미지 없음')
+        if ext == 'no_blip':
+            # Drawing XML은 있으나 래스터 이미지 없음 → Chart/Shape → win32com 시도
+            print('    [MOVE_IMAGE] Chart/Shape 객체 감지 — win32com 후처리로 전환')
+            return 0, True
+        print('    [MOVE_IMAGE] ZIP 추출 실패 — drawing 없음')
         return 0, False
 
     print(f'    [MOVE_IMAGE] ZIP 추출 성공 ({ext.upper()}, {len(img_bytes):,} bytes)')
