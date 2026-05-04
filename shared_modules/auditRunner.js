@@ -648,9 +648,16 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             await page.waitForTimeout(500);
 
             if (IS_LEDGER_MENU) {
-                // 검색 버튼 없음 — 테이블 갱신 대기 후 다운로드
-                console.log(`[${accountName}] 테이블 갱신 대기 중 (3초)...`);
-                await page.waitForTimeout(3000);
+                // 검색 버튼 없음 — 네트워크 요청 완료 후 다운로드
+                // 고정 대기 대신 networkidle로 실제 데이터 로딩 완료를 확인
+                console.log(`[${accountName}] 데이터 로딩 대기 중 (networkidle)...`);
+                try {
+                    await page.waitForLoadState('networkidle', { timeout: 30000 });
+                } catch {
+                    console.log(`[${accountName}] 네트워크 대기 타임아웃 — 추가 3초 대기 후 진행.`);
+                    await page.waitForTimeout(3000);
+                }
+                await page.waitForTimeout(500); // 렌더링 안정화 대기
                 await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', accountName, rawDataDir, menuName, filePrefix);
 
             } else {
