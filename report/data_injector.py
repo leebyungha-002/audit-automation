@@ -407,10 +407,12 @@ def main():
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
 
         # ── 소스 시트 로드 ─────────────────────────────────────────────────
-        # MOVE_IMAGE 는 read_only 모드에서 _images 가 채워지지 않으므로 full 모드로 열기
         try:
-            wb_src = load_workbook(src_path, data_only=True,
-                                   read_only=(remarks != 'MOVE_IMAGE'))
+            if remarks == 'MOVE_IMAGE':
+                # read_only 모드에서는 ws._images 가 채워지지 않으므로 full 모드로 열기
+                wb_src = load_workbook(src_path, data_only=True)
+            else:
+                wb_src = load_workbook(src_path, data_only=True, read_only=True)
         except Exception as e:
             msg = f'소스 파일 오픈 실패: {e}'
             print(f'    [오류] {msg}')
