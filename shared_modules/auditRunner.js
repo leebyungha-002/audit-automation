@@ -585,7 +585,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             console.log(`  ✓ 분석 시작 클릭`);
 
             // 4) 결과 다운로드 (벤포드 결과 섹션의 "엑셀 다운로드" 버튼)
-            const targetName = String(task['파일명'] ?? accountName);
+            const targetName = String(task['파일명'] ?? `벤포드_${accountName}`);
             const dlBtn = config.selectors.benfordDownloadBtn || 'button:has-text("엑셀 다운로드")';
             await handleDownloadAndSave(page, dlBtn, targetName, rawDataDir, menuName, filePrefix);
 
