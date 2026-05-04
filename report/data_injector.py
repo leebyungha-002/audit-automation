@@ -327,9 +327,13 @@ def inject_pivot_aging(ws_src, wb_tgt, tgt_sheet_name, start_cell):
         ws_analysis = wb_tgt.create_sheet(title=analysis_sheet)
         print(f'    [Aging] 시트 신규 생성: {analysis_sheet}')
 
+    month_list = headers[1:-1]  # '거래처명'·'합계' 제외한 월 헤더
+    for c_idx, month in enumerate(month_list):
+        ws_analysis.cell(row=4, column=2 + c_idx).value = month
+
     for r_idx, name in enumerate(customer_list):
         ws_analysis.cell(row=5 + r_idx, column=1).value = name
-    print(f'    [Aging] {analysis_sheet} A5↓ 거래처 {len(customer_list)}개 주입')
+    print(f'    [Aging] {analysis_sheet} B4→ 월 {len(month_list)}개 / A5↓ 거래처 {len(customer_list)}개 주입')
 
     return len(data_rows)
 
