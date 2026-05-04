@@ -563,20 +563,42 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
                 console.log(`  ✓ 계정과목 '${accountName}' 선택`);
             }
 
-            // 2) 금액 기준열 선택 (task에 '금액기준열' 또는 '기준열' 컬럼이 있으면 적용)
-            const amountCol = String(task['금액기준열'] ?? task['기준열'] ?? '').trim();
-            if (amountCol && comboCount >= 2) {
-                const colCombo = combos.nth(1);
-                await colCombo.click();
-                await page.waitForTimeout(400);
+            // 2) 금액 기준열 선택 (task에 '금액기준열' / '금액 기준열' / '기준열' 컬럼이 있으면 적용)
+            const amountCol = String(
+                task['금액기준열'] ?? task['금액 기준열'] ?? task['기준열'] ?? ''
+            ).trim();
+            if (amountCol) {
+                let set = false;
+
+                // 전략 1: native <select> — 차변/대변/코드 옵션을 포함한 select를 탐색
                 try {
-                    await page.locator(`[role="option"]:has-text("${amountCol}")`).first().click({ timeout: 3000 });
-                    console.log(`  ✓ 금액 기준열 '${amountCol}' 선택`);
-                } catch {
-                    await page.keyboard.press('Escape');
-                    console.log(`  [경고] 금액 기준열 '${amountCol}'을 찾지 못했습니다. 기본값 유지.`);
+                    const selects = page.locator('select');
+                    const selCount = await selects.count().catch(() => 0);
+                    for (let si = 0; si < selCount && !set; si++) {
+                        const opts = await selects.nth(si).locator('option').allTextContents().catch(() => []);
+                        if (opts.some(o => ['차변', '대변', '코드'].includes(o.trim()))) {
+                            await selects.nth(si).selectOption({ label: amountCol });
+                            set = true;
+                        }
+                    }
+                    if (set) console.log(`  ✓ 금액 기준열 '${amountCol}' 선택`);
+                } catch { /* fallthrough */ }
+
+                // 전략 2: button[role="combobox"] 두 번째 항목 (커스텀 드롭다운)
+                if (!set && comboCount >= 2) {
+                    await combos.nth(1).click();
+                    await page.waitForTimeout(400);
+                    try {
+                        await page.locator(`[role="option"]:has-text("${amountCol}")`).first().click({ timeout: 3000 });
+                        set = true;
+                        console.log(`  ✓ 금액 기준열 '${amountCol}' 선택`);
+                    } catch {
+                        await page.keyboard.press('Escape');
+                    }
+                    await page.waitForTimeout(400);
                 }
-                await page.waitForTimeout(400);
+
+                if (!set) console.log(`  [경고] 금액 기준열 '${amountCol}' 설정 실패 — 기본값(코드) 유지`);
             }
 
             // 3) 분석 시작 클릭
