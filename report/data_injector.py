@@ -18,6 +18,7 @@ from io import BytesIO
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import PatternFill
 from openpyxl.utils import column_index_from_string
 
 try:
@@ -158,11 +159,12 @@ def inject_data(ws_src, ws_tgt, start_cell, src_range=None):
 def load_mapping(mapping_path):
     """<회사>_mapping_list*.xlsx 를 읽어 매핑 행 리스트 반환.
 
-    컬럼 순서 (A~H):
+    컬럼 순서 (A~I):
       A 계정과목(label) / B 소스파일명(src_kw) / C 소스시트(src_sheet)
       D 소스 데이터 범위(src_range, 선택 — 예: B2:C13)
       E 대상파일명(tgt_kw) / F 대상시트(tgt_sheet) / G 시작셀(start_cell)
-      H 비고(remarks, 선택 — 예: PIVOT_AGING)
+      H 비고(remarks, 선택 — 예: PIVOT_AGING / ANALYSIS_INJECT)
+      I 기준금액(threshold, 선택 — ANALYSIS_INJECT 유의적 변동 판단 기준)
     """
     wb = load_workbook(mapping_path, data_only=True)
     ws = wb.active
@@ -170,10 +172,14 @@ def load_mapping(mapping_path):
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not any(row):
             continue
-        padded = list(row) + [None] * 8
-        label, src_kw, src_sheet, src_range, tgt_kw, tgt_sheet, start_cell, remarks = padded[:8]
+        padded = list(row) + [None] * 9
+        label, src_kw, src_sheet, src_range, tgt_kw, tgt_sheet, start_cell, remarks, threshold = padded[:9]
         if not src_kw or not tgt_kw or not start_cell:
             continue
+        try:
+            threshold_val = float(re.sub(r'[,\s]', '', str(threshold))) if threshold else 0.0
+        except (ValueError, TypeError):
+            threshold_val = 0.0
         rows.append({
             'label':      str(label      or '').strip(),
             'src_kw':     str(src_kw    ).strip(),
@@ -183,6 +189,7 @@ def load_mapping(mapping_path):
             'start_cell': str(start_cell).strip().upper(),
             'src_range':  str(src_range ).strip().upper() if src_range else '',
             'remarks':    str(remarks   ).strip().upper() if remarks else '',
+            'threshold':  threshold_val,
         })
     return rows
 
@@ -310,6 +317,91 @@ def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
     print(f'    [Aging] {analysis_sheet} B4→ 월 {len(month_list)}개 / A5↓ 거래처 {len(customer_list)}개 주입')
 
     return len(data_rows)
+
+
+# ─── 일반사항분석 주입 ───────────────────────────────────────────────────────
+
+_YELLOW_FILL = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+
+def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell, threshold):
+    """pandas로 일반사항분석 파일을 읽어 변동비율·유의적변동 컬럼을 추가 후 조서에 주입.
+
+    - 변동금액    = 당기잔액 − 전기잔액
+    - 변동비율(%) = 변동금액 / 전기잔액 × 100  (전기잔액 0이면 None)
+    - 유의적변동  = abs(변동금액) >= threshold → '유의' (threshold=0이면 판단 생략)
+    유의적 행은 _YELLOW_FILL 으로 강조. 시트 없으면 신규 생성.
+    Returns: 주입된 데이터 행 수.
+    """
+    def _read(engine):
+        return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine)
+
+    try:
+        df = _read('calamine')
+    except Exception:
+        df = _read('openpyxl')
+
+    df = df.dropna(how='all').reset_index(drop=True)
+
+    # ── 잔액 컬럼 탐색 ────────────────────────────────────────────────
+    def find_col(*keywords):
+        for c in df.columns:
+            if any(kw in str(c) for kw in keywords):
+                return c
+        return None
+
+    col_curr = find_col('당기', '금기', '현재')
+    col_prev = find_col('전기', '전년', '비교')
+
+    missing = [n for n, c in [('당기잔액', col_curr), ('전기잔액', col_prev)] if c is None]
+    if missing:
+        raise ValueError(f"잔액 컬럼을 찾을 수 없습니다: {', '.join(missing)}")
+
+    # ── 숫자 정제 ─────────────────────────────────────────────────────
+    for c in [col_curr, col_prev]:
+        df[c] = pd.to_numeric(
+            df[c].astype(str).str.replace(r'[,원\s]', '', regex=True),
+            errors='coerce',
+        ).fillna(0)
+
+    # ── 변동 계산 ─────────────────────────────────────────────────────
+    df['변동금액'] = df[col_curr] - df[col_prev]
+    df['변동비율(%)'] = df.apply(
+        lambda r: round(r['변동금액'] / r[col_prev] * 100, 1) if r[col_prev] != 0 else None,
+        axis=1,
+    )
+    df['유의적변동'] = df['변동금액'].abs().apply(
+        lambda v: '유의' if threshold > 0 and v >= threshold else ''
+    )
+
+    # ── 대상 시트 확보 ────────────────────────────────────────────────
+    if tgt_sheet_name in wb_tgt.sheetnames:
+        ws = wb_tgt[tgt_sheet_name]
+    else:
+        ws = wb_tgt.create_sheet(title=tgt_sheet_name)
+        print(f'    [Analysis] 시트 신규 생성: {tgt_sheet_name}')
+
+    start_row, start_col = _parse_cell(start_cell)
+
+    # ── 헤더 주입 ─────────────────────────────────────────────────────
+    for c_idx, col_name in enumerate(df.columns):
+        ws.cell(row=start_row, column=start_col + c_idx).value = col_name
+
+    # ── 데이터 주입 + 유의적 행 강조 ─────────────────────────────────
+    sig_count = 0
+    for r_idx, (_, row_data) in enumerate(df.iterrows(), start=1):
+        is_sig = row_data['유의적변동'] == '유의'
+        if is_sig:
+            sig_count += 1
+        for c_idx, val in enumerate(row_data):
+            cell = ws.cell(row=start_row + r_idx, column=start_col + c_idx)
+            cell.value = None if pd.isna(val) else val
+            if is_sig:
+                cell.fill = _YELLOW_FILL
+
+    print(f'    [Analysis] 유의적 변동 {sig_count}행 강조'
+          + (f' (기준금액 {threshold:,.0f}원 이상)' if threshold > 0 else ' (기준금액 미설정)'))
+    return len(df)
 
 
 # ─── 이미지 복사 ─────────────────────────────────────────────────────────────
@@ -545,6 +637,7 @@ def main():
         start_cell = row['start_cell']
         src_range  = row['src_range']
         remarks    = row['remarks']
+        threshold  = row['threshold']
 
         mode_tag = f' [{remarks}]' if remarks else ''
         print(f'  [{label}]{mode_tag} {src_kw}!{src_sheet} → {tgt_kw}!{tgt_sheet} @ {start_cell}')
@@ -559,8 +652,8 @@ def main():
         print(f'    매칭 성공 (소스) : {src_kw}')
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
 
-        # ── PIVOT_AGING 조기 분기: pandas 직접 처리 — openpyxl 소스 로드 생략 ──
-        if remarks == 'PIVOT_AGING':
+        # ── pandas 직접 처리 조기 분기 (PIVOT_AGING / ANALYSIS_INJECT) ──────────
+        if remarks in ('PIVOT_AGING', 'ANALYSIS_INJECT'):
             if tgt_kw not in tgt_path_cache:
                 tgt_path = find_file_by_keyword(audit_dir, tgt_kw)
                 if not tgt_path:
@@ -583,10 +676,17 @@ def main():
                     continue
             wb_tgt = tgt_book_cache[tgt_path]
             try:
-                print(f'    [Aging] 피벗 생성 → {tgt_sheet} @ {start_cell}')
-                injected = inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
+                if remarks == 'PIVOT_AGING':
+                    print(f'    [Aging] 피벗 생성 → {tgt_sheet} @ {start_cell}')
+                    injected = inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
+                    print(f'    [완료] 피벗 {injected}행 주입')
+                else:  # ANALYSIS_INJECT
+                    print(f'    [Analysis] 변동분석 주입 → {tgt_sheet} @ {start_cell}'
+                          + (f'  기준금액: {threshold:,.0f}' if threshold else ''))
+                    injected = inject_analysis_result(
+                        src_path, src_sheet, wb_tgt, tgt_sheet, start_cell, threshold)
+                    print(f'    [완료] 분석결과 {injected}행 주입')
                 success += 1
-                print(f'    [완료] 피벗 {injected}행 주입')
             except Exception as e:
                 msg = f'데이터 주입 오류: {e}'
                 print(f'    [오류] {msg}')
