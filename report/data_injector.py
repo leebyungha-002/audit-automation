@@ -148,8 +148,8 @@ def load_mapping(mapping_path):
 
     컬럼 순서 (A~G):
       A 계정과목(label) / B 소스파일명(src_kw) / C 소스시트(src_sheet)
-      D 대상파일명(tgt_kw) / E 대상시트(tgt_sheet) / F 시작셀(start_cell)
-      G 소스 데이터 범위(src_range, 선택 — 예: B2:C13)
+      D 소스 데이터 범위(src_range, 선택 — 예: B2:C13)
+      E 대상파일명(tgt_kw) / F 대상시트(tgt_sheet) / G 시작셀(start_cell)
     """
     wb = load_workbook(mapping_path, data_only=True)
     ws = wb.active
@@ -158,7 +158,7 @@ def load_mapping(mapping_path):
         if not any(row):
             continue
         padded = list(row) + [None] * 8
-        label, src_kw, src_sheet, tgt_kw, tgt_sheet, start_cell, src_range = padded[:7]
+        label, src_kw, src_sheet, src_range, tgt_kw, tgt_sheet, start_cell = padded[:7]
         if not src_kw or not tgt_kw or not start_cell:
             continue
         rows.append({
