@@ -95,7 +95,7 @@ def resolve_sheet(sheetnames, keyword):
     return matched[0] if matched else None
 
 
-# ─── 셀 좌표 파싱 ─────────────────────────────────────────────────────────────
+# ─── 셀 좌표 / 범위 파싱 ─────────────────────────────────────────────────────
 
 def parse_cell(cell_ref):
     """'A7' → (row=7, col=1)  /  대소문자 무관."""
@@ -105,16 +105,42 @@ def parse_cell(cell_ref):
     return int(m.group(2)), column_index_from_string(m.group(1).upper())
 
 
+def parse_range(range_str):
+    """'B2:C13' → (min_row=2, min_col=2, max_row=13, max_col=3)."""
+    parts = range_str.strip().upper().split(':')
+    if len(parts) != 2:
+        raise ValueError(f"잘못된 범위: {range_str}  (형식 예: B2:C13)")
+    min_row, min_col = parse_cell(parts[0])
+    max_row, max_col = parse_cell(parts[1])
+    return min_row, min_col, max_row, max_col
+
+
 # ─── 데이터 주입 ──────────────────────────────────────────────────────────────
 
-def inject_data(ws_src, ws_tgt, start_cell):
-    """ws_src 전체를 ws_tgt 의 start_cell 부터 값만 주입 (서식·수식 보존).
+def inject_data(ws_src, ws_tgt, start_cell, src_range=None):
+    """소스 시트 데이터를 대상 시트의 start_cell 부터 값만 주입 (서식·수식 보존).
 
+    src_range:
+      - 지정 ('B2:C13') : 해당 영역만 정확히 추출하여 주입
+      - None / ''       : 소스 시트의 used range 전체를 주입
+
+    행·열 구조(Matrix)는 그대로 유지된다.
     반환: 주입된 셀 수
     """
     start_row, start_col = parse_cell(start_cell)
+
+    if src_range:
+        min_row, min_col, max_row, max_col = parse_range(src_range)
+        src_rows = ws_src.iter_rows(
+            min_row=min_row, max_row=max_row,
+            min_col=min_col, max_col=max_col,
+            values_only=True,
+        )
+    else:
+        src_rows = ws_src.iter_rows(values_only=True)
+
     count = 0
-    for r_idx, row in enumerate(ws_src.iter_rows(values_only=True)):
+    for r_idx, row in enumerate(src_rows):
         for c_idx, value in enumerate(row):
             if value is not None:
                 ws_tgt.cell(row=start_row + r_idx,
@@ -128,8 +154,11 @@ def inject_data(ws_src, ws_tgt, start_cell):
 def load_mapping(mapping_path):
     """<회사>_mapping_list*.xlsx 를 읽어 매핑 행 리스트 반환.
 
-    각 행은 dict:
-      label, src_kw, src_sheet, tgt_kw, tgt_sheet, start_cell
+    컬럼 순서 (A~G):
+      A 계정과목(label) / B 소스파일명(src_kw) / C 소스시트(src_sheet)
+      D 대상파일명(tgt_kw) / E 대상시트(tgt_sheet) / F 시작셀(start_cell)
+      G 소스 데이터 범위(src_range, 선택 — 예: B2:C13)
+
     필수 필드(src_kw / tgt_kw / start_cell) 가 빈 행은 자동 스킵.
     """
     wb  = load_workbook(mapping_path, data_only=True)
@@ -138,8 +167,8 @@ def load_mapping(mapping_path):
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not any(row):
             continue
-        padded = list(row) + [None] * 7
-        label, src_kw, src_sheet, tgt_kw, tgt_sheet, start_cell = padded[:6]
+        padded = list(row) + [None] * 8
+        label, src_kw, src_sheet, tgt_kw, tgt_sheet, start_cell, src_range = padded[:7]
         if not src_kw or not tgt_kw or not start_cell:
             continue
         rows.append({
@@ -149,6 +178,7 @@ def load_mapping(mapping_path):
             'tgt_kw':     str(tgt_kw    ).strip(),
             'tgt_sheet':  str(tgt_sheet ).strip(),
             'start_cell': str(start_cell).strip().upper(),
+            'src_range':  str(src_range ).strip().upper() if src_range else '',
         })
     return rows
 

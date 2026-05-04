@@ -137,8 +137,11 @@ def main():
         ws_tgt = wb_tgt[resolved_tgt]
 
         # ── 데이터 주입 ───────────────────────────────────────────────────
+        src_range = row.get('src_range', '')
+        if src_range:
+            print(f'    소스 범위 지정 : {src_range}')
         try:
-            injected = inject_data(ws_src, ws_tgt, start_cell)
+            injected = inject_data(ws_src, ws_tgt, start_cell, src_range or None)
             success += 1
             print(f'    [완료] {injected}개 셀 주입')
         except Exception as e:
