@@ -12,9 +12,8 @@ Usage: python data_injector.py <company_name>
 import sys
 import os
 import re
-import datetime
-from collections import defaultdict
 from io import BytesIO
+import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
@@ -181,124 +180,90 @@ def load_mapping(mapping_path):
 
 # ─── Aging 피벗 ──────────────────────────────────────────────────────────────
 
-def _parse_month_key(date_val):
-    """날짜값(datetime / Excel 숫자 / 문자열)에서 'YYYY-MM' 문자열 반환. 실패 시 None."""
-    if isinstance(date_val, (datetime.datetime, datetime.date)):
-        return f"{date_val.year}-{date_val.month:02d}"
-    if isinstance(date_val, (int, float)):
-        try:
-            dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=int(date_val))
-            return f"{dt.year}-{dt.month:02d}"
-        except Exception:
-            return None
-    if isinstance(date_val, str):
-        s = date_val.strip()
-        if len(s) >= 8 and s[:8].isdigit():          # '20250115...'
-            return f"{s[:4]}-{s[4:6]}"
-        for sep in ('-', '/'):
-            if sep in s:
-                parts = s.split(sep)
-                if len(parts) >= 2:
-                    return f"{parts[0].zfill(4)}-{parts[1].zfill(2)}"
-    return None
-
-
-def build_pivot_aging(ws_src):
-    """소스 시트에서 거래처명 × 월별 차변금액 피벗 테이블을 생성한다.
+def build_pivot_aging(src_path, sheet_name):
+    """pandas(calamine 우선)로 소스 파일을 읽어 거래처명 × 월별 차변금액 피벗을 생성.
 
     Returns (headers, data_rows):
-      headers    = ['거래처명', '2025-01', ..., '합계']
-      data_rows  = [['거래처A', 100000, None, ..., 100000], ..., ['합계', ...]]
+      headers   = ['거래처명', '2025-01', ..., '합계']
+      data_rows = [['거래처A', 100000, None, ..., 100000], ..., ['합계', ...]]
     """
-    # ── 헤더 행 탐색 ─────────────────────────────────────────────────────
-    def _find_col(header_row, *keywords):
-        for i, h in enumerate(header_row):
-            cell = str(h or '')
-            if any(kw in cell for kw in keywords):
-                return i
+    def _read(engine, **kw):
+        return pd.read_excel(src_path, sheet_name=sheet_name, engine=engine, **kw)
+
+    # ── 1. 엔진 선택 + 헤더 컬럼 확인 (nrows=0 으로 빠르게) ──────────────
+    try:
+        df_head = _read('calamine', nrows=0)
+        engine  = 'calamine'
+    except Exception:
+        df_head = _read('openpyxl', nrows=0)
+        engine  = 'openpyxl'
+
+    def find_col(*keywords):
+        for c in df_head.columns:
+            if any(kw in str(c) for kw in keywords):
+                return c
         return None
 
-    all_rows = list(ws_src.iter_rows(values_only=True))
-    header_row_idx = None
-    header_row = None
-    for i, row in enumerate(all_rows):
-        if _find_col(row, '거래처') is not None:
-            header_row_idx = i
-            header_row = row
-            break
+    col_cust = find_col('거래처')
+    col_date = find_col('전표날짜', '날짜', '일자')
+    col_amt  = find_col('차변금액', '차변', '금액')
 
-    if header_row is None:
-        raise ValueError("소스 시트에서 '거래처명' 헤더를 찾을 수 없습니다.")
-
-    col_cust = _find_col(header_row, '거래처')
-    col_date = _find_col(header_row, '전표날짜', '날짜', '일자')
-    col_amt  = _find_col(header_row, '차변금액', '차변', '금액')
-
-    missing = [name for name, idx in [('거래처명', col_cust), ('전표날짜', col_date), ('차변금액', col_amt)] if idx is None]
+    missing = [n for n, c in [('거래처명', col_cust), ('전표날짜', col_date), ('차변금액', col_amt)] if c is None]
     if missing:
         raise ValueError(f"필수 컬럼을 찾을 수 없습니다: {', '.join(missing)}")
 
-    # ── 데이터 집계 ───────────────────────────────────────────────────────
-    pivot  = defaultdict(lambda: defaultdict(float))
-    months = set()
+    # ── 2. 필요 컬럼만 로드 (usecols 로 I/O 최소화) ──────────────────────
+    df = _read(engine, usecols=[col_cust, col_date, col_amt])
+    df = df.rename(columns={col_cust: '거래처명', col_date: '_date', col_amt: '차변금액'})
 
-    for row in all_rows[header_row_idx + 1:]:
-        cust = row[col_cust] if len(row) > col_cust else None
-        date = row[col_date] if len(row) > col_date else None
-        amt  = row[col_amt]  if len(row) > col_amt  else None
+    # ── 3. 전처리 ─────────────────────────────────────────────────────────
+    df['차변금액'] = pd.to_numeric(
+        df['차변금액'].astype(str).str.replace(r'[,원\s]', '', regex=True),
+        errors='coerce',
+    ).fillna(0)
+    df['_month'] = pd.to_datetime(df['_date'], errors='coerce').dt.strftime('%Y-%m')
+    df = df.dropna(subset=['거래처명', '_month'])
+    df = df[df['거래처명'].astype(str).str.strip().ne('')]
 
-        if cust is None:
-            continue
+    if df.empty:
+        raise ValueError("피벗 데이터 없음 — 유효한 거래처명/날짜 행이 없습니다.")
 
-        month_key = _parse_month_key(date)
-        if month_key is None:
-            continue
+    # ── 4. 피벗 집계 ─────────────────────────────────────────────────────
+    pivot = df.pivot_table(
+        index='거래처명',
+        columns='_month',
+        values='차변금액',
+        aggfunc='sum',
+        fill_value=0,
+    ).sort_index()
+    pivot.columns.name = None
 
-        if isinstance(amt, str):
-            amt = re.sub(r'[,원\s]', '', amt)
-        try:
-            amt_val = float(amt) if amt is not None else 0.0
-        except (ValueError, TypeError):
-            amt_val = 0.0
+    # ── 5. 합계 행/열 추가 ───────────────────────────────────────────────
+    pivot['합계'] = pivot.sum(axis=1)
+    total = pivot.sum(axis=0).rename('합계')
+    pivot = pd.concat([pivot, total.to_frame().T])
 
-        pivot[str(cust).strip()][month_key] += amt_val
-        months.add(month_key)
-
-    if not pivot:
-        raise ValueError("피벗 데이터 없음 — 소스 시트가 비어있거나 컬럼 매칭 실패.")
-
-    sorted_months = sorted(months)
-    headers = ['거래처명'] + sorted_months + ['합계']
+    # ── 6. (headers, data_rows) 포맷 변환 ───────────────────────────────
+    month_cols = [c for c in pivot.columns if c != '합계']
+    headers    = ['거래처명'] + month_cols + ['합계']
 
     data_rows = []
-    for cust in sorted(pivot.keys()):
-        row_vals = [cust]
-        row_total = 0.0
-        for m in sorted_months:
-            v = pivot[cust].get(m, 0.0)
-            row_vals.append(v if v else None)
-            row_total += v
-        row_vals.append(row_total if row_total else None)
-        data_rows.append(row_vals)
-
-    col_totals = []
-    grand_total = 0.0
-    for m in sorted_months:
-        ct = sum(pivot[c].get(m, 0.0) for c in pivot)
-        col_totals.append(ct if ct else None)
-        grand_total += ct
-    data_rows.append(['합계'] + col_totals + [grand_total if grand_total else None])
+    for cust, row in pivot.iterrows():
+        vals = [cust] + [float(row[m]) if row[m] != 0 else None for m in month_cols]
+        tot  = row['합계']
+        vals.append(float(tot) if tot != 0 else None)
+        data_rows.append(vals)
 
     return headers, data_rows
 
 
-def inject_pivot_aging(ws_src, wb_tgt, tgt_sheet_name, start_cell):
+def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
     """피벗 Aging 테이블을 대상 워크북의 tgt_sheet_name 시트에 주입한다.
 
     추가로 Aging_분석 시트 A5부터 거래처 리스트를 세로로 업데이트한다.
     시트가 없으면 새로 생성한다. 반환값: 주입된 데이터 행 수.
     """
-    headers, data_rows = build_pivot_aging(ws_src)
+    headers, data_rows = build_pivot_aging(src_path, src_sheet)
 
     # ── 1) Aging_Source: 피벗 테이블 전체 주입 ───────────────────────────────
     if tgt_sheet_name in wb_tgt.sheetnames:
@@ -427,6 +392,40 @@ def main():
         print(f'    매칭 성공 (소스) : {src_kw}')
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
 
+        # ── PIVOT_AGING 조기 분기: pandas 직접 처리 — openpyxl 소스 로드 생략 ──
+        if remarks == 'PIVOT_AGING':
+            if tgt_kw not in tgt_path_cache:
+                tgt_path = find_file_by_keyword(audit_dir, tgt_kw)
+                if not tgt_path:
+                    msg = f'대상 조서 파일 없음: {tgt_kw}'
+                    print(f'    [오류] {msg}')
+                    errors.append(f'[{label}] {msg}')
+                    continue
+                tgt_path_cache[tgt_kw] = tgt_path
+                print(f'    매칭 성공 (대상) : {tgt_kw}')
+                print(f'                    → {os.path.relpath(tgt_path, company_dir)}')
+            else:
+                tgt_path = tgt_path_cache[tgt_kw]
+            if tgt_path not in tgt_book_cache:
+                try:
+                    tgt_book_cache[tgt_path] = load_workbook(tgt_path)
+                except Exception as e:
+                    msg = f'대상 파일 오픈 실패: {e}'
+                    print(f'    [오류] {msg}')
+                    errors.append(f'[{label}] {msg}')
+                    continue
+            wb_tgt = tgt_book_cache[tgt_path]
+            try:
+                print(f'    [Aging] 피벗 생성 → {tgt_sheet} @ {start_cell}')
+                injected = inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
+                success += 1
+                print(f'    [완료] 피벗 {injected}행 주입')
+            except Exception as e:
+                msg = f'데이터 주입 오류: {e}'
+                print(f'    [오류] {msg}')
+                errors.append(f'[{label}] {msg}')
+            continue
+
         # ── 소스 시트 로드 ─────────────────────────────────────────────────
         try:
             if remarks == 'MOVE_IMAGE':
@@ -493,12 +492,7 @@ def main():
 
         # ── 데이터 주입 ───────────────────────────────────────────────────
         try:
-            if remarks == 'PIVOT_AGING':
-                print(f'    [Aging] 피벗 생성 → {tgt_sheet} @ {start_cell}')
-                injected = inject_pivot_aging(ws_src, wb_tgt, tgt_sheet, start_cell)
-                success += 1
-                print(f'    [완료] 피벗 {injected}행 주입')
-            elif remarks == 'MOVE_IMAGE':
+            if remarks == 'MOVE_IMAGE':
                 print(f'    [Image] 이미지 복사 → {tgt_sheet} @ {start_cell}')
                 injected = inject_image(ws_src, ws_tgt, start_cell)
                 success += 1
