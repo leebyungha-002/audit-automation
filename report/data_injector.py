@@ -12,6 +12,8 @@ Usage: python data_injector.py <company_name>
 import sys
 import os
 import re
+import datetime
+from collections import defaultdict
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 
@@ -146,10 +148,11 @@ def inject_data(ws_src, ws_tgt, start_cell, src_range=None):
 def load_mapping(mapping_path):
     """<회사>_mapping_list*.xlsx 를 읽어 매핑 행 리스트 반환.
 
-    컬럼 순서 (A~G):
+    컬럼 순서 (A~H):
       A 계정과목(label) / B 소스파일명(src_kw) / C 소스시트(src_sheet)
       D 소스 데이터 범위(src_range, 선택 — 예: B2:C13)
       E 대상파일명(tgt_kw) / F 대상시트(tgt_sheet) / G 시작셀(start_cell)
+      H 비고(remarks, 선택 — 예: PIVOT_AGING)
     """
     wb = load_workbook(mapping_path, data_only=True)
     ws = wb.active
@@ -158,7 +161,7 @@ def load_mapping(mapping_path):
         if not any(row):
             continue
         padded = list(row) + [None] * 8
-        label, src_kw, src_sheet, src_range, tgt_kw, tgt_sheet, start_cell = padded[:7]
+        label, src_kw, src_sheet, src_range, tgt_kw, tgt_sheet, start_cell, remarks = padded[:8]
         if not src_kw or not tgt_kw or not start_cell:
             continue
         rows.append({
@@ -169,8 +172,147 @@ def load_mapping(mapping_path):
             'tgt_sheet':  str(tgt_sheet ).strip(),
             'start_cell': str(start_cell).strip().upper(),
             'src_range':  str(src_range ).strip().upper() if src_range else '',
+            'remarks':    str(remarks   ).strip().upper() if remarks else '',
         })
     return rows
+
+
+# ─── Aging 피벗 ──────────────────────────────────────────────────────────────
+
+def _parse_month_key(date_val):
+    """날짜값(datetime / Excel 숫자 / 문자열)에서 'YYYY-MM' 문자열 반환. 실패 시 None."""
+    if isinstance(date_val, (datetime.datetime, datetime.date)):
+        return f"{date_val.year}-{date_val.month:02d}"
+    if isinstance(date_val, (int, float)):
+        try:
+            dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=int(date_val))
+            return f"{dt.year}-{dt.month:02d}"
+        except Exception:
+            return None
+    if isinstance(date_val, str):
+        s = date_val.strip()
+        if len(s) >= 8 and s[:8].isdigit():          # '20250115...'
+            return f"{s[:4]}-{s[4:6]}"
+        for sep in ('-', '/'):
+            if sep in s:
+                parts = s.split(sep)
+                if len(parts) >= 2:
+                    return f"{parts[0].zfill(4)}-{parts[1].zfill(2)}"
+    return None
+
+
+def build_pivot_aging(ws_src):
+    """소스 시트에서 거래처명 × 월별 차변금액 피벗 테이블을 생성한다.
+
+    Returns (headers, data_rows):
+      headers    = ['거래처명', '2025-01', ..., '합계']
+      data_rows  = [['거래처A', 100000, None, ..., 100000], ..., ['합계', ...]]
+    """
+    # ── 헤더 행 탐색 ─────────────────────────────────────────────────────
+    def _find_col(header_row, *keywords):
+        for i, h in enumerate(header_row):
+            cell = str(h or '')
+            if any(kw in cell for kw in keywords):
+                return i
+        return None
+
+    all_rows = list(ws_src.iter_rows(values_only=True))
+    header_row_idx = None
+    header_row = None
+    for i, row in enumerate(all_rows):
+        if _find_col(row, '거래처') is not None:
+            header_row_idx = i
+            header_row = row
+            break
+
+    if header_row is None:
+        raise ValueError("소스 시트에서 '거래처명' 헤더를 찾을 수 없습니다.")
+
+    col_cust = _find_col(header_row, '거래처')
+    col_date = _find_col(header_row, '전표날짜', '날짜', '일자')
+    col_amt  = _find_col(header_row, '차변금액', '차변', '금액')
+
+    missing = [name for name, idx in [('거래처명', col_cust), ('전표날짜', col_date), ('차변금액', col_amt)] if idx is None]
+    if missing:
+        raise ValueError(f"필수 컬럼을 찾을 수 없습니다: {', '.join(missing)}")
+
+    # ── 데이터 집계 ───────────────────────────────────────────────────────
+    pivot  = defaultdict(lambda: defaultdict(float))
+    months = set()
+
+    for row in all_rows[header_row_idx + 1:]:
+        cust = row[col_cust] if len(row) > col_cust else None
+        date = row[col_date] if len(row) > col_date else None
+        amt  = row[col_amt]  if len(row) > col_amt  else None
+
+        if cust is None:
+            continue
+
+        month_key = _parse_month_key(date)
+        if month_key is None:
+            continue
+
+        if isinstance(amt, str):
+            amt = re.sub(r'[,원\s]', '', amt)
+        try:
+            amt_val = float(amt) if amt is not None else 0.0
+        except (ValueError, TypeError):
+            amt_val = 0.0
+
+        pivot[str(cust).strip()][month_key] += amt_val
+        months.add(month_key)
+
+    if not pivot:
+        raise ValueError("피벗 데이터 없음 — 소스 시트가 비어있거나 컬럼 매칭 실패.")
+
+    sorted_months = sorted(months)
+    headers = ['거래처명'] + sorted_months + ['합계']
+
+    data_rows = []
+    for cust in sorted(pivot.keys()):
+        row_vals = [cust]
+        row_total = 0.0
+        for m in sorted_months:
+            v = pivot[cust].get(m, 0.0)
+            row_vals.append(v if v else None)
+            row_total += v
+        row_vals.append(row_total if row_total else None)
+        data_rows.append(row_vals)
+
+    col_totals = []
+    grand_total = 0.0
+    for m in sorted_months:
+        ct = sum(pivot[c].get(m, 0.0) for c in pivot)
+        col_totals.append(ct if ct else None)
+        grand_total += ct
+    data_rows.append(['합계'] + col_totals + [grand_total if grand_total else None])
+
+    return headers, data_rows
+
+
+def inject_pivot_aging(ws_src, wb_tgt, tgt_sheet_name, start_cell):
+    """피벗 Aging 테이블을 대상 워크북의 tgt_sheet_name 시트에 주입한다.
+
+    시트가 없으면 새로 생성한다. 반환값: 주입된 데이터 행 수.
+    """
+    headers, data_rows = build_pivot_aging(ws_src)
+
+    if tgt_sheet_name in wb_tgt.sheetnames:
+        ws_aging = wb_tgt[tgt_sheet_name]
+    else:
+        ws_aging = wb_tgt.create_sheet(title=tgt_sheet_name)
+        print(f'    [Aging] 시트 신규 생성: {tgt_sheet_name}')
+
+    start_row, start_col = _parse_cell(start_cell)
+
+    for c_idx, h in enumerate(headers):
+        ws_aging.cell(row=start_row, column=start_col + c_idx).value = h
+
+    for r_idx, row in enumerate(data_rows, start=1):
+        for c_idx, val in enumerate(row):
+            ws_aging.cell(row=start_row + r_idx, column=start_col + c_idx).value = val
+
+    return len(data_rows)
 
 
 # ─── 경로 헬퍼 ───────────────────────────────────────────────────────────────
@@ -227,8 +369,10 @@ def main():
         tgt_sheet  = row['tgt_sheet']
         start_cell = row['start_cell']
         src_range  = row['src_range']
+        remarks    = row['remarks']
 
-        print(f'  [{label}] {src_kw}!{src_sheet} → {tgt_kw}!{tgt_sheet} @ {start_cell}')
+        mode_tag = f' [{remarks}]' if remarks else ''
+        print(f'  [{label}]{mode_tag} {src_kw}!{src_sheet} → {tgt_kw}!{tgt_sheet} @ {start_cell}')
 
         # ── 소스 파일 탐색 ─────────────────────────────────────────────────
         src_path = find_file_by_keyword([results_dir, raw_dir, company_dir], src_kw)
@@ -301,12 +445,18 @@ def main():
         ws_tgt = wb_tgt[resolved_tgt]
 
         # ── 데이터 주입 ───────────────────────────────────────────────────
-        if src_range:
-            print(f'    소스 범위 지정 : {src_range}')
         try:
-            injected = inject_data(ws_src, ws_tgt, start_cell, src_range or None)
-            success += 1
-            print(f'    [완료] {injected}개 셀 주입')
+            if remarks == 'PIVOT_AGING':
+                print(f'    [Aging] 피벗 생성 → {tgt_sheet} @ {start_cell}')
+                injected = inject_pivot_aging(ws_src, wb_tgt, tgt_sheet, start_cell)
+                success += 1
+                print(f'    [완료] 피벗 {injected}행 주입')
+            else:
+                if src_range:
+                    print(f'    소스 범위 지정 : {src_range}')
+                injected = inject_data(ws_src, ws_tgt, start_cell, src_range or None)
+                success += 1
+                print(f'    [완료] {injected}개 셀 주입')
         except Exception as e:
             msg = f'데이터 주입 오류: {e}'
             print(f'    [오류] {msg}')
