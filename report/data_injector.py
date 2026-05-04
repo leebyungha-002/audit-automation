@@ -12,11 +12,20 @@ Usage: python data_injector.py <company_name>
 import sys
 import os
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from io import BytesIO
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
+
+try:
+    from PIL import Image as _PilImage  # noqa: F401
+    _PILLOW_OK = True
+except ImportError:
+    _PILLOW_OK = False
+    print('[경고] Pillow 미설치 — ws._images 처리 불가. pip install Pillow')
 
 # Windows 콘솔 한글·특수문자 출력 보장
 if hasattr(sys.stdout, 'reconfigure'):
@@ -305,22 +314,174 @@ def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
 
 # ─── 이미지 복사 ─────────────────────────────────────────────────────────────
 
-def inject_image(ws_src, ws_tgt, start_cell):
+def _extract_first_image_zip(src_path, sheet_name):
+    """xlsx ZIP 내부 drawing XML을 직접 파싱해 첫 번째 이미지 바이트를 추출.
+
+    ws._images 가 비어있는 경우(EMF 등)의 폴백용.
+    Returns (img_bytes, ext_lower) 또는 (None, None).
+    """
+    NS_R  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    NS_SS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    NS_A  = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+    def _tag(ns, local): return f'{{{ns}}}{local}'
+
+    def _resolve(base, target):
+        parts = (base.rsplit('/', 1)[0] + '/' + target).split('/')
+        out = []
+        for p in parts:
+            if p == '..':
+                if out: out.pop()
+            elif p and p != '.':
+                out.append(p)
+        return '/'.join(out)
+
+    def _rels(path):
+        d, f = path.rsplit('/', 1)
+        return f'{d}/_rels/{f}.rels'
+
+    try:
+        with zipfile.ZipFile(src_path, 'r') as zf:
+            znames = set(zf.namelist())
+            def rxl(p): return ET.fromstring(zf.read(p))
+
+            # 1. workbook → 시트 파일 경로
+            rid_map = {r.get('Id'): r.get('Target')
+                       for r in rxl('xl/_rels/workbook.xml.rels').iter(_tag(NS_R, 'Relationship'))}
+            sheet_file = None
+            for s in rxl('xl/workbook.xml').iter(_tag(NS_SS, 'sheet')):
+                if s.get('name') == sheet_name:
+                    sheet_file = _resolve('xl/workbook.xml', rid_map.get(s.get(_tag(NS_R, 'id')), ''))
+                    break
+            if not sheet_file or sheet_file not in znames:
+                return None, None
+
+            # 2. 시트 → drawing rId
+            drawing_rid = None
+            for el in rxl(sheet_file).iter():
+                if el.tag.endswith('}drawing'):
+                    drawing_rid = el.get(_tag(NS_R, 'id'))
+                    break
+            if not drawing_rid:
+                return None, None
+
+            # 3. 시트 rels → drawing 파일
+            srels_path = _rels(sheet_file)
+            if srels_path not in znames:
+                return None, None
+            drawing_file = None
+            for r in rxl(srels_path).iter(_tag(NS_R, 'Relationship')):
+                if r.get('Id') == drawing_rid:
+                    drawing_file = _resolve(sheet_file, r.get('Target'))
+                    break
+            if not drawing_file or drawing_file not in znames:
+                return None, None
+
+            # 4. drawing → 첫 번째 blip rId (EMF/PNG/JPEG 모두 blip 경로 사용)
+            img_rid = None
+            for blip in rxl(drawing_file).iter(_tag(NS_A, 'blip')):
+                img_rid = blip.get(_tag(NS_R, 'embed'))
+                if img_rid:
+                    break
+            if not img_rid:
+                return None, None
+
+            # 5. drawing rels → 이미지 파일
+            drels_path = _rels(drawing_file)
+            if drels_path not in znames:
+                return None, None
+            img_file = None
+            for r in rxl(drels_path).iter(_tag(NS_R, 'Relationship')):
+                if r.get('Id') == img_rid:
+                    img_file = _resolve(drawing_file, r.get('Target'))
+                    break
+            if not img_file or img_file not in znames:
+                return None, None
+
+            ext = img_file.rsplit('.', 1)[-1].lower()
+            return zf.read(img_file), ext
+
+    except Exception as e:
+        print(f'    [MOVE_IMAGE] ZIP 추출 오류: {e}')
+        return None, None
+
+
+def inject_image(ws_src, src_path, src_sheet, ws_tgt, start_cell):
     """소스 시트의 첫 번째 이미지를 대상 시트의 start_cell 위치에 복사한다.
 
-    소스에 이미지가 없으면 로그만 남기고 0을 반환한다.
-    주의: 소스 워크북은 반드시 read_only=False 로 열어야 _images 가 채워진다.
+    시도 순서: ws._images → ZIP 직접 추출(PNG/JPEG) → win32com 후처리 예약.
+    Returns (주입개수: int, win32com_필요: bool).
     """
-    if not getattr(ws_src, '_images', None):
-        print('    [MOVE_IMAGE] 소스 시트에 이미지 없음 — 건너뜀')
-        return 0
+    # ── 1. ws._images 경로 (Pillow 필요) ────────────────────────────────
+    if _PILLOW_OK and getattr(ws_src, '_images', None):
+        new_img = XLImage(BytesIO(ws_src._images[0]._data()))
+        new_img.anchor = start_cell
+        ws_tgt.add_image(new_img)
+        print('    [MOVE_IMAGE] ws._images 경로로 복사 완료')
+        return 1, False
 
-    src_img = ws_src._images[0]
-    img_bytes = src_img._data()
+    print('    [MOVE_IMAGE] ws._images 비어있음 — ZIP 직접 추출 시도')
+
+    # ── 2. ZIP/XML 직접 추출 ────────────────────────────────────────────
+    img_bytes, ext = _extract_first_image_zip(src_path, src_sheet)
+
+    if img_bytes is None:
+        print('    [MOVE_IMAGE] ZIP 추출 실패 — 이미지 없음')
+        return 0, False
+
+    print(f'    [MOVE_IMAGE] ZIP 추출 성공 ({ext.upper()}, {len(img_bytes):,} bytes)')
+
+    if ext in ('emf', 'wmf'):
+        print(f'    [MOVE_IMAGE] {ext.upper()} 포맷은 openpyxl 미지원 — win32com 후처리로 전환')
+        return 0, True
+
     new_img = XLImage(BytesIO(img_bytes))
     new_img.anchor = start_cell
     ws_tgt.add_image(new_img)
-    return 1
+    return 1, False
+
+
+def inject_image_win32com(src_path, src_sheet, tgt_path, tgt_sheet, start_cell):
+    """win32com(Excel COM)으로 소스의 첫 번째 Shape를 대상 파일에 복사·붙여넣기.
+
+    tgt_path 는 이미 저장된 _updated 파일이어야 한다.
+    """
+    try:
+        import win32com.client
+    except ImportError:
+        raise RuntimeError('pywin32 미설치 — pip install pywin32')
+
+    xl = win32com.client.Dispatch('Excel.Application')
+    xl.Visible = False
+    xl.DisplayAlerts = False
+    try:
+        wb_src = xl.Workbooks.Open(src_path)
+        ws_s = next((wb_src.Sheets(i) for i in range(1, wb_src.Sheets.Count + 1)
+                     if wb_src.Sheets(i).Name == src_sheet), None)
+        if ws_s is None or ws_s.Shapes.Count == 0:
+            wb_src.Close(False)
+            return 0
+
+        ws_s.Shapes(1).Copy()
+
+        wb_tgt = xl.Workbooks.Open(tgt_path)
+        ws_t = next((wb_tgt.Sheets(i) for i in range(1, wb_tgt.Sheets.Count + 1)
+                     if wb_tgt.Sheets(i).Name == tgt_sheet), None)
+        if ws_t is None:
+            wb_src.Close(False)
+            wb_tgt.Close(False)
+            return 0
+
+        ws_t.Range(start_cell).Select()
+        ws_t.Paste()
+        xl.CutCopyMode = False
+        wb_tgt.Save()
+        wb_tgt.Close(False)
+        wb_src.Close(False)
+        return 1
+    finally:
+        try: xl.Quit()
+        except: pass
 
 
 # ─── 경로 헬퍼 ───────────────────────────────────────────────────────────────
@@ -362,8 +523,9 @@ def main():
     print(f'  매핑 항목 수  : {len(mapping_rows)}건\n')
 
     # ── 3. 대상 워크북 캐시 (동일 파일 중복 로드 방지) ──────────────────────
-    tgt_book_cache = {}   # real_path → Workbook
-    tgt_path_cache = {}   # keyword   → real_path
+    tgt_book_cache   = {}   # real_path → Workbook
+    tgt_path_cache   = {}   # keyword   → real_path
+    win32com_pending = []   # (src_path, src_sheet, tgt_updated_path, tgt_sheet, start_cell, label)
 
     errors  = []
     success = 0
@@ -494,9 +656,14 @@ def main():
         try:
             if remarks == 'MOVE_IMAGE':
                 print(f'    [Image] 이미지 복사 → {tgt_sheet} @ {start_cell}')
-                injected = inject_image(ws_src, ws_tgt, start_cell)
+                injected, need_win32 = inject_image(ws_src, src_path, resolved_src, ws_tgt, start_cell)
+                if need_win32:
+                    win32com_pending.append((src_path, resolved_src,
+                                             updated_path(tgt_path), resolved_tgt,
+                                             start_cell, label))
                 success += 1
-                print(f'    [완료] 이미지 {injected}개 복사')
+                suffix = ' (win32com 후처리 예정)' if need_win32 else ''
+                print(f'    [완료] 이미지 {injected}개 복사{suffix}')
             else:
                 if src_range:
                     print(f'    소스 범위 지정 : {src_range}')
@@ -520,7 +687,21 @@ def main():
         except Exception as e:
             print(f'  [오류] 저장 실패 ({os.path.basename(tgt_path)}): {e}')
 
-    # ── 6. 요약 ──────────────────────────────────────────────────────────────
+    # ── 6. win32com 후처리 (EMF/WMF 이미지) ─────────────────────────────────
+    if win32com_pending:
+        print('\n─── win32com 이미지 후처리 ───')
+        for src_p, src_s, tgt_p, tgt_s, cell, lbl in win32com_pending:
+            if not os.path.exists(tgt_p):
+                print(f'  [{lbl}] 대상 파일 없음 (저장 실패?): {os.path.basename(tgt_p)}')
+                continue
+            try:
+                cnt = inject_image_win32com(src_p, src_s, tgt_p, tgt_s, cell)
+                print(f'  [{lbl}] win32com 복사 완료 ({cnt}개)')
+            except Exception as e:
+                print(f'  [{lbl}] win32com 오류: {e}')
+                errors.append(f'[{lbl}] win32com 이미지 오류: {e}')
+
+    # ── 7. 요약 ──────────────────────────────────────────────────────────────
     print('\n─── 작업 요약 ───')
     print(f'  성공 : {success}/{len(mapping_rows)}건')
     if errors:
