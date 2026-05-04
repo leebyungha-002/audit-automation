@@ -295,10 +295,12 @@ def build_pivot_aging(ws_src):
 def inject_pivot_aging(ws_src, wb_tgt, tgt_sheet_name, start_cell):
     """피벗 Aging 테이블을 대상 워크북의 tgt_sheet_name 시트에 주입한다.
 
+    추가로 Aging_분석 시트 A5부터 거래처 리스트를 세로로 업데이트한다.
     시트가 없으면 새로 생성한다. 반환값: 주입된 데이터 행 수.
     """
     headers, data_rows = build_pivot_aging(ws_src)
 
+    # ── 1) Aging_Source: 피벗 테이블 전체 주입 ───────────────────────────────
     if tgt_sheet_name in wb_tgt.sheetnames:
         ws_aging = wb_tgt[tgt_sheet_name]
     else:
@@ -313,6 +315,21 @@ def inject_pivot_aging(ws_src, wb_tgt, tgt_sheet_name, start_cell):
     for r_idx, row in enumerate(data_rows, start=1):
         for c_idx, val in enumerate(row):
             ws_aging.cell(row=start_row + r_idx, column=start_col + c_idx).value = val
+
+    # ── 2) Aging_분석: A5부터 거래처 리스트 세로 주입 ────────────────────────
+    # data_rows 마지막 행은 '합계' 행이므로 제외
+    customer_list = [row[0] for row in data_rows[:-1]]
+
+    analysis_sheet = 'Aging_분석'
+    if analysis_sheet in wb_tgt.sheetnames:
+        ws_analysis = wb_tgt[analysis_sheet]
+    else:
+        ws_analysis = wb_tgt.create_sheet(title=analysis_sheet)
+        print(f'    [Aging] 시트 신규 생성: {analysis_sheet}')
+
+    for r_idx, name in enumerate(customer_list):
+        ws_analysis.cell(row=5 + r_idx, column=1).value = name
+    print(f'    [Aging] {analysis_sheet} A5↓ 거래처 {len(customer_list)}개 주입')
 
     return len(data_rows)
 
