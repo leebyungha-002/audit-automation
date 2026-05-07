@@ -87,8 +87,8 @@ log('\n======== [상세] 공시계정명 × 계정과목 ========')
 log(grp_detail.to_string(index=False))
 
 # ── 7. openpyxl 포맷 적용 헬퍼 ───────────────────────────
-def apply_sheet_format(ws, df, num_cols):
-    """헤더 자동 필터 + 숫자 컬럼 천 단위 콤마 형식 적용"""
+def apply_sheet_format(ws, df, num_cols, auto_width=False):
+    """헤더 자동 필터 + 숫자 컬럼 천 단위 콤마 형식 + 열 너비 자동 조정"""
     last_col = get_column_letter(ws.max_column)
     last_row = ws.max_row
 
@@ -103,6 +103,19 @@ def apply_sheet_format(ws, df, num_cols):
             for row in range(2, last_row + 1):
                 ws.cell(row=row, column=col_idx).number_format = NUM_FMT
 
+    # 열 너비 자동 조정 (각 열의 최대 문자 길이 기준)
+    if auto_width:
+        for col_cells in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col_cells[0].column)
+            for cell in col_cells:
+                if cell.value is not None:
+                    # 한글은 2바이트 폭으로 계산
+                    text = str(cell.value)
+                    width = sum(2 if ord(c) > 127 else 1 for c in text)
+                    max_len = max(max_len, width)
+            ws.column_dimensions[col_letter].width = max_len + 2
+
 # ── 8. 엑셀 저장: 시트 분리 (Lead_Summary / Lead_Detail) ─
 NUM_COLS = ['기초잔액', '차변합계', '대변합계', '기말잔액(순액)']
 
@@ -111,7 +124,7 @@ def write_excel(path):
         grp_summary.to_excel(writer, sheet_name='Lead_Summary', index=False)
         grp_detail.to_excel(writer, sheet_name='Lead_Detail',   index=False)
 
-        apply_sheet_format(writer.sheets['Lead_Summary'], grp_summary, NUM_COLS)
+        apply_sheet_format(writer.sheets['Lead_Summary'], grp_summary, NUM_COLS, auto_width=True)
         apply_sheet_format(writer.sheets['Lead_Detail'],  grp_detail,  NUM_COLS)
 
 try:
