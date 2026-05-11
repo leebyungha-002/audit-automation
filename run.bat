@@ -39,9 +39,9 @@ if /i "%MODE%"=="all"     goto :do_all
 :: 모드 미지정 시 대화형 메뉴
 echo.
 echo  실행 모드를 선택하세요:
-echo  [1] 데이터 추출만    (웹 앱 자동화)
-echo  [2] 감사조서 주입만  (data_injector.py)
-echo  [3] 순차 실행        (추출 완료 후 자동 주입)
+echo  [1] 데이터 추출만    (run.js + interest_expense_extractor.js)
+echo  [2] 감사조서 주입만  (data_injector.py + interest_expense_analysis.py)
+echo  [3] 순차 실행        (추출 완료 후 자동 주입 + 분석)
 echo.
 set /p CHOICE="선택 (1/2/3): "
 
@@ -53,7 +53,7 @@ echo [ERROR] 잘못된 입력입니다. 1, 2, 3 중 하나를 입력하세요.
 pause
 exit /b 1
 
-:: ── 데이터 추출 ────────────────────────────────────
+:: ── 데이터 추출 ─────────────────────────────────────────────────────────────
 :do_extract
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -61,21 +61,34 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
+
 echo.
-echo [EXTRACT] 데이터 추출 시작: %COMPANY%
+echo [1/2] 메인 데이터 추출 시작: %COMPANY%
 node run.js %COMPANY%
 set EXTRACT_CODE=%ERRORLEVEL%
 echo.
 if %EXTRACT_CODE% NEQ 0 (
-    echo [ERROR] 데이터 추출 실패. (Exit code: %EXTRACT_CODE%)
+    echo [ERROR] 메인 데이터 추출 실패. (Exit code: %EXTRACT_CODE%)
     pause
     exit /b %EXTRACT_CODE%
 )
+echo [1/2] 메인 데이터 추출 완료.
+
+echo.
+echo [2/2] 이자비용 원장 추출 시작: %COMPANY%
+node interest_expense_extractor.js %COMPANY%
+set IEE_CODE=%ERRORLEVEL%
+echo.
+if %IEE_CODE% NEQ 0 (
+    echo [WARN] 이자비용 원장 추출 실패 — 계속 진행합니다. (Exit code: %IEE_CODE%)
+)
+echo [2/2] 이자비용 원장 추출 완료.
+
+echo.
 echo [DONE] 데이터 추출 완료: %COMPANY%
-if /i "%MODE%"=="extract" goto :end
 goto :end
 
-:: ── 감사조서 주입 ───────────────────────────────────
+:: ── 감사조서 주입 + 적정성 분석 ─────────────────────────────────────────────
 :do_inject
 where python >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -83,8 +96,9 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
+
 echo.
-echo [INJECT] 감사조서 주입 시작: %COMPANY%
+echo [1/2] 감사조서 주입 시작: %COMPANY%
 python report\data_injector.py %COMPANY%
 set INJECT_CODE=%ERRORLEVEL%
 echo.
@@ -93,10 +107,23 @@ if %INJECT_CODE% NEQ 0 (
     pause
     exit /b %INJECT_CODE%
 )
-echo [DONE] 감사조서 주입 완료: %COMPANY%
+echo [1/2] 감사조서 주입 완료.
+
+echo.
+echo [2/2] 이자비용 적정성 분석 시작: %COMPANY%
+python interest_expense_analysis.py %COMPANY%\results\이자비용적정성.xlsx
+set ANALYSIS_CODE=%ERRORLEVEL%
+echo.
+if %ANALYSIS_CODE% NEQ 0 (
+    echo [WARN] 이자비용 적정성 분석 실패 — 계속 진행합니다. (Exit code: %ANALYSIS_CODE%)
+)
+echo [2/2] 이자비용 적정성 분석 완료.
+
+echo.
+echo [DONE] 주입 및 분석 완료: %COMPANY%
 goto :end
 
-:: ── 순차 실행 (추출 → 주입) ────────────────────────
+:: ── 순차 실행 (추출 → 주입 → 분석) ─────────────────────────────────────────
 :do_all
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -110,19 +137,31 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
+
 echo.
-echo [1/2] 데이터 추출 시작: %COMPANY%
+echo [1/4] 메인 데이터 추출 시작: %COMPANY%
 node run.js %COMPANY%
 set EXTRACT_CODE=%ERRORLEVEL%
 echo.
 if %EXTRACT_CODE% NEQ 0 (
-    echo [ERROR] 데이터 추출 실패 — 주입을 건너뜁니다. (Exit code: %EXTRACT_CODE%)
+    echo [ERROR] 메인 데이터 추출 실패 — 이후 단계를 건너뜁니다. (Exit code: %EXTRACT_CODE%)
     pause
     exit /b %EXTRACT_CODE%
 )
-echo [1/2] 데이터 추출 완료.
+echo [1/4] 메인 데이터 추출 완료.
+
 echo.
-echo [2/2] 감사조서 주입 시작: %COMPANY%
+echo [2/4] 이자비용 원장 추출 시작: %COMPANY%
+node interest_expense_extractor.js %COMPANY%
+set IEE_CODE=%ERRORLEVEL%
+echo.
+if %IEE_CODE% NEQ 0 (
+    echo [WARN] 이자비용 원장 추출 실패 — 계속 진행합니다. (Exit code: %IEE_CODE%)
+)
+echo [2/4] 이자비용 원장 추출 완료.
+
+echo.
+echo [3/4] 감사조서 주입 시작: %COMPANY%
 python report\data_injector.py %COMPANY%
 set INJECT_CODE=%ERRORLEVEL%
 echo.
@@ -131,7 +170,18 @@ if %INJECT_CODE% NEQ 0 (
     pause
     exit /b %INJECT_CODE%
 )
-echo [2/2] 감사조서 주입 완료.
+echo [3/4] 감사조서 주입 완료.
+
+echo.
+echo [4/4] 이자비용 적정성 분석 시작: %COMPANY%
+python interest_expense_analysis.py %COMPANY%\results\이자비용적정성.xlsx
+set ANALYSIS_CODE=%ERRORLEVEL%
+echo.
+if %ANALYSIS_CODE% NEQ 0 (
+    echo [WARN] 이자비용 적정성 분석 실패 — 계속 진행합니다. (Exit code: %ANALYSIS_CODE%)
+)
+echo [4/4] 이자비용 적정성 분석 완료.
+
 echo.
 echo [DONE] 전체 완료: %COMPANY%
 
