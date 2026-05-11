@@ -1678,35 +1678,40 @@ async function runAudit(config, companyDir) {
                 const uiLabel = getMenuUiLabel(menuName, config);
                 console.log(`\n=== [메뉴 진입] ${menuName}${uiLabel !== menuName ? ` → UI: "${uiLabel}"` : ''} ===`);
 
-                // 정확한 텍스트 매칭 우선, 없으면 부분 포함 매칭으로 폴백
-                // 카드 클릭 헬퍼: button/a → 텍스트 포함 요소 순으로 탐색
+                // 카드 셀렉터 전략: 정확한 텍스트 일치 우선 → 역할 기반 폴백
+                // div:has-text() 는 상위 컨테이너 전체를 매칭해 오클릭을 유발하므로 사용하지 않음.
                 const findMenuHandle = async () => {
-                    for (const sel of [
-                        `button:has-text("${uiLabel}")`,
-                        `a:has-text("${uiLabel}")`,
-                        `[role="button"]:has-text("${uiLabel}")`,
-                    ]) {
-                        const loc = page.locator(sel).first();
-                        if (await loc.count().catch(() => 0) > 0) return loc;
+                    const strategies = [
+                        // 1순위: :text-is() — 요소 텍스트가 정확히 uiLabel인 것만
+                        () => page.locator(`:text-is("${uiLabel}")`).first(),
+                        // 2순위: getByText exact
+                        () => page.getByText(uiLabel, { exact: true }).first(),
+                        // 3순위: heading role 정확 일치
+                        () => page.getByRole('heading', { name: uiLabel, exact: true }).first(),
+                        // 4순위: h 태그 정규식 정확 일치
+                        () => page.locator('h2, h3, h4').filter({ hasText: new RegExp(`^${uiLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).first(),
+                        // 5순위: 역할 기반 (has-text 부분 일치 — 낮은 우선순위)
+                        () => page.locator(`button:has-text("${uiLabel}")`).first(),
+                        () => page.locator(`a:has-text("${uiLabel}")`).first(),
+                        () => page.locator(`[role="button"]:has-text("${uiLabel}")`).first(),
+                    ];
+                    for (const getFn of strategies) {
+                        try {
+                            const loc = getFn();
+                            if (await loc.count().catch(() => 0) > 0) return loc;
+                        } catch { /* 다음 전략 */ }
                     }
-                    // 폴백: 텍스트를 정확히 포함하는 요소
-                    const h = await page.$(`text="${uiLabel}"`).catch(() => null)
-                        ?? await page.$(`h2:has-text("${uiLabel}"), h3:has-text("${uiLabel}"), span:has-text("${uiLabel}"), div:has-text("${uiLabel}")`).catch(() => null);
-                    return h;
+                    return null;
                 };
 
-                // 카드 클릭 실행 (최대 2회 시도)
-                const clickMenuCard = async (handle) => {
-                    if (!handle) return;
-                    // target="_blank" 제거 후 클릭
-                    try {
-                        await page.evaluate(node => {
-                            node.removeAttribute?.('target');
-                            node.closest?.('a')?.removeAttribute('target');
-                        }, handle.elementHandle ? await handle.elementHandle() : handle);
-                    } catch { /* 무시 */ }
-                    await (handle.click ? handle.click() : page.click(handle));
-                    // 페이지 전환 안정화 대기
+                // 카드 클릭 실행
+                const clickMenuCard = async (loc) => {
+                    if (!loc) return;
+                    await loc.evaluate(n => {
+                        n.removeAttribute?.('target');
+                        n.closest?.('a')?.removeAttribute('target');
+                    }).catch(() => {});
+                    await loc.click();
                     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
                     await page.waitForTimeout(1500);
                 };
