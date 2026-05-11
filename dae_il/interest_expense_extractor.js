@@ -306,10 +306,17 @@ async function main() {
                         await page.keyboard.press('Backspace');
                         if (vendorName) {
                             await page.keyboard.type(vendorName, { delay: 50 });
-                            await page.waitForTimeout(400);
-                            await page.keyboard.press('Enter');
-                            await page.waitForTimeout(300);
-                            console.log(`  거래처명: ${vendorName}`);
+                            await page.waitForTimeout(700);
+                            const vendorOption = page.locator('[role="option"], [role="listbox"] li, ul[role="listbox"] li').first();
+                            if (await vendorOption.count().catch(() => 0) > 0) {
+                                await vendorOption.click({ timeout: 2000 }).catch(() => {});
+                                await page.waitForTimeout(300);
+                                console.log(`  거래처명 선택: ${vendorName}`);
+                            } else {
+                                await page.keyboard.press('Escape');
+                                await page.waitForTimeout(300);
+                                console.log(`[경고] 거래처명 드롭다운 미발견 — 입력값 그대로 사용: ${vendorName}`);
+                            }
                         } else {
                             await page.keyboard.press('Escape');
                             await page.waitForTimeout(200);
@@ -325,10 +332,17 @@ async function main() {
                         await page.keyboard.press('Backspace');
                         if (description) {
                             await page.keyboard.type(description, { delay: 50 });
-                            await page.waitForTimeout(400);
-                            await page.keyboard.press('Enter');
-                            await page.waitForTimeout(300);
-                            console.log(`  적요: ${description}`);
+                            await page.waitForTimeout(700);
+                            const descOption = page.locator('[role="option"], [role="listbox"] li, ul[role="listbox"] li').first();
+                            if (await descOption.count().catch(() => 0) > 0) {
+                                await descOption.click({ timeout: 2000 }).catch(() => {});
+                                await page.waitForTimeout(300);
+                                console.log(`  적요 선택: ${description}`);
+                            } else {
+                                await page.keyboard.press('Escape');
+                                await page.waitForTimeout(300);
+                                console.log(`[경고] 적요 드롭다운 미발견 — 입력값 그대로 사용: ${description}`);
+                            }
                         } else {
                             await page.keyboard.press('Escape');
                             await page.waitForTimeout(200);
