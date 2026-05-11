@@ -123,7 +123,7 @@ echo.
 echo [DONE] 주입 및 분석 완료: %COMPANY%
 goto :end
 
-:: ── 순차 실행 (추출 → 주입 → 분석) ─────────────────────────────────────────
+:: ── 순차 실행 (추출 → 주입 → 이자비용추출 → 분석) ──────────────────────────
 :do_all
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -151,17 +151,7 @@ if %EXTRACT_CODE% NEQ 0 (
 echo [1/4] 메인 데이터 추출 완료.
 
 echo.
-echo [2/4] 이자비용 원장 추출 시작: %COMPANY%
-node interest_expense_extractor.js %COMPANY%
-set IEE_CODE=%ERRORLEVEL%
-echo.
-if %IEE_CODE% NEQ 0 (
-    echo [WARN] 이자비용 원장 추출 실패 — 계속 진행합니다. (Exit code: %IEE_CODE%)
-)
-echo [2/4] 이자비용 원장 추출 완료.
-
-echo.
-echo [3/4] 감사조서 주입 시작: %COMPANY%
+echo [2/4] 감사조서 주입 시작: %COMPANY%
 python report\data_injector.py %COMPANY%
 set INJECT_CODE=%ERRORLEVEL%
 echo.
@@ -170,7 +160,17 @@ if %INJECT_CODE% NEQ 0 (
     pause
     exit /b %INJECT_CODE%
 )
-echo [3/4] 감사조서 주입 완료.
+echo [2/4] 감사조서 주입 완료.
+
+echo.
+echo [3/4] 이자비용 원장 추출 시작: %COMPANY%
+node interest_expense_extractor.js %COMPANY%
+set IEE_CODE=%ERRORLEVEL%
+echo.
+if %IEE_CODE% NEQ 0 (
+    echo [WARN] 이자비용 원장 추출 실패 — 계속 진행합니다. (Exit code: %IEE_CODE%)
+)
+echo [3/4] 이자비용 원장 추출 완료.
 
 echo.
 echo [4/4] 이자비용 적정성 분석 시작: %COMPANY%
