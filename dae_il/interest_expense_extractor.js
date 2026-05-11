@@ -191,15 +191,24 @@ async function main() {
         }
 
         // ── '상세 거래 검색' 카드 진입 (이미 검색폼이면 생략) ─────────────────
-        // 주의: has-text()는 부분 일치라 카드 그리드 전체가 먼저 매칭될 수 있음.
-        // getByText(exact:true) 또는 text="..." (따옴표 포함)로 정확히 타겟.
+        // 총계정원장 조회 카드 설명에 "상세 거래내역을 조회합니다"가 포함되어
+        // has-text() 부분 일치 시 오매칭 발생 → 설명 고유 문구 또는 제목 정확 일치로 특정.
         if (await page.locator(COMBO_SEL).count().catch(() => 0) === 0) {
             const CARD = '상세 거래 검색';
             const strategies = [
-                // 정확한 텍스트 일치 — 카드 제목만 매칭 (총계정원장 조회 등 오매칭 방지)
-                () => page.getByText(CARD, { exact: true }).first(),
+                // 1순위: 카드 설명 고유 문구("거래처, 금액, 날짜, 적요")로 카드 컨테이너 특정
+                //        — 총계정원장 등 다른 카드에는 없는 텍스트
+                () => page.locator('div, section, article, li')
+                    .filter({ hasText: '거래처, 금액, 날짜, 적요' })
+                    .first(),
+                // 2순위: :text-is() — 요소의 텍스트가 정확히 "상세 거래 검색"인 것만
+                () => page.locator(':text-is("상세 거래 검색")').first(),
+                // 3순위: heading role 정확 일치
                 () => page.getByRole('heading', { name: CARD, exact: true }).first(),
-                () => page.locator(`text="${CARD}"`).first(),
+                // 4순위: getByText exact
+                () => page.getByText(CARD, { exact: true }).first(),
+                // 5순위: h 태그 정규식 정확 일치 → 제목 요소 클릭
+                () => page.locator('h2, h3, h4, h5').filter({ hasText: new RegExp(`^${CARD}$`) }).first(),
                 // 역할 기반
                 () => page.locator(`a:has-text("${CARD}")`).first(),
                 () => page.locator(`button:has-text("${CARD}")`).first(),
@@ -217,6 +226,13 @@ async function main() {
                     }).catch(() => {});
                     await loc.click();
                     await page.waitForTimeout(2000);
+                    // 클릭 후 실제 "상세 거래 검색" 폼이 열렸는지 확인
+                    const onCorrectPage = await page.locator(COMBO_SEL).count().catch(() => 0) > 0
+                        || await page.getByText('거래처, 금액, 날짜, 적요').count().catch(() => 0) > 0;
+                    if (!onCorrectPage) {
+                        console.log(`  [재확인] 잘못된 화면 — 다음 전략으로`);
+                        continue;
+                    }
                     console.log(`[카드] '${CARD}' 진입 완료`);
                     entered = true;
                     break;
