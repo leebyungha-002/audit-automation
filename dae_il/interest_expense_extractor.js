@@ -262,6 +262,9 @@ async function main() {
 
                 try {
                     // 1. 계정과목 combobox
+                    // ※ Enter 키는 이 UI에서 폼 자동 제출을 유발하므로 사용하지 않음.
+                    //   드롭다운에 매칭 항목이 있으면 클릭으로 선택, 없으면 Escape로 닫고
+                    //   입력된 텍스트를 그대로 필터값으로 사용한다.
                     await page.waitForSelector(COMBO_SEL, { state: 'visible', timeout: 10000 });
                     await page.waitForTimeout(500);
                     await page.click(COMBO_SEL);
@@ -269,9 +272,17 @@ async function main() {
                     await page.keyboard.press('Control+A');
                     await page.keyboard.press('Backspace');
                     await page.keyboard.type(accountName, { delay: 50 });
-                    await page.waitForTimeout(500);
-                    await page.keyboard.press('Enter');
-                    await page.waitForTimeout(400);
+                    await page.waitForTimeout(600);
+
+                    // 드롭다운 첫 번째 항목 클릭 (있으면) — 없으면 Escape 로 드롭다운만 닫기
+                    const dropdownOption = page.locator('[role="option"], [role="listbox"] li, ul[role="listbox"] li').first();
+                    if (await dropdownOption.count().catch(() => 0) > 0) {
+                        await dropdownOption.click({ timeout: 2000 }).catch(() => {});
+                        await page.waitForTimeout(300);
+                    } else {
+                        await page.keyboard.press('Escape');
+                        await page.waitForTimeout(300);
+                    }
                     console.log(`  계정과목: ${accountName}`);
 
                     // 2. 거래처명 combobox — 항상 먼저 지우고 값 있으면 입력
