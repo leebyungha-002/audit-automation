@@ -191,25 +191,30 @@ async function main() {
         }
 
         // ── '상세 거래 검색' 카드 진입 (이미 검색폼이면 생략) ─────────────────
+        // 주의: has-text()는 부분 일치라 카드 그리드 전체가 먼저 매칭될 수 있음.
+        // getByText(exact:true) 또는 text="..." (따옴표 포함)로 정확히 타겟.
         if (await page.locator(COMBO_SEL).count().catch(() => 0) === 0) {
             const CARD = '상세 거래 검색';
             const strategies = [
-                `a:has-text("${CARD}")`,
-                `button:has-text("${CARD}")`,
-                `[class*="card"]:has-text("${CARD}")`,
-                `h2:has-text("${CARD}")`, `h3:has-text("${CARD}")`,
-                `div:has-text("${CARD}")`,
+                // 정확한 텍스트 일치 — 카드 제목만 매칭 (총계정원장 조회 등 오매칭 방지)
+                () => page.getByText(CARD, { exact: true }).first(),
+                () => page.getByRole('heading', { name: CARD, exact: true }).first(),
+                () => page.locator(`text="${CARD}"`).first(),
+                // 역할 기반
+                () => page.locator(`a:has-text("${CARD}")`).first(),
+                () => page.locator(`button:has-text("${CARD}")`).first(),
+                () => page.locator(`[role="button"]:has-text("${CARD}")`).first(),
             ];
             let entered = false;
-            for (const sel of strategies) {
+            for (const getFn of strategies) {
                 try {
-                    const loc = page.locator(sel).first();
+                    const loc = getFn();
                     if (await loc.count().catch(() => 0) === 0) continue;
-                    await loc.waitFor({ state: 'visible', timeout: 5000 });
+                    await loc.waitFor({ state: 'visible', timeout: 3000 });
                     await loc.evaluate(n => {
-                        n.removeAttribute('target');
-                        n.closest('a')?.removeAttribute('target');
-                    });
+                        n.removeAttribute?.('target');
+                        n.closest?.('a')?.removeAttribute('target');
+                    }).catch(() => {});
                     await loc.click();
                     await page.waitForTimeout(2000);
                     console.log(`[카드] '${CARD}' 진입 완료`);
@@ -271,19 +276,26 @@ async function main() {
                     await page.waitForTimeout(300);
                     await page.keyboard.press('Control+A');
                     await page.keyboard.press('Backspace');
-                    await page.keyboard.type(accountName, { delay: 50 });
-                    await page.waitForTimeout(600);
+                    // 계정코드(숫자)만 추출해 드롭다운 매칭 향상
+                    // ex) "하나 장기운전자금4(29320)" → "29320"
+                    // ex) "하나/장기운전자금-34142 / ..." → "34142"
+                    const codeMatch = accountName.match(/\((\d+)\)/) || accountName.match(/(\d+)\s*$/);
+                    const searchText = codeMatch ? codeMatch[1] : accountName;
+                    await page.keyboard.type(searchText, { delay: 50 });
+                    await page.waitForTimeout(700);
 
                     // 드롭다운 첫 번째 항목 클릭 (있으면) — 없으면 Escape 로 드롭다운만 닫기
                     const dropdownOption = page.locator('[role="option"], [role="listbox"] li, ul[role="listbox"] li').first();
-                    if (await dropdownOption.count().catch(() => 0) > 0) {
+                    const optionFound = await dropdownOption.count().catch(() => 0) > 0;
+                    if (optionFound) {
                         await dropdownOption.click({ timeout: 2000 }).catch(() => {});
                         await page.waitForTimeout(300);
+                        console.log(`  계정과목 선택 (검색어: "${searchText}"): ${accountName}`);
                     } else {
                         await page.keyboard.press('Escape');
                         await page.waitForTimeout(300);
+                        console.log(`[경고] 계정과목 드롭다운 미발견 (검색어: "${searchText}") — 빈 상태로 진행`);
                     }
-                    console.log(`  계정과목: ${accountName}`);
 
                     // 2. 거래처명 combobox — 항상 먼저 지우고 값 있으면 입력
                     try {

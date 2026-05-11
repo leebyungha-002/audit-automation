@@ -40,3 +40,5 @@
 - **업로드 생략 (세션 유지)**: [초기화면으로] 복귀에 성공한 경우(`aiSessionActive = true`), 다음 HOST2_ 메뉴에서는 파일 업로드 단계를 건너뛴다.
 - **세션 끊김 재시도**: [초기화면으로] 버튼을 찾지 못하거나 대시보드 복귀에 실패하면 세션이 끊긴 것으로 간주(`aiSessionActive = false`)하고, 다음 HOST2_ 메뉴 진입 시 파일을 재업로드한다.
 - **구현 위치**: `returnToAiDashboard()` 헬퍼 + `runAudit()` 내 `aiSessionActive` 플래그로 관리된다.
+## 7. 커밋과 푸쉬규칙
+- 코드의 수정이 발생한 경우 반드시 commit and push를 자동으로 수행한다
