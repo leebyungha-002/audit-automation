@@ -351,7 +351,7 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
         return None
 
     col_curr = find_col('당기', '금기', '현재')
-    col_prev = find_col('전기', '전년', '비교')
+    col_prev = find_col('전기', '전년', '비교', '기초')
 
     missing = [n for n, c in [('당기잔액', col_curr), ('전기잔액', col_prev)] if c is None]
     if missing:
