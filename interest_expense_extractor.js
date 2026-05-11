@@ -1,20 +1,40 @@
 'use strict';
-// ─── 이자비용 적정성 데이터 추출 ─────────────────────────────────────────────
-// host1_이자비용적정성test 시트를 직접 로드하여 '상세 거래 검색' UI를 반복 조작.
-// 인터랙션 로직은 auditRunner.js handleDetailSearchScenario 와 동일.
-// 결과: 작업명별 엑셀 파일(계정과목명 = 시트명)을 dae_il/results/ 에 저장.
+// ─── 이자비용 적정성 데이터 추출 (전역 공통 모듈) ───────────────────────────────
+// 실행: node interest_expense_extractor.js <회사명>
+//   예: node interest_expense_extractor.js dae_il
+//       node interest_expense_extractor.js braintree
+//
+// 경로 규칙 (루트 = audit-automation/)
+//   시나리오 : ./<회사명>/task_list_<회사명>.xlsx
+//   결과물   : ./<회사명>/results/<작업명>.xlsx
+//   원장파일 : ./<회사명>/raw_data/*.xlsx|xls  (당기, ~$제외)
+//   브라우저 : ./.browser_profile
+//   환경변수 : ./.env
+
 const path    = require('path');
 const fs      = require('fs');
 const ExcelJS = require('exceljs');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { initBrowser } = require('../shared_modules/index');
+// ── CLI 인수 검증 ────────────────────────────────────────────────────────────
+const COMPANY = (process.argv[2] ?? '').trim();
+if (!COMPANY) {
+    console.error('[오류] 회사명 인수가 필요합니다.');
+    console.error('  사용법: node interest_expense_extractor.js <회사명>');
+    console.error('  예시  : node interest_expense_extractor.js dae_il');
+    process.exit(1);
+}
 
-const COMPANY_DIR    = __dirname;
-const TASK_LIST_PATH = path.join(COMPANY_DIR, 'task_list_dae_il.xlsx');
+const ROOT_DIR    = __dirname;                                          // audit-automation/
+const COMPANY_DIR = path.join(ROOT_DIR, COMPANY);                      // ./<회사명>/
+const TASK_LIST_PATH = path.join(COMPANY_DIR, `task_list_${COMPANY}.xlsx`);
 const RESULTS_DIR    = path.join(COMPANY_DIR, 'results');
-const PROFILE_DIR    = path.join(__dirname, '..', '.browser_profile');
-const BASE_URL       = process.env.AUDIT_URL || 'http://127.0.0.1:8081';
+const PROFILE_DIR    = path.join(ROOT_DIR, '.browser_profile');
+
+require('dotenv').config({ path: path.join(ROOT_DIR, '.env') });
+
+const { initBrowser } = require(path.join(ROOT_DIR, 'shared_modules', 'index'));
+
+const BASE_URL = process.env.AUDIT_URL || 'http://127.0.0.1:8081';
 
 const SHEET_PATTERNS = [
     'host1_이자비용적정성test',
@@ -31,6 +51,9 @@ const MENU_NAME    = '이자비용적정성';
 
 // ─── 시트 로드 ────────────────────────────────────────────────────────────────
 async function loadTasks() {
+    if (!fs.existsSync(TASK_LIST_PATH))
+        throw new Error(`시나리오 파일 없음: ${TASK_LIST_PATH}`);
+
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(TASK_LIST_PATH);
 
@@ -59,7 +82,7 @@ async function loadTasks() {
     return tasks;
 }
 
-// ─── 날짜 포맷 헬퍼 (auditRunner.js formatExcelDate 동일) ────────────────────
+// ─── 날짜 포맷 헬퍼 ──────────────────────────────────────────────────────────
 function formatExcelDate(val) {
     if (!val) return '';
     if (val instanceof Date) {
@@ -71,7 +94,7 @@ function formatExcelDate(val) {
     return String(val).trim();
 }
 
-// ─── 라디오 버튼 클릭 (auditRunner.js clickRadioByLabel 완전 동일) ───────────
+// ─── 라디오 버튼 클릭 ────────────────────────────────────────────────────────
 async function clickRadioByLabel(page, labelText, groupHint) {
     if (!labelText) return;
     const text    = String(labelText).trim();
@@ -98,7 +121,7 @@ async function clickRadioByLabel(page, labelText, groupHint) {
     console.log(`[경고] '${groupHint ?? ''}' 항목 '${text}' 클릭 실패 — 건너뜁니다.`);
 }
 
-// ─── 다운로드 → workbook 시트 추가 (auditRunner.js downloadAndAddSheet 완전 동일) ─
+// ─── 다운로드 → workbook 시트 추가 ──────────────────────────────────────────
 async function downloadAndAddSheet(page, downloadBtnSelector, sheetName, workbook) {
     console.log(`[${MENU_NAME}] '${sheetName}' 결과 다운로드 대기 중...`);
     await page.waitForSelector(downloadBtnSelector, { state: 'visible', timeout: 30000 });
@@ -139,7 +162,10 @@ function findLedgerFile() {
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
-    console.log('=== 이자비용 적정성 데이터 추출 시작 ===');
+    console.log(`=== 이자비용 적정성 데이터 추출 시작 [${COMPANY}] ===`);
+    console.log(`  시나리오: ${TASK_LIST_PATH}`);
+    console.log(`  결과경로: ${RESULTS_DIR}\n`);
+
     const tasks = await loadTasks();
     if (!tasks.length) { console.log('[종료] 처리할 작업이 없습니다.'); return; }
 
@@ -190,24 +216,23 @@ async function main() {
             }
         }
 
-        // ── '상세 거래 검색' 카드 진입 (이미 검색폼이면 생략) ─────────────────
+        // ── '상세 거래 검색' 카드 진입 ────────────────────────────────────────
         // 총계정원장 조회 카드 설명에 "상세 거래내역을 조회합니다"가 포함되어
-        // has-text() 부분 일치 시 오매칭 발생 → 설명 고유 문구 또는 제목 정확 일치로 특정.
+        // has-text() 부분 일치 시 오매칭 발생 → 설명 고유 문구 우선 사용.
         if (await page.locator(COMBO_SEL).count().catch(() => 0) === 0) {
             const CARD = '상세 거래 검색';
             const strategies = [
-                // 1순위: 카드 설명 고유 문구("거래처, 금액, 날짜, 적요")로 카드 컨테이너 특정
-                //        — 총계정원장 등 다른 카드에는 없는 텍스트
+                // 1순위: 카드 설명 고유 문구로 컨테이너 특정 (다른 카드와 중복 없음)
                 () => page.locator('div, section, article, li')
                     .filter({ hasText: '거래처, 금액, 날짜, 적요' })
                     .first(),
-                // 2순위: :text-is() — 요소의 텍스트가 정확히 "상세 거래 검색"인 것만
+                // 2순위: :text-is() — 요소 텍스트 정확 일치
                 () => page.locator(':text-is("상세 거래 검색")').first(),
                 // 3순위: heading role 정확 일치
                 () => page.getByRole('heading', { name: CARD, exact: true }).first(),
                 // 4순위: getByText exact
                 () => page.getByText(CARD, { exact: true }).first(),
-                // 5순위: h 태그 정규식 정확 일치 → 제목 요소 클릭
+                // 5순위: h 태그 정규식 정확 일치
                 () => page.locator('h2, h3, h4, h5').filter({ hasText: new RegExp(`^${CARD}$`) }).first(),
                 // 역할 기반
                 () => page.locator(`a:has-text("${CARD}")`).first(),
@@ -226,11 +251,11 @@ async function main() {
                     }).catch(() => {});
                     await loc.click();
                     await page.waitForTimeout(2000);
-                    // 클릭 후 실제 "상세 거래 검색" 폼이 열렸는지 확인
+                    // 올바른 폼이 열렸는지 확인
                     const onCorrectPage = await page.locator(COMBO_SEL).count().catch(() => 0) > 0
                         || await page.getByText('거래처, 금액, 날짜, 적요').count().catch(() => 0) > 0;
                     if (!onCorrectPage) {
-                        console.log(`  [재확인] 잘못된 화면 — 다음 전략으로`);
+                        console.log('  [재확인] 잘못된 화면 — 다음 전략으로');
                         continue;
                     }
                     console.log(`[카드] '${CARD}' 진입 완료`);
@@ -246,7 +271,7 @@ async function main() {
         await page.waitForSelector(COMBO_SEL, { state: 'visible', timeout: 20000 });
         console.log('[검색폼] 준비 완료\n');
 
-        // ── 작업명 기준 그룹화 (handleDetailSearchScenario 동일) ────────────────
+        // ── 작업명 기준 그룹화 ───────────────────────────────────────────────
         const taskGroups = new Map();
         for (const task of tasks) {
             const taskName    = String(task['작업명']   ?? '').trim();
@@ -259,7 +284,7 @@ async function main() {
 
         const allGroups = [...taskGroups.entries()];
 
-        // ── 그룹별 처리 ───────────────────────────────────────────────────────
+        // ── 그룹별 처리 ─────────────────────────────────────────────────────
         for (let gi = 0; gi < allGroups.length; gi++) {
             const [taskName, groupTasks] = allGroups[gi];
             console.log(`\n=== [작업그룹: ${taskName}] ${groupTasks.length}개 계정 처리 시작 ===`);
@@ -283,27 +308,23 @@ async function main() {
 
                 try {
                     // 1. 계정과목 combobox
-                    // ※ Enter 키는 이 UI에서 폼 자동 제출을 유발하므로 사용하지 않음.
-                    //   드롭다운에 매칭 항목이 있으면 클릭으로 선택, 없으면 Escape로 닫고
-                    //   입력된 텍스트를 그대로 필터값으로 사용한다.
+                    // ※ Enter 키는 폼 자동 제출을 유발하므로 사용하지 않음.
+                    //   드롭다운 항목이 있으면 클릭, 없으면 Escape 로 닫고 입력값 그대로 사용.
                     await page.waitForSelector(COMBO_SEL, { state: 'visible', timeout: 10000 });
                     await page.waitForTimeout(500);
                     await page.click(COMBO_SEL);
                     await page.waitForTimeout(300);
                     await page.keyboard.press('Control+A');
                     await page.keyboard.press('Backspace');
-                    // 계정코드(숫자)만 추출해 드롭다운 매칭 향상
+                    // 괄호 안 숫자 코드 추출 → 드롭다운 매칭 향상
                     // ex) "하나 장기운전자금4(29320)" → "29320"
-                    // ex) "하나/장기운전자금-34142 / ..." → "34142"
-                    const codeMatch = accountName.match(/\((\d+)\)/) || accountName.match(/(\d+)\s*$/);
+                    const codeMatch  = accountName.match(/\((\d+)\)/) || accountName.match(/(\d+)\s*$/);
                     const searchText = codeMatch ? codeMatch[1] : accountName;
                     await page.keyboard.type(searchText, { delay: 50 });
                     await page.waitForTimeout(700);
 
-                    // 드롭다운 첫 번째 항목 클릭 (있으면) — 없으면 Escape 로 드롭다운만 닫기
                     const dropdownOption = page.locator('[role="option"], [role="listbox"] li, ul[role="listbox"] li').first();
-                    const optionFound = await dropdownOption.count().catch(() => 0) > 0;
-                    if (optionFound) {
+                    if (await dropdownOption.count().catch(() => 0) > 0) {
                         await dropdownOption.click({ timeout: 2000 }).catch(() => {});
                         await page.waitForTimeout(300);
                         console.log(`  계정과목 선택 (검색어: "${searchText}"): ${accountName}`);
@@ -313,7 +334,7 @@ async function main() {
                         console.log(`[경고] 계정과목 드롭다운 미발견 (검색어: "${searchText}") — 빈 상태로 진행`);
                     }
 
-                    // 2. 거래처명 combobox — 항상 먼저 지우고 값 있으면 입력
+                    // 2. 거래처명 combobox
                     try {
                         const vendorCombo = page.locator(COMBO_SEL).nth(1);
                         await vendorCombo.click();
@@ -339,7 +360,7 @@ async function main() {
                         }
                     } catch { console.log('[경고] 거래처명 combobox를 찾지 못했습니다.'); }
 
-                    // 3. 적요 combobox — 항상 먼저 지우고 값 있으면 입력
+                    // 3. 적요 combobox
                     try {
                         const descCombo = page.locator(COMBO_SEL).nth(2);
                         await descCombo.click();
@@ -411,7 +432,7 @@ async function main() {
             for (let attempt = 1; attempt <= 5; attempt++) {
                 try {
                     await groupBook.xlsx.writeFile(groupFilePath);
-                    console.log(`\n[저장] ${path.basename(groupFilePath)}`);
+                    console.log(`\n[저장] ${path.relative(ROOT_DIR, groupFilePath)}`);
                     break;
                 } catch (e) {
                     if (e.code === 'EBUSY' && attempt < 5) {
