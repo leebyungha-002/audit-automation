@@ -118,12 +118,15 @@ async function uploadGeneralLedgerIfNeeded(page, config, companyDir) {
     }
 
     // ── 전기 데이터 업로드 여부 다이얼로그 처리 ─────────────────────────────
+    // "아니오" / "아니요" 두 표기 모두 대응
+    const DISMISS_SEL = 'button:has-text("아니오"), button:has-text("아니요")';
+
     if (prevYearFile) {
         // 전기 파일이 있을 때: "네, 전기 데이터도 업로드하겠습니다" 클릭 후 파일 주입
         try {
             const yesPrevBtn = await page.waitForSelector(
                 'button:has-text("네")',
-                { state: 'visible', timeout: 5000 }
+                { state: 'visible', timeout: 10000 }   // 5000 → 10000
             );
             await yesPrevBtn.click();
             await page.waitForTimeout(1000);
@@ -137,12 +140,21 @@ async function uploadGeneralLedgerIfNeeded(page, config, companyDir) {
             await page.waitForTimeout(1000);
         } catch (e) {
             console.log(`[업로드] 전기 데이터 다이얼로그 처리 실패 (건너뜀): ${e.message}`);
+            // 다이얼로그가 화면에 남아 있으면 강제로 닫아 이후 메뉴 클릭 차단 방지
+            try {
+                const dismissBtn = page.locator(DISMISS_SEL).first();
+                if (await dismissBtn.isVisible({ timeout: 3000 })) {
+                    await dismissBtn.click();
+                    await page.waitForTimeout(800);
+                    console.log('[업로드] 전기 데이터 다이얼로그 강제 닫기 완료');
+                }
+            } catch { /* 다이얼로그가 없으면 무시 */ }
         }
     } else {
-        // 전기 파일이 없을 때: "아니요, 당기만 분석하겠습니다" 클릭
+        // 전기 파일이 없을 때: "아니오/아니요, 당기만 분석하겠습니다" 클릭
         try {
             const skipPrevBtn = await page.waitForSelector(
-                'button:has-text("아니요")',
+                DISMISS_SEL,
                 { state: 'visible', timeout: 5000 }
             );
             console.log('[업로드] 전기 데이터 업로드 다이얼로그 감지. 당기만 분석으로 진행합니다.');
