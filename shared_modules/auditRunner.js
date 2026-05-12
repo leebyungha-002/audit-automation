@@ -291,14 +291,16 @@ async function downloadAndAddSheet(page, downloadBtnSelector, sheetName, workboo
 }
 
 // ─── 리스 완전성 자동 연동: lease_filter.py 실행 ─────────────────────────────
-function runLeaseFilter(companyName) {
+function runLeaseFilter(companyName, noFilter = false) {
     const leaseScript = path.join(__dirname, '..', 'lease_analyzer', 'lease_filter.py');
     if (!fs.existsSync(leaseScript)) {
         console.log(`[리스완전성] lease_filter.py 를 찾을 수 없습니다: ${leaseScript}`);
         return;
     }
-    console.log(`\n[리스완전성] lease_filter.py 자동 실행 (회사: ${companyName})`);
-    const result = spawnSync('python', [leaseScript, '--company', companyName], {
+    const args = [leaseScript, '--company', companyName];
+    if (noFilter) args.push('--no-filter');
+    console.log(`\n[리스완전성] lease_filter.py 자동 실행 (회사: ${companyName}${noFilter ? ', 키워드필터 생략' : ''})`);
+    const result = spawnSync('python', args, {
         encoding: 'utf8',
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
         timeout: 120000,
@@ -486,8 +488,11 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
         }
 
         // 11. 리스 완전성 시나리오이면 lease_filter.py 자동 연동
+        //     task_list 시트 '분석옵션' 컬럼에 'no-filter' 또는 '전건' 입력 시 키워드 필터 생략
         if (/리스/.test(taskName) && config.companyName) {
-            runLeaseFilter(config.companyName);
+            const optionRaw = String(groupTasks[0]['분석옵션'] ?? groupTasks[0]['분석 옵션'] ?? '').trim();
+            const noFilter  = /no.?filter|전건/i.test(optionRaw);
+            runLeaseFilter(config.companyName, noFilter);
         }
     }
 }
