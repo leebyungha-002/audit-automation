@@ -391,10 +391,36 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                 await page.keyboard.press('Control+A');
                 await page.keyboard.press('Backspace');
                 await page.keyboard.type(accountName, { delay: 50 });
-                await page.waitForTimeout(500);
-                await page.keyboard.press('Enter');
+                await page.waitForTimeout(700);
+
+                // 드롭다운 옵션 선택: 정확한 텍스트 일치 우선 → 첫 번째 옵션 클릭 → ArrowDown+Enter 폴백
+                let acctSelected = false;
+                try {
+                    const exactOpt = page.locator(`[role="option"]:text-is("${accountName}")`).first();
+                    if (await exactOpt.isVisible({ timeout: 1500 })) {
+                        await exactOpt.click();
+                        acctSelected = true;
+                        console.log(`  계정과목: ${accountName} (정확히 일치하는 옵션 클릭)`);
+                    }
+                } catch {}
+                if (!acctSelected) {
+                    try {
+                        const firstOpt = page.locator('[role="option"]').first();
+                        if (await firstOpt.isVisible({ timeout: 1000 })) {
+                            const optText = await firstOpt.textContent().catch(() => '');
+                            await firstOpt.click();
+                            acctSelected = true;
+                            console.log(`  계정과목: ${accountName} → 첫 번째 옵션 클릭 ("${optText?.trim()}")`);
+                        }
+                    } catch {}
+                }
+                if (!acctSelected) {
+                    await page.keyboard.press('ArrowDown');
+                    await page.waitForTimeout(200);
+                    await page.keyboard.press('Enter');
+                    console.log(`  계정과목: ${accountName} (ArrowDown+Enter 폴백)`);
+                }
                 await page.waitForTimeout(400);
-                console.log(`  계정과목: ${accountName}`);
 
                 // 3. 거래처명 — 두 번째 combobox: 항상 먼저 지우고, 값 있으면 입력
                 try {
@@ -446,11 +472,14 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                 if (amountType)  await clickRadioByLabel(page, amountType,  '금액 유형');
                 if (displayType) await clickRadioByLabel(page, displayType, '표시 방식');
 
-                // 7. 검색
-                const searchSel = config.selectors.searchButton || 'button:has-text("검색")';
-                await page.waitForSelector(searchSel, { state: 'visible', timeout: 10000 });
-                await page.click(searchSel);
-                await page.waitForTimeout(1500);
+                // 7. 검색 — 드롭다운이 열려 있으면 클릭이 씹히므로 Escape로 먼저 닫고 버튼 클릭
+                await page.keyboard.press('Escape');
+                await page.waitForTimeout(300);
+                const searchBtn = page.getByRole('button', { name: '검색', exact: true });
+                await searchBtn.waitFor({ state: 'visible', timeout: 10000 });
+                await searchBtn.click();
+                console.log(`  검색 버튼 클릭 완료`);
+                await page.waitForTimeout(2000);
 
                 // 8. 다운로드 → 그룹 workbook에 시트 추가
                 const downloadSel = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
