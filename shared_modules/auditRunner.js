@@ -384,13 +384,20 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
             try {
                 // 1. 콤보박스가 보일 때까지 대기 후 계정과목 입력
                 // (초기화는 이전 반복 종료 시점에 수행되므로 여기서는 생략)
+                // 계정과목 콤보박스: 1차 클릭으로 활성화 → 내부 input 클릭으로 포커스 → 타이핑
                 await page.waitForSelector(comboSel, { state: 'visible', timeout: 10000 });
                 await page.waitForTimeout(500);
-                await page.click(comboSel);
+                await page.click(comboSel);           // 1차 클릭: 콤보박스 활성화
+                await page.waitForTimeout(400);
+                // 활성화 후 내부 input(또는 콤보박스 자체)에 포커스를 확실히 맞춤
+                const acctInput = page.locator('input[placeholder*="계정"], input[placeholder*="입력"]').first();
+                if (await acctInput.isVisible({ timeout: 800 }).catch(() => false)) {
+                    await acctInput.click();           // 내부 input 클릭으로 활성화
+                } else {
+                    await page.click(comboSel);        // input이 없으면 콤보박스 재클릭
+                }
                 await page.waitForTimeout(300);
-                await page.keyboard.press('Control+A');
-                await page.keyboard.press('Backspace');
-                await page.keyboard.type(accountName, { delay: 50 });
+                await page.keyboard.type(accountName, { delay: 50 });  // Ctrl+A/Backspace 없이 바로 타이핑
                 await page.waitForTimeout(700);
 
                 // 드롭다운 옵션 선택: 정확한 텍스트 일치 우선 → 첫 번째 옵션 클릭 → ArrowDown+Enter 폴백
@@ -475,6 +482,11 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                 // 7. 검색 — 드롭다운이 열려 있으면 클릭이 씹히므로 Escape로 먼저 닫고 버튼 클릭
                 await page.keyboard.press('Escape');
                 await page.waitForTimeout(300);
+                // 검색 직전 스크린샷 — 계정과목이 실제로 선택됐는지 확인용 (첫 계정만)
+                if (ti === 0 && gi === 0) {
+                    await page.screenshot({ path: `graphy/debug_before_search_${safeFileName}.png` }).catch(() => {});
+                    console.log(`  [디버그] 검색 전 스크린샷 저장: debug_before_search_${safeFileName}.png`);
+                }
                 const searchBtn = page.getByRole('button', { name: '검색', exact: true });
                 await searchBtn.waitFor({ state: 'visible', timeout: 10000 });
                 await searchBtn.click();
@@ -483,9 +495,13 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
 
                 // 8. 다운로드 → 그룹 workbook에 시트 추가
                 const downloadSel = config.selectors.excelDownloadBtn || 'button:has-text("결과 다운로드")';
-                const dlVisible = await page.locator(downloadSel).waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+                const dlVisible = await page.locator(downloadSel).waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
                 if (!dlVisible) {
-                    console.log(`  [안내] '${accountName}' 검색 결과 없음 — 다운로드를 건너뜁니다.`);
+                    // 결과 없음: 현재 버튼 목록 + 스크린샷으로 원인 파악
+                    const btns = await page.locator('button').allTextContents().catch(() => []);
+                    const safeName = accountName.replace(/[^\w가-힣]/g, '_');
+                    console.log(`  [안내] '${accountName}' 검색 결과 없음. 버튼 목록: [${btns.map(t => t.trim()).filter(Boolean).join(' | ')}]`);
+                    await page.screenshot({ path: `graphy/debug_no_result_${safeName}.png` }).catch(() => {});
                 } else {
                     await downloadAndAddSheet(page, downloadSel, accountName, groupBook, menuName);
                 }
