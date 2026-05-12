@@ -63,7 +63,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [1/2] 메인 데이터 추출 시작: %COMPANY%
+echo [1/3] 메인 데이터 추출 시작: %COMPANY%
 node run.js %COMPANY%
 set EXTRACT_CODE=%ERRORLEVEL%
 echo.
@@ -72,17 +72,27 @@ if %EXTRACT_CODE% NEQ 0 (
     pause
     exit /b %EXTRACT_CODE%
 )
-echo [1/2] 메인 데이터 추출 완료.
+echo [1/3] 메인 데이터 추출 완료.
 
 echo.
-echo [2/2] 이자비용 원장 추출 시작: %COMPANY%
+echo [2/3] 상세검색 직접 추출 시작: %COMPANY%
+python detail_search_extractor.py %COMPANY%
+set DSE_CODE=%ERRORLEVEL%
+echo.
+if %DSE_CODE% NEQ 0 (
+    echo [WARN] 상세검색 추출 실패 — 계속 진행합니다. (Exit code: %DSE_CODE%)
+)
+echo [2/3] 상세검색 직접 추출 완료.
+
+echo.
+echo [3/3] 이자비용 원장 추출 시작: %COMPANY%
 node interest_expense_extractor.js %COMPANY%
 set IEE_CODE=%ERRORLEVEL%
 echo.
 if %IEE_CODE% NEQ 0 (
     echo [WARN] 이자비용 원장 추출 실패 — 계속 진행합니다. (Exit code: %IEE_CODE%)
 )
-echo [2/2] 이자비용 원장 추출 완료.
+echo [3/3] 이자비용 원장 추출 완료.
 
 echo.
 echo [DONE] 데이터 추출 완료: %COMPANY%
@@ -123,7 +133,7 @@ echo.
 echo [DONE] 주입 및 분석 완료: %COMPANY%
 goto :end
 
-:: ── 순차 실행 (추출 → 주입 → 이자비용추출 → 분석) ──────────────────────────
+:: ── 순차 실행 (추출 → 상세검색 → 주입 → 이자비용추출 → 분석) ─────────────
 :do_all
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -139,7 +149,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [1/4] 메인 데이터 추출 시작: %COMPANY%
+echo [1/5] 메인 데이터 추출 시작: %COMPANY%
 node run.js %COMPANY%
 set EXTRACT_CODE=%ERRORLEVEL%
 echo.
@@ -148,10 +158,20 @@ if %EXTRACT_CODE% NEQ 0 (
     pause
     exit /b %EXTRACT_CODE%
 )
-echo [1/4] 메인 데이터 추출 완료.
+echo [1/5] 메인 데이터 추출 완료.
 
 echo.
-echo [2/4] 감사조서 주입 시작: %COMPANY%
+echo [2/5] 상세검색 직접 추출 시작: %COMPANY%
+python detail_search_extractor.py %COMPANY%
+set DSE_CODE=%ERRORLEVEL%
+echo.
+if %DSE_CODE% NEQ 0 (
+    echo [WARN] 상세검색 추출 실패 — 계속 진행합니다. (Exit code: %DSE_CODE%)
+)
+echo [2/5] 상세검색 직접 추출 완료.
+
+echo.
+echo [3/5] 감사조서 주입 시작: %COMPANY%
 python report\data_injector.py %COMPANY%
 set INJECT_CODE=%ERRORLEVEL%
 echo.
@@ -160,27 +180,27 @@ if %INJECT_CODE% NEQ 0 (
     pause
     exit /b %INJECT_CODE%
 )
-echo [2/4] 감사조서 주입 완료.
+echo [3/5] 감사조서 주입 완료.
 
 echo.
-echo [3/4] 이자비용 원장 추출 시작: %COMPANY%
+echo [4/5] 이자비용 원장 추출 시작: %COMPANY%
 node interest_expense_extractor.js %COMPANY%
 set IEE_CODE=%ERRORLEVEL%
 echo.
 if %IEE_CODE% NEQ 0 (
     echo [WARN] 이자비용 원장 추출 실패 — 계속 진행합니다. (Exit code: %IEE_CODE%)
 )
-echo [3/4] 이자비용 원장 추출 완료.
+echo [4/5] 이자비용 원장 추출 완료.
 
 echo.
-echo [4/4] 이자비용 적정성 분석 시작: %COMPANY%
+echo [5/5] 이자비용 적정성 분석 시작: %COMPANY%
 python interest_expense_analysis.py %COMPANY%\results\이자비용적정성.xlsx
 set ANALYSIS_CODE=%ERRORLEVEL%
 echo.
 if %ANALYSIS_CODE% NEQ 0 (
     echo [WARN] 이자비용 적정성 분석 실패 — 계속 진행합니다. (Exit code: %ANALYSIS_CODE%)
 )
-echo [4/4] 이자비용 적정성 분석 완료.
+echo [5/5] 이자비용 적정성 분석 완료.
 
 echo.
 echo [DONE] 전체 완료: %COMPANY%
