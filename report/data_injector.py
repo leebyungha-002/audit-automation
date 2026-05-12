@@ -30,7 +30,7 @@ except ImportError:
 
 # Windows 콘솔 한글·특수문자 출력 보장
 if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 
 
 # ─── 파일명 정규화 ────────────────────────────────────────────────────────────
