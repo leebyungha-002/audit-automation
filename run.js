@@ -29,12 +29,18 @@ async function main() {
     const args = process.argv.slice(2);
 
     if (args.length === 0) {
-        console.error('사용법: node run.js <폴더명>');
-        console.error('예시: node run.js Braintree');
+        console.error('사용법: node run.js <폴더명> [--sheet <시트명>]');
+        console.error('예시: node run.js graphy');
+        console.error('예시: node run.js graphy --sheet host1_상세검색_시나리오');
         process.exit(1);
     }
 
     const targetCompany = args[0];
+    // --sheet 옵션: 지정된 시트명만 실행 (부분 일치)
+    const sheetFlagIdx = args.indexOf('--sheet');
+    const sheetFilter  = sheetFlagIdx !== -1 ? args[sheetFlagIdx + 1] : null;
+    if (sheetFilter) console.log(`[필터] 시트 필터 적용: "${sheetFilter}"`);
+
     const companyDir = path.join(__dirname, targetCompany);
 
     if (!fs.existsSync(companyDir)) {
@@ -118,9 +124,21 @@ async function main() {
                 }
             });
 
-            console.log(`[안내] 지시서 데이터 로드 완료: settings 항목 ${Object.keys(taskListData).length}개, 메뉴 ${menus.length}개`);
+            // --sheet 필터 적용
+            const filteredMenus = sheetFilter
+                ? menus.filter(m => m.menuName.includes(sheetFilter))
+                : menus;
+            if (sheetFilter && filteredMenus.length === 0) {
+                console.error(`[오류] --sheet "${sheetFilter}"와 일치하는 시트가 없습니다.`);
+                console.error(`사용 가능한 시트: ${menus.map(m => m.menuName).join(', ')}`);
+                process.exit(1);
+            }
+            if (sheetFilter) {
+                console.log(`[필터] ${filteredMenus.length}개 시트 실행: ${filteredMenus.map(m => m.menuName).join(', ')}`);
+            }
+            console.log(`[안내] 지시서 데이터 로드 완료: settings 항목 ${Object.keys(taskListData).length}개, 메뉴 ${filteredMenus.length}개`);
             config.taskList = taskListData;
-            config.menus    = menus;
+            config.menus    = filteredMenus;
         } else {
             console.log(`[안내] ${targetCompany} 폴더 내에 task_list_*.xlsx 파일이 없습니다.`);
         }
