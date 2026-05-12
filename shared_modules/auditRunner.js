@@ -2,6 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
+const { spawnSync } = require('child_process');
 const { initBrowser } = require('./index');
 
 // ─── 엔드포인트 라우팅 ────────────────────────────────────────────────────────
@@ -289,6 +290,36 @@ async function downloadAndAddSheet(page, downloadBtnSelector, sheetName, workboo
     console.log(`[${menuName}] '${safeSheetName}' 시트 추가 완료.`);
 }
 
+// ─── 리스 완전성 자동 연동: lease_filter.py 실행 ─────────────────────────────
+function runLeaseFilter(companyName) {
+    const leaseScript = path.join(__dirname, '..', 'lease_analyzer', 'lease_filter.py');
+    if (!fs.existsSync(leaseScript)) {
+        console.log(`[리스완전성] lease_filter.py 를 찾을 수 없습니다: ${leaseScript}`);
+        return;
+    }
+    console.log(`\n[리스완전성] lease_filter.py 자동 실행 (회사: ${companyName})`);
+    const result = spawnSync('python', [leaseScript, '--company', companyName], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        timeout: 120000,
+    });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) {
+        // lxml UserWarning 등 무해한 경고는 생략, 실제 오류만 출력
+        const errLines = result.stderr.split('\n').filter(l =>
+            l.trim() && !l.includes('UserWarning') && !l.includes('pkg_resources')
+        );
+        if (errLines.length) console.error('[lease_filter]', errLines.join('\n'));
+    }
+    if (result.status === 0) {
+        console.log('[리스완전성] lease_filter.py 완료');
+    } else if (result.status !== null) {
+        console.log(`[리스완전성] lease_filter.py 종료 코드: ${result.status}`);
+    } else if (result.error) {
+        console.log(`[리스완전성] lease_filter.py 실행 실패: ${result.error.message}`);
+    }
+}
+
 // ─── 상세검색_시나리오 전용 핸들러 ───────────────────────────────────────────
 // 동일 '작업명' 행들을 하나의 엑셀 파일로 묶고, 계정과목명을 시트명으로 사용.
 // 각 계정 처리 후 '뒤로가기'로 검색 화면으로 복귀하여 다음 계정을 이어서 처리.
@@ -452,6 +483,11 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                     await new Promise(r => setTimeout(r, attempt * 1000));
                 } else { throw e; }
             }
+        }
+
+        // 11. 리스 완전성 시나리오이면 lease_filter.py 자동 연동
+        if (/리스/.test(taskName) && config.companyName) {
+            runLeaseFilter(config.companyName);
         }
     }
 }
