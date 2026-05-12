@@ -486,6 +486,12 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
         }
 
         // 10. 그룹 파일 저장 (OneDrive EBUSY 재시도 포함)
+        // xlsx 규격상 시트가 0개이면 Excel이 손상으로 인식하므로 빈 안내 시트 추가
+        if (groupBook.worksheets.length === 0) {
+            const emptySheet = groupBook.addWorksheet('결과없음');
+            emptySheet.getCell('A1').value = '검색 결과가 없습니다.';
+            console.log(`[${taskName}] 검색 결과 없음 — '결과없음' 시트를 추가하여 파일을 저장합니다.`);
+        }
         for (let attempt = 1; attempt <= 5; attempt++) {
             try {
                 await groupBook.xlsx.writeFile(groupFilePath);
