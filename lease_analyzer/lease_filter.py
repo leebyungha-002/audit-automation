@@ -6,8 +6,14 @@ K-IFRS 1116 리스 완전성(Completeness) 검토 스크립트
 """
 
 import glob
+import io
 import os
 import re
+import sys
+
+# Windows 콘솔 한글 출력 보장
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 import pandas as pd
 from openpyxl.utils import get_column_letter
@@ -149,7 +155,7 @@ def save_excel(df: pd.DataFrame) -> None:
 # ── main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     print("=" * 55)
-    print("  K-IFRS 1116 리스 완전성 검토 — 후보 추출")
+    print("  K-IFRS 1116 리스 완전성 검토 - 후보 추출")
     print("=" * 55)
 
     print("\n[1/3] 원장 데이터 로드")
