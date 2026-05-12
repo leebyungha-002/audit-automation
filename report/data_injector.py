@@ -745,14 +745,12 @@ def main():
 
         wb_tgt = tgt_book_cache[tgt_path]
 
-        # ── 대상 시트 확인 ────────────────────────────────────────────────
+        # ── 대상 시트 확인 (없으면 신규 생성) ───────────────────────────────
         resolved_tgt = resolve_sheet(wb_tgt.sheetnames, tgt_sheet)
         if not resolved_tgt:
-            msg = f'대상 시트 없음: {tgt_sheet}  (파일: {os.path.basename(tgt_path)})'
-            print(f'    [오류] {msg}')
-            errors.append(f'[{label}] {msg}')
-            wb_src.close()
-            continue
+            print(f'    [안내] 대상 시트 없음 → 신규 생성: {tgt_sheet}')
+            wb_tgt.create_sheet(tgt_sheet)
+            resolved_tgt = tgt_sheet
         if resolved_tgt != tgt_sheet:
             print(f'    시트 매칭 (대상) : {tgt_sheet} → {resolved_tgt}')
         ws_tgt = wb_tgt[resolved_tgt]
