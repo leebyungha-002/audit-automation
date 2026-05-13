@@ -44,9 +44,10 @@ RATE_FMT   = '0.00%'
 
 def _months_per_period(freq: str) -> int:
     freq = str(freq).strip()
-    if freq in ('월', '월별', 'M', '매월'):       return 1
-    if freq in ('분기', '분기별', 'Q', '매분기'):  return 3
-    if freq in ('년', '연', '연간', '년간', 'Y', '매년'): return 12
+    if freq in ('월', '월별', 'M', '매월'):                return 1
+    if freq in ('분기', '분기별', 'Q', '매분기'):           return 3
+    if freq in ('반기', '반기별', 'H', '매반기', '6개월'):  return 6
+    if freq in ('년', '연', '연간', '년간', 'Y', '매년'):   return 12
     raise ValueError(f'지원하지 않는 지급주기: {freq}')
 
 
@@ -61,12 +62,32 @@ def _monthly_rate(annual_rate: float) -> float:
 
 
 def _safe_float(v, default: float = 0.0) -> float:
-    """NaN/None/공백 → default, 할인율 % 단위 자동 변환 (>1 이면 /100)"""
+    """NaN/None/공백 → default"""
     try:
         f = float(v)
         return default if (f != f) else f   # NaN check
     except (TypeError, ValueError):
         return default
+
+
+def _col(row: dict, *candidates) -> object:
+    """컬럼명 후보 중 값이 있는 첫 번째 반환 (괄호 제거 부분 일치 폴백)"""
+    for key in candidates:
+        if key in row:
+            v = row[key]
+            if v is not None and str(v).strip() not in ('', 'nan', 'NaN', 'None'):
+                return v
+    # 폴백: 괄호·특수문자 제거 후 부분 일치
+    def _strip(s):
+        return re.sub(r'[\(\)（）/\s]', '', str(s))
+    for key in candidates:
+        k_stripped = _strip(key)
+        for col in row:
+            if k_stripped in _strip(col) or _strip(col) in k_stripped:
+                v = row[col]
+                if v is not None and str(v).strip() not in ('', 'nan', 'NaN', 'None'):
+                    return v
+    return None
 
 
 # ── 스케줄 생성 ───────────────────────────────────────────────────────────────
@@ -77,19 +98,19 @@ def build_schedule(c: dict) -> tuple:
     Returns (schedule_df, initial_liability, initial_rou)
     """
     start    = pd.Timestamp(c['리스개시일']).date()
-    n_months = int(_safe_float(c['최종 산정리스기간(월수)'], 1))
-    payment  = _safe_float(c['정기리스료'])
-    freq     = str(c['지급주기(월/분기/년)']).strip()
-    timing   = str(c['지급시점(기초/기말)']).strip()
-    annual_r = _safe_float(c['적용할인율(연 이자율)'])
-    if annual_r > 1:        # % 단위로 입력된 경우 (예: 5.0 → 0.05)
+    n_months = int(_safe_float(_col(c, '최종 산정리스기간(월수)'), 1))
+    payment  = _safe_float(_col(c, '정기리스료'))
+    freq     = str(_col(c, '지급주기(월/분기/년)', '지급주기(월/분기/반기/년)', '지급주기') or '월').strip()
+    timing   = str(_col(c, '지급시점(기초/기말)', '지급시점') or '기말').strip()
+    annual_r = _safe_float(_col(c, '적용할인율(연 이자율)', '적용할인율', '이자율'))
+    if annual_r > 1:        # % 단위 입력 (예: 5.0 → 0.05)
         annual_r /= 100
 
-    residual    = _safe_float(c.get('보증잔존가치/매수선택권'))
-    prepaid     = _safe_float(c.get('선급리스료'))
-    incentive   = _safe_float(c.get('수취한 리스인센티브'))
-    direct_cost = _safe_float(c.get('리스개설직접원가'))
-    restoration = _safe_float(c.get('복구충당부채'))
+    residual    = _safe_float(_col(c, '보증잔존가치/매수선택권', '보증잔존가치/매수선택권금액', '잔존가치'))
+    prepaid     = _safe_float(_col(c, '선급리스료'))
+    incentive   = _safe_float(_col(c, '수취한 리스인센티브', '리스인센티브'))
+    direct_cost = _safe_float(_col(c, '리스개설직접원가', '직접원가'))
+    restoration = _safe_float(_col(c, '복구충당부채', '복구충당부채(현재가치)', '복구충당'))
 
     mpp    = _months_per_period(freq)      # 지급주기(개월)
     n_prd  = n_months // mpp              # 총 지급 횟수
@@ -292,12 +313,15 @@ def main():
 
     for fpath in files:
         fname = os.path.basename(fpath)
-        m = re.match(r'^lease_(.+)_information_(\d{4})\.xlsx$', fname)
+        # 연도: 4자리 숫자(2025) 또는 fy##(fy25 → 2025) 모두 허용
+        m = re.match(r'^lease_(.+)_information_(\d{4}|fy\d{2})\.xlsx$', fname, re.IGNORECASE)
         if not m:
             print(f'[건너뜀] 파일명 형식 불일치: {fname}')
             continue
 
-        company, year = m.group(1), m.group(2)
+        company  = m.group(1)
+        raw_year = m.group(2)
+        year     = raw_year if raw_year.isdigit() else f'20{raw_year[2:]}'  # fy25 → 2025
         print(f'\n{"="*60}')
         print(f'  처리: {fname}  (회사: {company}, 연도: {year})')
         print(f'{"="*60}')
@@ -339,7 +363,8 @@ def main():
             cur_p     = dec_row['유동성대체대상액'].values[0]    if has_dec else None
             nc_p      = dec_row['비유동성리스부채잔액'].values[0] if has_dec else None
 
-            annual_r = _safe_float(row.get('적용할인율(연 이자율)'))
+            row_d    = row.to_dict()
+            annual_r = _safe_float(_col(row_d, '적용할인율(연 이자율)', '적용할인율', '이자율'))
             if annual_r > 1:
                 annual_r /= 100
 
@@ -347,19 +372,20 @@ def main():
                 '리스계약번호':          cid,
                 '리스개시일':           pd.Timestamp(row['리스개시일']).date(),
                 '리스종료일':           pd.Timestamp(row['리스종료일']).date(),
-                '리스기간(월)':         int(_safe_float(row['최종 산정리스기간(월수)'])),
-                '정기리스료':           _safe_float(row['정기리스료']),
-                '지급주기':             str(row['지급주기(월/분기/년)']).strip(),
-                '지급시점':             str(row['지급시점(기초/기말)']).strip(),
+                '리스기간(월)':         int(_safe_float(_col(row_d, '최종 산정리스기간(월수)'))),
+                '정기리스료':           _safe_float(_col(row_d, '정기리스료')),
+                '지급주기':             str(_col(row_d, '지급주기(월/분기/년)', '지급주기(월/분기/반기/년)', '지급주기') or '').strip(),
+                '지급시점':             str(_col(row_d, '지급시점(기초/기말)', '지급시점') or '').strip(),
                 '할인율(연)':           annual_r,
                 '최초 리스부채':        round(init_liab),
                 '사용권자산(최초)':     round(init_rou),
                 f'{year}년 이자비용':   round(yr_int),
                 f'{year}년 감가상각비': round(yr_dep),
                 f'{year}년 리스료지급': round(yr_cash),
-                f'{year}년말 리스부채': round(yr_end_lb) if yr_end_lb is not None else '',
-                '유동성대체대상액':      round(cur_p) if cur_p  is not None else '',
-                '비유동성리스부채잔액':  round(nc_p)  if nc_p   is not None else '',
+                # 만료 계약은 0으로 표시 (NaN 대신)
+                f'{year}년말 리스부채': round(yr_end_lb) if yr_end_lb is not None else 0,
+                '유동성대체대상액':      round(cur_p) if cur_p  is not None else 0,
+                '비유동성리스부채잔액':  round(nc_p)  if nc_p   is not None else 0,
             })
 
             print(f'초기부채 {init_liab:>14,.0f}원 / 사용권자산 {init_rou:>14,.0f}원')
