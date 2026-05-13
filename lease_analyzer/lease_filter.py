@@ -89,6 +89,10 @@ def _normalize_result_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         raw_desc = df['적요란'].fillna('')
         df['적요'] = raw_desc.astype(str).str.strip()
 
+    # 거래처명 → 거래처 (detail_search_extractor 출력 형식 대응)
+    if '거래처명' in df.columns and '거래처' not in df.columns:
+        df = df.rename(columns={'거래처명': '거래처'})
+
     # 계정과목 코드 정규화
     if '계정과목' in df.columns:
         df['계정과목'] = df['계정과목'].astype(str).apply(_clean_account)
@@ -113,7 +117,7 @@ def load_from_result(company: str) -> pd.DataFrame:
     candidates = []
     for pat in ['*리스*완전성*.xlsx', '*리스완전성*.xlsx', '*리스거래*.xlsx']:
         candidates += glob.glob(os.path.join(results_dir, pat))
-    candidates = sorted(set(candidates))   # 최신순 정렬 (파일명에 날짜 포함)
+    candidates = sorted(set(f for f in candidates if not os.path.basename(f).startswith('~$')))
 
     if not candidates:
         raise FileNotFoundError(
