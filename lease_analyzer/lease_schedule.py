@@ -260,6 +260,30 @@ def _annual_summary(sched: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _deposit_annual_summary(sched: pd.DataFrame, deposit: float) -> pd.DataFrame:
+    """월별 보증금 상각 → 연간 집계 (현재가치할인차금 상각표)"""
+    if '보증금_기초PV' not in sched.columns:
+        return pd.DataFrame()
+    dep = sched.dropna(subset=['보증금_기초PV'])
+    if dep.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for yr, grp in dep.groupby(dep['연월'].str[:4], sort=True):
+        beg_pv = float(grp.iloc[0]['보증금_기초PV'])
+        end_pv = float(grp.iloc[-1]['보증금_기말PV'])
+        yr_int = float(grp['보증금_이자수익'].sum())
+        rows.append({
+            '연도':           yr,
+            '기초보증금PV':    beg_pv,
+            '기초현가할인차금': deposit - beg_pv,
+            '당기이자수익':    yr_int,
+            '기말보증금PV':    end_pv,
+            '기말현가할인차금': max(0.0, deposit - end_pv),
+        })
+    return pd.DataFrame(rows)
+
+
 # ── Excel 저장 ────────────────────────────────────────────────────────────────
 
 _HDR_FILL   = PatternFill('solid', fgColor='1F497D')
@@ -432,7 +456,46 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
             cell.value = round(ar_rou.iloc[-1][col]); cell.number_format = MONEY_FMT
     cur += 2
 
-    # ── 4. 월별 상세 스케줄 ───────────────────────────────────────────────────
+    # ── 4. 보증금 현재가치할인차금 연간 상각표 ───────────────────────────────────
+    if has_deposit:
+        dep_annual = _deposit_annual_summary(sched, deposit)
+        if not dep_annual.empty:
+            D_HDRS = ['연도', '기초보증금PV', '기초현가할인차금', '당기이자수익', '기말보증금PV', '기말현가할인차금']
+            D_DATA = D_HDRS[1:]
+            _DEP_HDR_FILL = PatternFill('solid', fgColor='7E57C2')
+
+            _title(cur, '■  보증금 현재가치할인차금 상각 연간 요약', len(D_HDRS))
+            cur += 1
+            for ci, h in enumerate(D_HDRS, 1):
+                cell = _bc(cur, ci)
+                cell.value = h; cell.fill = _DEP_HDR_FILL; cell.font = _HDR_FONT; cell.alignment = CTR
+            cur += 1
+
+            for _, ar in dep_annual.iterrows():
+                c0 = _bc(cur, 1); c0.value = ar['연도']; c0.alignment = CTR
+                for ci, col in enumerate(D_DATA, 2):
+                    cell = _bc(cur, ci)
+                    v = ar.get(col)
+                    if v is not None and not (isinstance(v, float) and v != v):
+                        cell.value = round(float(v)); cell.number_format = MONEY_FMT
+                    cell.alignment = RGT
+                    # 기말현가할인차금 열은 배경 구분
+                    if col == '기말현가할인차금':
+                        cell.fill = PatternFill('solid', fgColor='F3E5F5')
+                cur += 1
+
+            # 합계 행: 당기이자수익 합산 / 기말 잔액은 마지막 연도값
+            c0 = _bc(cur, 1); c0.value = '합  계'; c0.font = Font(bold=True)
+            c0.fill = _SUM_FILL; c0.alignment = CTR
+            for ci, col in enumerate(D_DATA, 2):
+                cell = _bc(cur, ci); cell.fill = _SUM_FILL; cell.alignment = RGT
+                if col == '당기이자수익':
+                    cell.value = round(dep_annual[col].sum()); cell.number_format = MONEY_FMT
+                elif col in ('기말보증금PV', '기말현가할인차금'):
+                    cell.value = round(dep_annual.iloc[-1][col]); cell.number_format = MONEY_FMT
+            cur += 2
+
+    # ── 5. 월별 상세 스케줄 ───────────────────────────────────────────────────
     M_COLS = ['연월', '기초부채잔액', '이자비용', '현금지급액', '원금상환액',
               '기말부채잔액', '기초자산잔액', '감가상각비', '기말자산잔액',
               '유동성대체대상액', '비유동성리스부채잔액']
