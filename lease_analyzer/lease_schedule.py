@@ -21,6 +21,7 @@ Usage:
 import glob
 import os
 import re
+import shutil
 import sys
 
 import numpy_financial as npf
@@ -32,9 +33,10 @@ from openpyxl.utils import get_column_letter
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-INPUT_DIR  = os.path.join(BASE_DIR, 'input_data')
-OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(BASE_DIR)   # audit-automation 루트
+INPUT_DIR   = os.path.join(BASE_DIR, 'input_data')
+OUTPUT_DIR  = os.path.join(BASE_DIR, 'output')
 
 MONEY_FMT  = '#,##0'
 RATE_FMT   = '0.00%'
@@ -198,12 +200,47 @@ def build_schedule(c: dict) -> tuple:
     return df, initial_liability, initial_rou
 
 
+# ── 연간 집계 ─────────────────────────────────────────────────────────────────
+
+def _annual_summary(sched: pd.DataFrame) -> pd.DataFrame:
+    """월별 스케줄 → 연간 집계 (리스부채 + 사용권자산)"""
+    rows = []
+    for yr, grp in sched.groupby(sched['연월'].str[:4], sort=True):
+        dec = grp[grp['연월'].str.endswith('-12')]
+
+        def _dec(col):
+            if dec.empty or col not in dec.columns:
+                return None
+            v = dec.iloc[0][col]
+            return None if (v is None or (isinstance(v, float) and v != v)) else float(v)
+
+        rows.append({
+            '연도':            yr,
+            '기초리스부채잔액':  float(grp.iloc[0]['기초부채잔액']),
+            '이자비용':         float(grp['이자비용'].sum()),
+            '현금지급액':       float(grp['현금지급액'].sum()),
+            '원금상환액':       float(grp['원금상환액'].sum()),
+            '기말리스부채잔액':  float(grp.iloc[-1]['기말부채잔액']),
+            '유동성리스부채':   _dec('유동성대체대상액'),
+            '비유동성리스부채': _dec('비유동성리스부채잔액'),
+            '기초사용권자산':   float(grp.iloc[0]['기초자산잔액']),
+            '감가상각비':       float(grp['감가상각비'].sum()),
+            '기말사용권자산':   float(grp.iloc[-1]['기말자산잔액']),
+        })
+    return pd.DataFrame(rows)
+
+
 # ── Excel 저장 ────────────────────────────────────────────────────────────────
 
-_HDR_FILL  = PatternFill('solid', fgColor='1F497D')
-_HDR_FONT  = Font(bold=True, color='FFFFFF', size=10)
-_DEC_FILL  = PatternFill('solid', fgColor='FFF2CC')   # 12월 행 강조
-_CUR_FILL  = PatternFill('solid', fgColor='E2EFDA')   # 유동성 값 있는 셀
+_HDR_FILL   = PatternFill('solid', fgColor='1F497D')
+_HDR_FONT   = Font(bold=True, color='FFFFFF', size=10)
+_DEC_FILL   = PatternFill('solid', fgColor='FFF2CC')
+_CUR_FILL   = PatternFill('solid', fgColor='E2EFDA')
+_INFO_FILL  = PatternFill('solid', fgColor='EBF3FF')
+_TITLE_FILL = PatternFill('solid', fgColor='D6E4F0')
+_SUM_FILL   = PatternFill('solid', fgColor='F2F2F2')
+_THIN       = Side(style='thin', color='BFBFBF')
+_BORDER     = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 
 def _set_header(ws):
@@ -215,7 +252,6 @@ def _set_header(ws):
 
 
 def _money_cols(ws, df: pd.DataFrame, exclude=(), min_row=2):
-    """금액 컬럼에 천단위 콤마 서식 적용"""
     for ci, col in enumerate(df.columns, 1):
         if col in exclude:
             continue
@@ -228,13 +264,170 @@ def _money_cols(ws, df: pd.DataFrame, exclude=(), min_row=2):
 
 def _col_width(ws, widths: dict, default=14):
     for ci, col_dim in ws.column_dimensions.items():
-        pass  # just initialize
+        pass
     for ci, col in enumerate(ws.iter_cols(min_row=1, max_row=1), 1):
         hdr = str(col[0].value or '')
         ws.column_dimensions[get_column_letter(ci)].width = widths.get(hdr, default)
 
 
-def save_results(summary_df: pd.DataFrame, detail_df: pd.DataFrame, output_path: str):
+def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched: pd.DataFrame):
+    """단일 계약 시트: 계약정보 → 리스부채 연간요약 → 사용권자산 연간요약 → 월별상세"""
+
+    CTR = Alignment(horizontal='center', vertical='center')
+    RGT = Alignment(horizontal='right',  vertical='center')
+    LFT = Alignment(horizontal='left',   vertical='center')
+
+    def _bc(r, c):
+        cell = ws.cell(row=r, column=c)
+        cell.border = _BORDER
+        return cell
+
+    def _hdr(r, c, text):
+        cell = _bc(r, c)
+        cell.value = text; cell.fill = _HDR_FILL; cell.font = _HDR_FONT; cell.alignment = CTR
+
+    def _money(r, c, val):
+        cell = _bc(r, c)
+        if val is not None and not (isinstance(val, float) and val != val):
+            cell.value = round(float(val))
+            cell.number_format = MONEY_FMT
+        cell.alignment = RGT
+
+    def _title(r, text, n=9):
+        cell = ws.cell(row=r, column=1)
+        cell.value = text
+        cell.font  = Font(bold=True, size=11, color='1F3864')
+        cell.fill  = _TITLE_FILL
+        cell.alignment = LFT
+        if n > 1:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
+        ws.row_dimensions[r].height = 22
+
+    cur = 1
+
+    # ── 1. 계약 정보 ──────────────────────────────────────────────────────────
+    desc = str(info.get('desc', '')).strip()
+    _title(cur, f'▶  리스계약 {cid}  /  {desc}' if desc else f'▶  리스계약 {cid}', 9)
+    cur += 1
+
+    info_labels = ['개시일', '종료일', '기간(월)', '정기리스료', '지급주기', '지급시점', '할인율(연)']
+    info_values = [
+        info.get('start'), info.get('end'), info.get('n_months'),
+        info.get('payment'), info.get('freq'), info.get('timing'), info.get('rate'),
+    ]
+    for i, (lbl, val) in enumerate(zip(info_labels, info_values), 1):
+        lc = ws.cell(row=cur, column=i)
+        lc.value = lbl; lc.font = Font(bold=True); lc.fill = _INFO_FILL
+        lc.alignment = CTR; lc.border = _BORDER
+        vc = ws.cell(row=cur + 1, column=i)
+        vc.value = val; vc.alignment = CTR; vc.border = _BORDER
+        if lbl == '할인율(연)':
+            vc.number_format = RATE_FMT
+        elif lbl == '정기리스료':
+            vc.number_format = MONEY_FMT
+        elif lbl in ('개시일', '종료일'):
+            vc.number_format = 'YYYY-MM-DD'
+    cur += 3   # label + value + blank
+
+    # ── 2. 리스부채 연간 요약 ─────────────────────────────────────────────────
+    L_HDRS = ['연도', '기초리스부채잔액', '이자비용', '현금지급액', '원금상환액',
+              '기말리스부채잔액', '유동성리스부채', '비유동성리스부채']
+    L_DATA = L_HDRS[1:]
+    L_SUM  = {'이자비용', '현금지급액', '원금상환액'}
+
+    _title(cur, '■  리스부채 상각 연간 요약', len(L_HDRS))
+    cur += 1
+    for ci, h in enumerate(L_HDRS, 1):
+        _hdr(cur, ci, h)
+    cur += 1
+
+    for _, ar in annual.iterrows():
+        c0 = _bc(cur, 1); c0.value = ar['연도']; c0.alignment = CTR
+        for ci, col in enumerate(L_DATA, 2):
+            _money(cur, ci, ar.get(col))
+        cur += 1
+
+    c0 = _bc(cur, 1); c0.value = '합  계'; c0.font = Font(bold=True)
+    c0.fill = _SUM_FILL; c0.alignment = CTR
+    for ci, col in enumerate(L_DATA, 2):
+        cell = _bc(cur, ci); cell.fill = _SUM_FILL; cell.alignment = RGT
+        if col in L_SUM:
+            cell.value = round(annual[col].sum()); cell.number_format = MONEY_FMT
+    cur += 2
+
+    # ── 3. 사용권자산 연간 요약 ───────────────────────────────────────────────
+    # 취득원가(고정) + 상각누계액 계산
+    rou_init = float(annual.iloc[0]['기초사용권자산']) if not annual.empty else 0.0
+    ar_rou   = annual.copy()
+    ar_rou['취득원가']  = rou_init
+    ar_rou['상각누계액'] = rou_init - ar_rou['기말사용권자산']
+
+    R_HDRS = ['연도', '취득원가', '감가상각비(해당연도)', '상각누계액', '기말잔액']
+    R_DATA = ['취득원가', '감가상각비', '상각누계액', '기말사용권자산']
+
+    _title(cur, '■  사용권자산 감가상각 연간 요약', len(L_HDRS))
+    cur += 1
+    for ci, h in enumerate(R_HDRS, 1):
+        _hdr(cur, ci, h)
+    cur += 1
+
+    for _, ar in ar_rou.iterrows():
+        c0 = _bc(cur, 1); c0.value = ar['연도']; c0.alignment = CTR
+        for ci, col in enumerate(R_DATA, 2):
+            _money(cur, ci, ar.get(col))
+        cur += 1
+
+    # 합계 행: 감가상각비(해당연도)만 합산, 나머지는 최종연도 값
+    c0 = _bc(cur, 1); c0.value = '합  계'; c0.font = Font(bold=True)
+    c0.fill = _SUM_FILL; c0.alignment = CTR
+    for ci, col in enumerate(R_DATA, 2):
+        cell = _bc(cur, ci); cell.fill = _SUM_FILL; cell.alignment = RGT
+        if col == '감가상각비':
+            cell.value = round(ar_rou['감가상각비'].sum()); cell.number_format = MONEY_FMT
+        elif col in ('상각누계액', '기말사용권자산'):
+            cell.value = round(ar_rou.iloc[-1][col]); cell.number_format = MONEY_FMT
+    cur += 2
+
+    # ── 4. 월별 상세 스케줄 ───────────────────────────────────────────────────
+    M_COLS = ['연월', '기초부채잔액', '이자비용', '현금지급액', '원금상환액',
+              '기말부채잔액', '기초자산잔액', '감가상각비', '기말자산잔액',
+              '유동성대체대상액', '비유동성리스부채잔액']
+
+    _title(cur, '■  월별 상각 스케줄 (상세)', len(L_HDRS))
+    cur += 1
+    mhdr_row = cur
+    for ci, h in enumerate(M_COLS, 1):
+        _hdr(cur, ci, h)
+    cur += 1
+
+    for _, mr in sched.iterrows():
+        ym     = str(mr.get('연월', ''))
+        is_dec = ym.endswith('-12')
+        for ci, col in enumerate(M_COLS, 1):
+            cell = _bc(cur, ci)
+            val  = mr.get(col)
+            if col == '연월':
+                cell.value = ym; cell.alignment = CTR
+            else:
+                if val is not None and not (isinstance(val, float) and val != val):
+                    cell.value = round(float(val))
+                    cell.number_format = MONEY_FMT
+                cell.alignment = RGT
+            if is_dec:
+                cell.fill = _DEC_FILL
+                if col in ('유동성대체대상액', '비유동성리스부채잔액') and cell.value:
+                    cell.fill = _CUR_FILL
+                    cell.font = Font(bold=True)
+        cur += 1
+
+    # ── 열 너비 ───────────────────────────────────────────────────────────────
+    for ci, w in enumerate([10, 16, 14, 14, 14, 16, 14, 14, 16, 18, 20], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    ws.freeze_panes = f'B{mhdr_row + 1}'
+
+
+def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -245,15 +438,12 @@ def save_results(summary_df: pd.DataFrame, detail_df: pd.DataFrame, output_path:
         _set_header(ws1)
         _money_cols(ws1, summary_df, exclude=('리스계약번호', '리스개시일', '리스종료일',
                                                '리스기간(월)', '지급주기', '지급시점', '할인율(연)'))
-
-        # 할인율 % 서식
         rate_ci = summary_df.columns.get_loc('할인율(연)') + 1 if '할인율(연)' in summary_df.columns else None
         if rate_ci:
             for cell in ws1.iter_rows(min_row=2, max_row=ws1.max_row,
                                        min_col=rate_ci, max_col=rate_ci):
                 for c in cell:
                     c.number_format = RATE_FMT
-
         s_widths = {
             '리스계약번호': 18, '리스개시일': 12, '리스종료일': 12,
             '리스기간(월)': 10, '정기리스료': 14, '지급주기': 8, '지급시점': 8, '할인율(연)': 10,
@@ -261,40 +451,13 @@ def save_results(summary_df: pd.DataFrame, detail_df: pd.DataFrame, output_path:
         }
         _col_width(ws1, s_widths, default=18)
 
-        # ── Sheet 2: 월별 상각 스케줄 ────────────────────────────────────────
-        detail_df.to_excel(writer, sheet_name='월별 상각 스케줄', index=False)
-        ws2 = writer.sheets['월별 상각 스케줄']
-        _set_header(ws2)
-        _money_cols(ws2, detail_df, exclude=('리스계약번호', '연월'))
-
-        # 12월 행 배경색 + 유동성 셀 강조
-        ym_ci   = detail_df.columns.get_loc('연월') + 1
-        cur_ci  = detail_df.columns.get_loc('유동성대체대상액') + 1    if '유동성대체대상액'    in detail_df.columns else None
-        ncur_ci = detail_df.columns.get_loc('비유동성리스부채잔액') + 1 if '비유동성리스부채잔액' in detail_df.columns else None
-        n_cols  = len(detail_df.columns)
-
-        for row_idx, ym_val in enumerate(detail_df['연월'], start=2):
-            if str(ym_val).endswith('-12'):
-                for ci in range(1, n_cols + 1):
-                    ws2.cell(row=row_idx, column=ci).fill = _DEC_FILL
-                if cur_ci:
-                    ws2.cell(row=row_idx, column=cur_ci).fill  = _CUR_FILL
-                    ws2.cell(row=row_idx, column=cur_ci).font  = Font(bold=True)
-                if ncur_ci:
-                    ws2.cell(row=row_idx, column=ncur_ci).fill = _CUR_FILL
-                    ws2.cell(row=row_idx, column=ncur_ci).font = Font(bold=True)
-
-        d_widths = {
-            '리스계약번호': 18, '연월': 10,
-            '기초부채잔액': 16, '이자비용': 14, '현금지급액': 14,
-            '원금상환액': 14, '기말부채잔액': 16,
-            '기초자산잔액': 16, '감가상각비': 14, '기말자산잔액': 16,
-            '유동성대체대상액': 18, '비유동성리스부채잔액': 20,
-        }
-        _col_width(ws2, d_widths, default=14)
-
-        # 행 고정 (헤더 + 계약번호/연월)
-        ws2.freeze_panes = 'C2'
+        # ── 계약별 개별 시트 ──────────────────────────────────────────────────
+        for c in contracts:
+            desc  = str(c['info'].get('desc', '')).strip()
+            raw   = f"{c['cid']}_{desc}" if desc else f"계약_{c['cid']}"
+            sname = raw[:31]
+            ws    = writer.book.create_sheet(title=sname)
+            _write_contract_sheet(ws, c['cid'], c['info'], c['annual'], c['sched'])
 
     print(f'  → {os.path.basename(output_path)} 저장 완료')
 
@@ -336,22 +499,22 @@ def main():
         df_in = df_in[df_in['리스계약번호'].astype(str).str.strip() != '']
         print(f'  계약 수: {len(df_in)}건')
 
-        all_schedules = []
-        summary_rows  = []
+        contracts    = []
+        summary_rows = []
 
         for _, row in df_in.iterrows():
-            cid = str(row['리스계약번호']).strip()
+            cid   = str(row['리스계약번호']).strip()
+            row_d = row.to_dict()
             print(f'  ▷ {cid}', end='  ')
             try:
-                sched, init_liab, init_rou = build_schedule(row.to_dict())
+                sched, init_liab, init_rou = build_schedule(row_d)
             except Exception as e:
                 print(f'[오류] {e}')
                 continue
 
-            sched.insert(0, '리스계약번호', cid)
-            all_schedules.append(sched)
+            annual = _annual_summary(sched)
 
-            # 당해연도 집계
+            # 당해연도 집계 (summary_df 컬럼용)
             yr_rows   = sched[sched['연월'].str.startswith(year)]
             dec_row   = sched[sched['연월'] == f'{year}-12']
             has_dec   = not dec_row.empty
@@ -359,14 +522,33 @@ def main():
             yr_int    = yr_rows['이자비용'].sum()
             yr_dep    = yr_rows['감가상각비'].sum()
             yr_cash   = yr_rows['현금지급액'].sum()
-            yr_end_lb = dec_row['기말부채잔액'].values[0]  if has_dec else None
+            yr_end_lb = dec_row['기말부채잔액'].values[0]     if has_dec else None
             cur_p     = dec_row['유동성대체대상액'].values[0]    if has_dec else None
             nc_p      = dec_row['비유동성리스부채잔액'].values[0] if has_dec else None
 
-            row_d    = row.to_dict()
+            if has_dec:
+                yr_end_rou = dec_row['기말자산잔액'].values[0]
+            elif not yr_rows.empty:
+                yr_end_rou = yr_rows.iloc[-1]['기말자산잔액']
+            else:
+                yr_end_rou = 0.0
+
             annual_r = _safe_float(_col(row_d, '적용할인율(연 이자율)', '적용할인율', '이자율'))
             if annual_r > 1:
                 annual_r /= 100
+
+            # 계약 정보 dict (계약별 시트 상단 표시용)
+            info = {
+                'desc':     str(_col(row_d, '상세정보(호수/차량번호)', '상세정보', '상세') or '').strip(),
+                'start':    pd.Timestamp(row['리스개시일']).date(),
+                'end':      pd.Timestamp(row['리스종료일']).date(),
+                'n_months': int(_safe_float(_col(row_d, '최종 산정리스기간(월수)'))),
+                'payment':  _safe_float(_col(row_d, '정기리스료')),
+                'freq':     str(_col(row_d, '지급주기(월/분기/년)', '지급주기(월/분기/반기/년)', '지급주기') or '').strip(),
+                'timing':   str(_col(row_d, '지급시점(기초/기말)', '지급시점') or '').strip(),
+                'rate':     annual_r,
+            }
+            contracts.append({'cid': cid, 'info': info, 'sched': sched, 'annual': annual})
 
             summary_rows.append({
                 '리스계약번호':          cid,
@@ -374,38 +556,42 @@ def main():
                 '리스종료일':           pd.Timestamp(row['리스종료일']).date(),
                 '리스기간(월)':         int(_safe_float(_col(row_d, '최종 산정리스기간(월수)'))),
                 '정기리스료':           _safe_float(_col(row_d, '정기리스료')),
-                '지급주기':             str(_col(row_d, '지급주기(월/분기/년)', '지급주기(월/분기/반기/년)', '지급주기') or '').strip(),
-                '지급시점':             str(_col(row_d, '지급시점(기초/기말)', '지급시점') or '').strip(),
+                '지급주기':             info['freq'],
+                '지급시점':             info['timing'],
                 '할인율(연)':           annual_r,
                 '최초 리스부채':        round(init_liab),
                 '사용권자산(최초)':     round(init_rou),
                 f'{year}년 이자비용':   round(yr_int),
                 f'{year}년 감가상각비': round(yr_dep),
                 f'{year}년 리스료지급': round(yr_cash),
-                # 만료 계약은 0으로 표시 (NaN 대신)
                 f'{year}년말 리스부채': round(yr_end_lb) if yr_end_lb is not None else 0,
-                '유동성대체대상액':      round(cur_p) if cur_p  is not None else 0,
-                '비유동성리스부채잔액':  round(nc_p)  if nc_p   is not None else 0,
+                '유동성대체대상액':      round(cur_p)    if cur_p    is not None else 0,
+                '비유동성리스부채잔액':  round(nc_p)     if nc_p     is not None else 0,
+                f'{year}년말 사용권자산': round(yr_end_rou) if yr_end_rou is not None else 0,
+                '사용권자산 상각누계':   round(init_rou - (yr_end_rou if yr_end_rou is not None else 0)),
             })
 
             print(f'초기부채 {init_liab:>14,.0f}원 / 사용권자산 {init_rou:>14,.0f}원')
 
-        if not all_schedules:
+        if not contracts:
             print('  [안내] 처리된 계약 없음')
             continue
 
-        summary_df = pd.DataFrame(summary_rows)
-
-        # 전체 월별 스케줄 병합 + 금액 반올림
-        detail_df = pd.concat(all_schedules, ignore_index=True)
-        for col in detail_df.columns:
-            if col not in ('리스계약번호', '연월'):
-                detail_df[col] = pd.to_numeric(detail_df[col], errors='coerce').round(0)
-
+        summary_df  = pd.DataFrame(summary_rows)
         output_path = os.path.join(OUTPUT_DIR, f'lease_schedule_{company}_{year}.xlsx')
-        save_results(summary_df, detail_df, output_path)
+        save_results(summary_df, contracts, output_path)
 
-        print(f'\n  완료 — 계약 {len(summary_rows)}건 / 스케줄 {len(detail_df):,}행')
+        # 회사별 results/ 폴더에도 복사
+        company_results = os.path.join(PROJECT_DIR, company, 'results')
+        if os.path.isdir(company_results):
+            copy_path = os.path.join(company_results, f'lease_schedule_{company}_{year}.xlsx')
+            shutil.copy2(output_path, copy_path)
+            print(f'  → results 복사: {os.path.relpath(copy_path, PROJECT_DIR)}')
+        else:
+            print(f'  [안내] {company}/results/ 폴더 없음 — results 복사 생략')
+
+        total_months = sum(len(c['sched']) for c in contracts)
+        print(f'\n  완료 — 계약 {len(contracts)}건 / 월별행 {total_months:,}행 / 시트 {len(contracts)+1}개')
         print('=' * 60)
 
 

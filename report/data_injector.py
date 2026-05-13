@@ -404,6 +404,85 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
     return len(df)
 
 
+# ─── 리스 스케줄 주입 ────────────────────────────────────────────────────────
+
+def inject_lease_schedule(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
+    """리스 스케줄 요약(계약별 요약 시트)을 감사조서 사용권자산_리스부채 시트에 주입.
+
+    매핑 규칙:
+      I  = 납부액(당기)     ← {year}년 리스료지급
+      J  = 리스부채(유동)   ← 유동성대체대상액
+      K  = 리스부채(비유동) ← 비유동성리스부채잔액
+      L  = 이자비용(당기)   ← {year}년 이자비용
+      P  = 사용권자산취득가  ← 사용권자산(최초)
+      Q  = 상각누계         ← 사용권자산 상각누계
+      R  = 감가상각비(당기)  ← {year}년 감가상각비
+    행 매칭: 감사조서 B열(개시일) == 리스개시일
+    """
+    # year: 파일명 lease_schedule_{company}_{year}.xlsx 에서 추출
+    m = re.search(r'_(\d{4})\.xlsx$', os.path.basename(src_path), re.IGNORECASE)
+    year = m.group(1) if m else str(pd.Timestamp.now().year)
+
+    df = pd.read_excel(src_path, sheet_name=src_sheet)
+    if df.empty:
+        raise ValueError('리스 스케줄 요약 시트가 비어 있습니다.')
+
+    resolved_tgt = resolve_sheet(wb_tgt.sheetnames, tgt_sheet_name)
+    if not resolved_tgt:
+        raise ValueError(f'대상 시트 없음: {tgt_sheet_name}')
+    ws = wb_tgt[resolved_tgt]
+
+    # start_cell(예: B6)에서 검색 시작 행 결정
+    search_start_row, _ = _parse_cell(start_cell)
+
+    # 컬럼 인덱스 (1-based)
+    COL_B = 2   # 개시일
+    COL_I = 9   # 납부액(당기)
+    COL_J = 10  # 리스부채(유동)
+    COL_K = 11  # 리스부채(비유동)
+    COL_L = 12  # 이자비용(당기)
+    COL_P = 16  # 사용권자산취득가
+    COL_Q = 17  # 상각누계
+    COL_R = 18  # 감가상각비(당기)
+
+    def _v(row, key, default=0):
+        val = row.get(key, default)
+        return 0 if (val is None or (isinstance(val, float) and val != val)) else val
+
+    matched = 0
+    for _, contract in df.iterrows():
+        start_date = contract.get('리스개시일')
+        if pd.isna(start_date):
+            continue
+        start_ts = pd.Timestamp(start_date).date()
+
+        for row_idx in range(search_start_row, search_start_row + 50):
+            cell_b = ws.cell(row=row_idx, column=COL_B).value
+            if cell_b is None:
+                continue
+            try:
+                if pd.Timestamp(cell_b).date() == start_ts:
+                    cid = contract.get('리스계약번호', '')
+                    ws.cell(row=row_idx, column=COL_I).value = _v(contract, f'{year}년 리스료지급')
+                    ws.cell(row=row_idx, column=COL_J).value = _v(contract, '유동성대체대상액')
+                    ws.cell(row=row_idx, column=COL_K).value = _v(contract, '비유동성리스부채잔액')
+                    ws.cell(row=row_idx, column=COL_L).value = _v(contract, f'{year}년 이자비용')
+                    ws.cell(row=row_idx, column=COL_P).value = _v(contract, '사용권자산(최초)')
+                    ws.cell(row=row_idx, column=COL_Q).value = _v(contract, '사용권자산 상각누계')
+                    ws.cell(row=row_idx, column=COL_R).value = _v(contract, f'{year}년 감가상각비')
+                    print(f'    [LEASE] 계약 {cid} ({start_ts}) → row{row_idx} 주입 완료')
+                    matched += 1
+                    break
+            except Exception:
+                continue
+
+    unmatched = len(df) - matched
+    if unmatched > 0:
+        print(f'    [LEASE] 주의: {unmatched}건 매칭 실패 (개시일 불일치)')
+    print(f'    [LEASE] {matched}/{len(df)}건 주입 완료 (연도: {year})')
+    return matched
+
+
 # ─── 이미지 복사 ─────────────────────────────────────────────────────────────
 
 def _extract_first_image_zip(src_path, sheet_name):
@@ -652,8 +731,8 @@ def main():
         print(f'    매칭 성공 (소스) : {src_kw}')
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
 
-        # ── pandas 직접 처리 조기 분기 (PIVOT_AGING / ANALYSIS_INJECT) ──────────
-        if remarks in ('PIVOT_AGING', 'ANALYSIS_INJECT'):
+        # ── pandas 직접 처리 조기 분기 (PIVOT_AGING / ANALYSIS_INJECT / LEASE_INJECT) ─
+        if remarks in ('PIVOT_AGING', 'ANALYSIS_INJECT', 'LEASE_INJECT'):
             if tgt_kw not in tgt_path_cache:
                 tgt_path = find_file_by_keyword(audit_dir, tgt_kw)
                 if not tgt_path:
@@ -680,6 +759,10 @@ def main():
                     print(f'    [Aging] 피벗 생성 → {tgt_sheet} @ {start_cell}')
                     injected = inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
                     print(f'    [완료] 피벗 {injected}행 주입')
+                elif remarks == 'LEASE_INJECT':
+                    print(f'    [Lease] 리스 스케줄 주입 → {tgt_sheet} @ {start_cell}')
+                    injected = inject_lease_schedule(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
+                    print(f'    [완료] 리스 {injected}건 주입')
                 else:  # ANALYSIS_INJECT
                     print(f'    [Analysis] 변동분석 주입 → {tgt_sheet} @ {start_cell}'
                           + (f'  기준금액: {threshold:,.0f}' if threshold else ''))
