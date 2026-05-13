@@ -21,14 +21,106 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 import pandas as pd
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ── 리스 탐지 키워드 ──────────────────────────────────────────────────────────
+# ── 리스 탐지 키워드 (상세검색 필터용) ───────────────────────────────────────
 LEASE_KEYWORDS = [
     '호', '빌딩', '건물', '임차', '차량', '렌탈', '렌트', '리스',
     '사무실', '복합기', '정수기', '냉난방', '에어컨', '주차', '창고',
 ]
+
+# ── K-IFRS 1116 자동 판정 기준 ─────────────────────────────────────────────
+
+# 적요 기준 리스 인식 필요 키워드 (명확한 것만)
+_LEASE_O_DESC = [
+    '임차료', '임대료', '렌탈료', '리스료',
+    '임차', '임대',
+    '렌트카', '렌터카', '사무실', '창고', '공장', '호실',
+]
+# 거래처명 기준 명시적 렌탈/리스 업체 (단순 '리스' 포함 제외 — 오탐 방지)
+_LEASE_O_VENDOR_EXACT = [
+    'SK매직', '코웨이', '청호나이스', '현대렌탈', 'KT렌탈',
+    'AJ렌터카', 'SK렌터카', '롯데렌터카', '쏘카', '오릭스', '한국리스',
+]
+# 거래처명 키워드 (단어 전체 포함이어야 유효 — '렌탈', '렌터카' 포함 업체)
+_LEASE_O_VENDOR_KW = ['렌탈', '렌터카', '임대']
+
+# 적요 기준 비리스 키워드 (리스 판정보다 먼저 체크)
+_LEASE_X_DESC = [
+    '유류', '주유', '기름', '경유', '휘발유', '통행료', '하이패스', '주차',
+    '컨설팅', '강연', '사례금', '강사료', '자문', '채용', '헤드헌터',
+    '특허', '상표', '출원', '인증심사', '심사비',
+    '연구용역', '연구비', '과제비', '용역비', '보험료',
+    '사이닝', '보너스', '법인카드', '로드쇼', '간담회',
+    '중개수수료', '중계수수료', '중개비',
+    '정기구독', '구독료',
+    'Consulting', 'Services', 'Flight', 'GMP', 'PKG', 'MDR',
+]
+# 저가자산 면제 검토 키워드 (K-IFRS 1116.5(b), USD 5,000 이하)
+_LOW_VALUE_DESC = ['정수기', '공기청정기', '복합기', '프린터', '냉온수기', '냉정수기', '에어컨', '제빙기']
+# 저가자산 면제 금액 기준 proxy (USD 5,000 × 1,400 = 7,000,000원)
+_LOW_VALUE_AMT = 7_000_000
+
+
+def classify_lease(row: dict) -> tuple:
+    """
+    K-IFRS 1116 기준으로 리스 인식 여부를 자동 판정.
+    Returns: (리스인식여부, 면제검토, 판단근거)
+      리스인식여부 : 'O' = 리스 인식 필요 / 'X' = 비리스 / '?' = 추가 검토
+      면제검토     : '단기' / '저가' / '단기·저가' / ''
+      판단근거     : 판정 이유 문자열
+    """
+    account = str(row.get('계정과목', ''))
+    desc    = str(row.get('대표_적요', ''))
+    vendor  = str(row.get('거래처', ''))
+    amount  = float(row.get('연간_총발생액', 0) or 0)
+    count   = int(row.get('거래_발생건수', 0) or 0)
+
+    def _exemption(amt, cnt):
+        parts = []
+        if cnt < 12:
+            parts.append('단기')
+        if amt <= _LOW_VALUE_AMT or any(kw in desc for kw in _LOW_VALUE_DESC):
+            parts.append('저가')
+        return '·'.join(parts)
+
+    # ── 0. 비리스 적요 선검사 (임차료 계정은 예외)
+    if '임차료' not in account:
+        for kw in _LEASE_X_DESC:
+            if kw in desc or kw.lower() in desc.lower():
+                return 'X', '', f'적요 [{kw}]'
+
+    # ── 1. 임차료 계정 → O (K-IFRS 1116 적용 대상)
+    if '임차료' in account:
+        return 'O', _exemption(amount, count), f'{account} 계정'
+
+    # ── 2. 적요에 리스 키워드 → O
+    for kw in _LEASE_O_DESC:
+        if kw in desc:
+            return 'O', _exemption(amount, count), f'적요 [{kw}]'
+
+    # ── 3. 거래처가 명시적 렌탈/리스 업체 → O
+    for kw in _LEASE_O_VENDOR_EXACT:
+        if kw in vendor:
+            return 'O', _exemption(amount, count), f'거래처 [{kw}]'
+    for kw in _LEASE_O_VENDOR_KW:
+        if kw in vendor:
+            return 'O', _exemption(amount, count), f'거래처명 [{kw}]'
+
+    # ── 4. 차량유지비 + 렌트 → O
+    if '차량유지비' in account and ('렌트' in desc or '렌탈' in desc):
+        return 'O', _exemption(amount, count), '차량 렌트'
+
+    # ── 5. 수수료 계정 → X
+    if '수수료' in account:
+        return 'X', '', f'{account} — 리스 키워드 없음'
+
+    # ── 6. 차량유지비 → X
+    if '차량유지비' in account:
+        return 'X', '', '차량유지비 — 소비성'
+
+    return '?', '', '추가 검토 필요'
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -177,7 +269,11 @@ def aggregate(df: pd.DataFrame) -> pd.DataFrame:
         .sort_values('연간_총발생액', ascending=False)
         .reset_index(drop=True)
     )
-    result['리스인식여부(O/X)'] = ''
+
+    classifications = result.to_dict('records')
+    result['리스인식여부(O/X)'] = [classify_lease(r)[0] for r in classifications]
+    result['면제검토']          = [classify_lease(r)[1] for r in classifications]
+    result['판단근거']          = [classify_lease(r)[2] for r in classifications]
     result['비고'] = ''
     return result
 
@@ -192,9 +288,31 @@ def save_excel(df: pd.DataFrame, output_path: str) -> None:
     }
     df = df.rename(columns=col_labels)
 
+    # 판정 결과별 색상
+    _FILL = {
+        'O': PatternFill('solid', fgColor='C6EFCE'),   # 녹색 — 리스 인식 필요
+        'X': PatternFill('solid', fgColor='FFCCCC'),   # 빨강 — 비리스
+        '?': PatternFill('solid', fgColor='FFEB9C'),   # 노랑 — 추가 검토
+    }
+    _FONT = {
+        'O': Font(bold=True, color='276221'),
+        'X': Font(bold=False, color='9C0006'),
+        '?': Font(bold=False, color='7D4E00'),
+    }
+
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='리스후보목록')
         ws = writer.sheets['리스후보목록']
+
+        judgment_col = df.columns.get_loc('리스인식여부(O/X)') + 1
+
+        for row_cells in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            j_cell = row_cells[judgment_col - 1]
+            val = str(j_cell.value or '').strip()
+            if val in _FILL:
+                for cell in row_cells:
+                    cell.fill = _FILL[val]
+                j_cell.font = _FONT[val]
 
         # 천단위 콤마 서식
         amt_col = df.columns.get_loc('연간 총 발생액') + 1
@@ -212,20 +330,24 @@ def save_excel(df: pd.DataFrame, output_path: str) -> None:
         ws.row_dimensions[1].height = 18
 
         # 컬럼 너비 자동 조정
+        col_widths = {'거래처': 28, '계정과목': 18, '연간 총 발생액': 16,
+                      '거래 발생건수': 12, '대표 적요': 45,
+                      '리스인식여부(O/X)': 14, '면제검토': 10, '판단근거': 30, '비고': 20}
         for col_idx, col_name in enumerate(df.columns, start=1):
-            header_len = len(str(col_name))
-            data_len = (
-                df.iloc[:, col_idx - 1].astype(str).str.len().max()
-                if len(df) > 0 else 0
-            )
-            data_len = 0 if pd.isna(data_len) else int(data_len)
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(
-                max(header_len, data_len) + 4, 60
-            )
+            ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(col_name, 15)
 
+    # 판정 요약 출력
+    counts = df['리스인식여부(O/X)'].value_counts()
+    o_amt  = df.loc[df['리스인식여부(O/X)'] == 'O', '연간 총 발생액'].sum()
     print(f"\n저장 완료: {output_path}")
-    print(f"  후보 건수(거래처x계정과목): {len(df):,}건")
-    print(f"  연간 총 발생액 합계: {df['연간 총 발생액'].sum():,.0f}원")
+    print(f"  전체 후보: {len(df):,}건 / 연간 총 발생액: {df['연간 총 발생액'].sum():,.0f}원")
+    print(f"  ● O (리스 인식 필요): {counts.get('O', 0):,}건 / {o_amt:,.0f}원")
+    print(f"  ● X (비리스):         {counts.get('X', 0):,}건")
+    print(f"  ● ? (추가 검토):      {counts.get('?', 0):,}건")
+    if '면제검토' in df.columns:
+        exempt = df[df['면제검토'] != '']['면제검토'].value_counts()
+        if not exempt.empty:
+            print(f"  ※ 면제 검토 대상: {exempt.to_dict()}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
