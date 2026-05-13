@@ -54,6 +54,7 @@ _LEASE_X_DESC = [
     '연구용역', '연구비', '과제비', '용역비', '보험료',
     '사이닝', '보너스', '법인카드', '로드쇼', '간담회',
     '중개수수료', '중계수수료', '중개비',
+    '송금수수료', '해외송금',
     '정기구독', '구독료',
     'Consulting', 'Services', 'Flight', 'GMP', 'PKG', 'MDR',
 ]
@@ -146,6 +147,17 @@ def _top_remarks(series: pd.Series, n: int = 2) -> str:
     if cleaned.empty:
         return ''
     return ' / '.join(cleaned.value_counts().head(n).index.tolist())
+
+
+def _normalize_desc_key(desc: str) -> str:
+    """적요를 집계 키용으로 정규화 — 월/차수 등 변동 요소만 제거하여 동일 자산을 하나의 그룹으로."""
+    s = str(desc).strip()
+    s = re.sub(r'\d{4}년\s*', '', s)            # 연도 제거
+    s = re.sub(r'\d{1,2}월분?', '', s)           # 1월, 2월분 등 제거
+    s = re.sub(r'\d+\s*(차|회)차?\s*', '', s)    # 1차, 2회 등 차수 제거
+    s = re.sub(r'\(\s*\)', '', s)               # 빈 괄호 제거
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s if s else '(적요없음)'
 
 
 # ── 모드 1: input_data/ 원장 로드 ────────────────────────────────────────────
@@ -259,13 +271,18 @@ def filter_lease_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
+    # 적요 정규화 키: 월/차수 제거 후 동일 자산은 같은 그룹, 다른 자산(차량번호 등)은 다른 그룹
+    df = df.copy()
+    df['_desc_key'] = df['적요'].apply(_normalize_desc_key)
+
     result = (
-        df.groupby(['거래처', '계정과목'], as_index=False, sort=False)
+        df.groupby(['거래처', '계정과목', '_desc_key'], as_index=False, sort=False)
         .agg(
             연간_총발생액=('차변', 'sum'),
             거래_발생건수=('차변', 'count'),
             대표_적요=('적요', _top_remarks),
         )
+        .drop(columns=['_desc_key'])
         .sort_values('연간_총발생액', ascending=False)
         .reset_index(drop=True)
     )
