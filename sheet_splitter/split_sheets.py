@@ -2,12 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 sheet_splitter/split_sheets.py
-통합 엑셀 파일을 TARGET_COLUMN 기준으로 시트별 분리 저장
+통합 엑셀 파일을 시트별 분리/그룹핑 저장
 
 Usage:
+    # [기본] 단일 시트의 컬럼값으로 분리
     python split_sheets.py
-    python split_sheets.py --col 조서번호_시트명
-    python split_sheets.py --col 조서번호_시트명 --input 통합시트.xlsx --sheet Sheet1
+    python split_sheets.py --mode col --col 조서번호_시트명
+
+    # [시트명 그룹핑] '_' 앞 접두어 기준으로 시트를 묶어 출력
+    python split_sheets.py --mode sheet
+    python split_sheets.py --mode sheet --input 삼동산업_2025.xlsx
 """
 
 import sys
@@ -28,9 +32,11 @@ BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR  = os.path.join(BASE_DIR, 'input_data')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
-DEFAULT_TARGET_COL = '조서번호_시트명'
-DEFAULT_NAN_LABEL  = '기타_분류안됨'
-OUTPUT_FILENAME    = '조서분리완료_결과물.xlsx'
+DEFAULT_TARGET_COL   = '조서번호_시트명'
+DEFAULT_NAN_LABEL    = '기타_분류안됨'
+OUTPUT_FILENAME_COL  = '조서분리완료_결과물.xlsx'
+OUTPUT_FILENAME_SHEET = '시트그룹핑_결과물.xlsx'
+OUTPUT_FILENAME      = OUTPUT_FILENAME_COL   # 하위호환
 
 MAX_COL_WIDTH = 60
 MIN_COL_WIDTH = 8
@@ -65,6 +71,40 @@ def find_input_file(directory: str, filename: str | None = None) -> str:
 
 # ── 데이터 로드 (수식 배제, 값만 추출) ───────────────────────────────────────
 
+def _dedup_columns(headers: list[str]) -> list[str]:
+    """중복 컬럼명에 .1 .2 ... 접미사를 붙여 유일하게 만든다."""
+    seen: dict[str, int] = {}
+    result = []
+    for h in headers:
+        if h in seen:
+            seen[h] += 1
+            result.append(f'{h}.{seen[h]}')
+        else:
+            seen[h] = 0
+            result.append(h)
+    return result
+
+
+def _read_sheet_df(filepath: str, sheet_name: str) -> pd.DataFrame:
+    """단일 시트를 값만 추출해 DataFrame으로 반환 (verbose 없음)."""
+    wb = load_workbook(filepath, data_only=True, read_only=True)
+    if sheet_name not in wb.sheetnames:
+        wb.close()
+        raise ValueError(f'시트 "{sheet_name}" 없음')
+    ws = wb[sheet_name]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if not rows:
+        return pd.DataFrame()
+    raw_headers = [
+        str(c).strip() if c is not None else f'열_{i}'
+        for i, c in enumerate(rows[0], 1)
+    ]
+    headers = _dedup_columns(raw_headers)
+    data = [list(r) for r in rows[1:] if any(c is not None for c in r)]
+    return pd.DataFrame(data, columns=headers)
+
+
 def load_as_values(filepath: str, sheet_name: str | None = None) -> pd.DataFrame:
     """
     openpyxl data_only=True 로 읽어 수식·외부링크를 완전 배제하고
@@ -74,8 +114,6 @@ def load_as_values(filepath: str, sheet_name: str | None = None) -> pd.DataFrame
     """
     print(f'  파일 로드 중: {os.path.basename(filepath)}')
 
-    # data_only=True: 수식 대신 마지막으로 Excel이 계산한 캐시값을 읽음
-    # read_only=True: 대용량 파일 메모리 절약
     wb = load_workbook(filepath, data_only=True, read_only=True)
 
     if sheet_name:
@@ -94,12 +132,10 @@ def load_as_values(filepath: str, sheet_name: str | None = None) -> pd.DataFrame
     if not rows:
         raise ValueError('시트에 데이터가 없습니다.')
 
-    # 헤더 행: None 셀은 '열_N' 으로 대체
     headers = [
         str(c).strip() if c is not None else f'열_{i}'
         for i, c in enumerate(rows[0], 1)
     ]
-    # 완전 빈 행 제외
     data = [list(r) for r in rows[1:] if any(c is not None for c in r)]
 
     df = pd.DataFrame(data, columns=headers)
@@ -151,7 +187,109 @@ def auto_col_width(ws,
         )
 
 
-# ── 메인 분리 로직 ────────────────────────────────────────────────────────────
+# ── 시트명 접두어 그룹핑 (--mode sheet) ──────────────────────────────────────
+
+NOTES_SHEET_KEYWORD = '보고서주석'
+OUTPUT_FILENAME_NOTES = '보고서주석.xlsx'
+
+
+def _write_groups(filepath: str, sheet_list: list[str], output_path: str, sep: str):
+    """sheet_list 를 접두어로 그룹핑하여 output_path 에 저장."""
+    groups: dict[str, list[str]] = {}
+    for sn in sheet_list:
+        prefix = sn.split(sep, 1)[0] if sep in sn else sn
+        groups.setdefault(prefix, []).append(sn)
+
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        for prefix in sorted(groups.keys()):
+            sub_sheets = groups[prefix]
+            dfs = []
+            for sn in sub_sheets:
+                try:
+                    df_s = _read_sheet_df(filepath, sn)
+                    if df_s.empty:
+                        continue
+                    df_s.insert(0, '원본시트명', sn)
+                    dfs.append(df_s)
+                except Exception as e:
+                    print(f'  [경고] {sn}: {e}')
+
+            if not dfs:
+                continue
+
+            combined = pd.concat(dfs, ignore_index=True, sort=False)
+            out_name = sanitize_sheet_name(prefix)
+            combined.to_excel(writer, sheet_name=out_name, index=False)
+
+            ws = writer.sheets[out_name]
+            apply_header_style(ws)
+            auto_col_width(ws)
+
+            sub_preview = ', '.join(sub_sheets[:3])
+            if len(sub_sheets) > 3:
+                sub_preview += f' 외 {len(sub_sheets)-3}개'
+            print(f'  [{out_name:<31}]  {len(combined):>6,}행  ← {sub_preview}')
+
+    return len(groups)
+
+
+def group_by_sheet_prefix(
+    nan_label:  str       = DEFAULT_NAN_LABEL,
+    input_file: str | None = None,
+    sep:        str       = '_',
+):
+    """
+    입력 파일의 시트를 두 단계로 처리:
+
+    1) 시트명이 정확히 '보고서주석'인 시트가 존재하면,
+       그 시트부터 끝까지를 보고서주석.xlsx 로 별도 저장.
+    2) 나머지(그 이전) 시트들은 '_' 앞 접두어 기준으로 그룹핑하여
+       시트그룹핑_결과물.xlsx 에 저장.
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    filepath = find_input_file(INPUT_DIR, input_file)
+    print(f'\n  파일: {os.path.basename(filepath)}')
+
+    wb_tmp = load_workbook(filepath, data_only=True, read_only=True)
+    all_sheets = wb_tmp.sheetnames
+    wb_tmp.close()
+
+    # 정확히 '보고서주석'과 일치하는 시트 인덱스 탐색
+    notes_idx = next(
+        (i for i, sn in enumerate(all_sheets) if sn == NOTES_SHEET_KEYWORD),
+        None,
+    )
+
+    if notes_idx is not None:
+        main_sheets  = all_sheets[:notes_idx]
+        notes_sheets = all_sheets[notes_idx:]
+        print(f'  총 시트 수     : {len(all_sheets)}개')
+        print(f'  감사조서 시트  : {len(main_sheets)}개 (접두어 그룹핑 대상)')
+        print(f'  보고서주석 시트: {len(notes_sheets)}개 ({NOTES_SHEET_KEYWORD} 포함 이후)')
+    else:
+        main_sheets  = list(all_sheets)
+        notes_sheets = []
+        print(f'  총 시트 수: {len(all_sheets)}개  (보고서주석 시트 없음)')
+
+    # ── 감사조서 부분 처리 ──────────────────────────────────────────────────
+    if main_sheets:
+        print(f'\n  [감사조서 그룹핑] → {OUTPUT_FILENAME_SHEET}')
+        output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME_SHEET)
+        n_groups = _write_groups(filepath, main_sheets, output_path, sep)
+        print(f'  → {n_groups}개 그룹 저장 완료')
+
+    # ── 보고서주석 부분 처리 ───────────────────────────────────────────────
+    if notes_sheets:
+        print(f'\n  [보고서주석 저장] → {OUTPUT_FILENAME_NOTES}')
+        notes_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME_NOTES)
+        n_notes = _write_groups(filepath, notes_sheets, notes_path, sep)
+        print(f'  → {n_notes}개 그룹 저장 완료')
+
+    print('\n  전체 완료')
+
+
+# ── 메인 분리 로직 (--mode col) ───────────────────────────────────────────────
 
 def split_sheets(
     target_col: str       = DEFAULT_TARGET_COL,
@@ -185,10 +323,9 @@ def split_sheets(
     unique_vals = sorted(df[target_col].unique())
     print(f'\n  분리 기준 컬럼 : {target_col}')
     print(f'  고유값 수       : {len(unique_vals)}개')
-    print(f'  출력 파일       : {OUTPUT_FILENAME}\n')
+    print(f'  출력 파일       : {OUTPUT_FILENAME_COL}\n')
 
-    # 4. 시트별 분리 및 저장 (100% 정적 값 — 수식·링크 없음)
-    output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME)
+    output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME_COL)
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         for val in unique_vals:
@@ -211,12 +348,22 @@ def split_sheets(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='통합 엑셀을 TARGET_COLUMN 기준으로 시트별 분리 저장'
+        description=(
+            'sheet  모드: 시트명 "_" 앞 접두어로 그룹핑 (기본값)\n'
+            'col    모드: 특정 컬럼값 기준으로 시트 분리'
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['sheet', 'col'],
+        default='sheet',
+        help='sheet: 시트명 접두어 그룹핑(기본값) | col: 컬럼값 기준 분리',
     )
     parser.add_argument(
         '--col',
         default=DEFAULT_TARGET_COL,
-        help=f'분리 기준 컬럼명 (기본값: "{DEFAULT_TARGET_COL}")',
+        help=f'[col 모드] 분리 기준 컬럼명 (기본값: "{DEFAULT_TARGET_COL}")',
     )
     parser.add_argument(
         '--nan',
@@ -231,16 +378,28 @@ def main():
     parser.add_argument(
         '--sheet',
         default=None,
-        help='읽을 시트명. 생략 시 활성 시트(첫 번째 시트) 사용',
+        help='[col 모드] 읽을 시트명. 생략 시 활성 시트 사용',
+    )
+    parser.add_argument(
+        '--sep',
+        default='_',
+        help='[sheet 모드] 그룹 구분자 (기본값: "_")',
     )
     args = parser.parse_args()
 
-    split_sheets(
-        target_col=args.col,
-        nan_label=args.nan,
-        input_file=args.input,
-        sheet_name=args.sheet,
-    )
+    if args.mode == 'sheet':
+        group_by_sheet_prefix(
+            nan_label=args.nan,
+            input_file=args.input,
+            sep=args.sep,
+        )
+    else:
+        split_sheets(
+            target_col=args.col,
+            nan_label=args.nan,
+            input_file=args.input,
+            sheet_name=args.sheet,
+        )
 
 
 if __name__ == '__main__':
