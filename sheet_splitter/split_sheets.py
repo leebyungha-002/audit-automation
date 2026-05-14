@@ -17,6 +17,7 @@ import os
 import glob
 import argparse
 import re
+import shutil
 
 # ── win32com (--mode sheet) ───────────────────────────────────────────────────
 try:
@@ -106,40 +107,17 @@ def _start_excel():
     return app
 
 
-def _copy_sheets_to_new_wb(src_wb, sheet_names: list[str], app):
-    """
-    sheet_names 를 새 통합문서에 이름 오름차순으로 네이티브 복사.
-
-    - Sheet.Copy(After=...) : VBA의 Sheet.Copy After:=... 와 동일
-    - 틀 고정, 셀 병합, 색상, 열 너비 등 서식 100% 유지
-    - 새 통합문서의 기본 시트(Sheet1 등)는 복사 후 삭제
-    """
-    new_wb   = app.Workbooks.Add()
-    defaults = [new_wb.Worksheets(i + 1).Name
-                for i in range(new_wb.Worksheets.Count)]
-
-    for name in sorted(sheet_names):
-        src_wb.Worksheets(name).Copy(
-            After=new_wb.Worksheets(new_wb.Worksheets.Count)
-        )
-
-    for name in defaults:
-        try:
-            new_wb.Worksheets(name).Delete()
-        except Exception:
-            pass
-
-    return new_wb
-
-
 def _formulas_to_values(wb):
     """
     모든 시트의 수식을 현재 계산값으로 직접 대체.
     UsedRange.Value = UsedRange.Value 로 일괄 처리 →
     외부 링크 포함 모든 수식 제거, 데이터 연결 오류 없음 보장.
+    피벗 테이블이 포함된 시트는 건너뜀 (피벗 범위는 직접 값 설정 불가).
     """
     for ws in wb.Worksheets:
         try:
+            if ws.PivotTables().Count > 0:
+                continue
             used = ws.UsedRange
             val  = used.Value
             if val is not None:
@@ -148,22 +126,34 @@ def _formulas_to_values(wb):
             print(f'    [경고] 수식변환 실패 ({ws.Name}): {e}')
 
 
-def _save_group_file(src_wb, sheet_list: list[str], out_path: str, app):
+def _save_group_file(src_path: str, sheet_list: list[str], out_path: str, app):
     """
-    그룹 시트들을 새 파일로 저장하는 전체 파이프라인:
-    네이티브 복사 → 수식/링크 제거(값으로 변환) → 저장 → 닫기
+    [처리 흐름]
+    1. shutil.copy2 로 원본 파일 전체 복사 (서식·데이터 100% 보존)
+    2. Excel 에서 복사본 열기
+    3. 수식 → 값 변환 (그룹 외 시트 삭제 전에 처리 — 참조 오류 방지)
+    4. 그룹 외 시트 역순 삭제
+    5. 저장 후 닫기
     """
-    new_wb = None
+    shutil.copy2(src_path, out_path)
+
+    wb = app.Workbooks.Open(out_path, UpdateLinks=False)
     try:
-        new_wb = _copy_sheets_to_new_wb(src_wb, sheet_list, app)
-        _formulas_to_values(new_wb)
-        new_wb.SaveAs(out_path, FileFormat=XL_XLSX_FORMAT)
+        _formulas_to_values(wb)
+
+        keep_set = set(sheet_list)
+        app.DisplayAlerts = False
+        for i in range(wb.Worksheets.Count, 0, -1):
+            if wb.Worksheets(i).Name not in keep_set:
+                wb.Worksheets(i).Delete()
+        app.DisplayAlerts = True
+
+        wb.Save()
     finally:
-        if new_wb:
-            try:
-                new_wb.Close(SaveChanges=False)
-            except Exception:
-                pass
+        try:
+            wb.Close(SaveChanges=False)
+        except Exception:
+            pass
 
 
 # ── 시트명 접두어 그룹핑 (--mode sheet) ───────────────────────────────────────
@@ -197,38 +187,38 @@ def group_by_sheet_prefix(
     filepath = os.path.abspath(find_input_file(INPUT_DIR, input_file))
     print(f'\n  파일: {os.path.basename(filepath)}')
 
-    app    = None
-    src_wb = None
+    # 시트 목록은 openpyxl로 빠르게 수집 (Excel 실행 불필요)
+    wb_tmp = load_workbook(filepath, read_only=True)
+    all_sheets = wb_tmp.sheetnames
+    wb_tmp.close()
+
+    # 보고서주석 분리
+    notes_idx = next(
+        (i for i, sn in enumerate(all_sheets) if NOTES_SHEET_KEYWORD in sn),
+        None,
+    )
+    if notes_idx is not None:
+        main_sheets  = list(all_sheets[:notes_idx])
+        notes_sheets = list(all_sheets[notes_idx:])
+        print(f'  총 시트 수     : {len(all_sheets)}개')
+        print(f'  감사조서 시트  : {len(main_sheets)}개')
+        print(f'  보고서주석 시트: {len(notes_sheets)}개')
+    else:
+        main_sheets  = list(all_sheets)
+        notes_sheets = []
+        print(f'  총 시트 수: {len(all_sheets)}개  (보고서주석 시트 없음)')
+
+    # 접두어별 그룹핑
+    groups: dict[str, list[str]] = {}
+    for sn in main_sheets:
+        prefix = sn.split(sep, 1)[0] if sep in sn else sn
+        groups.setdefault(prefix, []).append(sn)
+
+    print(f'\n  그룹 수: {len(groups)}개  →  output/ 폴더에 파일별 저장\n')
+
+    app = None
     try:
-        app    = _start_excel()
-        src_wb = app.Workbooks.Open(filepath, ReadOnly=True, UpdateLinks=False)
-
-        all_sheets = [src_wb.Worksheets(i + 1).Name
-                      for i in range(src_wb.Worksheets.Count)]
-
-        # 보고서주석 분리
-        notes_idx = next(
-            (i for i, sn in enumerate(all_sheets) if NOTES_SHEET_KEYWORD in sn),
-            None,
-        )
-        if notes_idx is not None:
-            main_sheets  = all_sheets[:notes_idx]
-            notes_sheets = all_sheets[notes_idx:]
-            print(f'  총 시트 수     : {len(all_sheets)}개')
-            print(f'  감사조서 시트  : {len(main_sheets)}개')
-            print(f'  보고서주석 시트: {len(notes_sheets)}개')
-        else:
-            main_sheets  = list(all_sheets)
-            notes_sheets = []
-            print(f'  총 시트 수: {len(all_sheets)}개  (보고서주석 시트 없음)')
-
-        # 접두어별 그룹핑
-        groups: dict[str, list[str]] = {}
-        for sn in main_sheets:
-            prefix = sn.split(sep, 1)[0] if sep in sn else sn
-            groups.setdefault(prefix, []).append(sn)
-
-        print(f'\n  그룹 수: {len(groups)}개  →  output/ 폴더에 파일별 저장\n')
+        app = _start_excel()
 
         # 감사조서 그룹 → 파일별 저장
         for prefix in sorted(groups.keys()):
@@ -237,7 +227,7 @@ def group_by_sheet_prefix(
             out_path = os.path.join(OUTPUT_DIR, out_name)
 
             try:
-                _save_group_file(src_wb, sheets_in_group, out_path, app)
+                _save_group_file(filepath, sheets_in_group, out_path, app)
                 preview = ', '.join(sheets_in_group[:3])
                 if len(sheets_in_group) > 3:
                     preview += f' 외 {len(sheets_in_group)-3}개'
@@ -249,7 +239,7 @@ def group_by_sheet_prefix(
         if notes_sheets:
             out_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME_NOTES)
             try:
-                _save_group_file(src_wb, notes_sheets, out_path, app)
+                _save_group_file(filepath, notes_sheets, out_path, app)
                 print(f'\n  [{OUTPUT_FILENAME_NOTES}]  {len(notes_sheets)}탭 저장 완료')
             except Exception as e:
                 print(f'  [오류] {OUTPUT_FILENAME_NOTES}: {e}')
@@ -257,11 +247,6 @@ def group_by_sheet_prefix(
         print(f'\n  전체 완료 — {len(groups)}개 파일 생성')
 
     finally:
-        if src_wb:
-            try:
-                src_wb.Close(SaveChanges=False)
-            except Exception:
-                pass
         if app:
             try:
                 app.Quit()
