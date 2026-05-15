@@ -29,7 +29,7 @@ task_list 파라미터 시트 규격:
   거래처분析   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
-실행:  python main_analyzer.py graphy
+실행:  python main_analyzer.py sejoong
 """
 
 # =============================================================================
@@ -1011,7 +1011,7 @@ def save_results(results: dict, output_dir: str, company_name: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description='분개장 분析 자동화')
-    parser.add_argument('company', nargs='?', help='고객사 이름 (예: graphy)')
+    parser.add_argument('company', nargs='?', help='고객사 이름 (예: sejoong)')
     args = parser.parse_args()
     company_name = (args.company or input('고객사 이름: ')).strip()
     if not company_name:
