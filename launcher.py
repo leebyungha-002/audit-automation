@@ -58,8 +58,8 @@ TOOLS = [
         "extra": None,
     },
     {
-        "category": "분개장 분석",
-        "name": "분개장 분석 (journal_analyzer)",
+        "category": "분개장분석_파이썬",
+        "name": "분개장분석_파이썬 (journal_analyzer)",
         "desc": "분개장 데이터를 19개 메뉴(벤포드·거래처비교·일자분석 등)로 분석",
         "cmd": ["python", str(ROOT / "journal_analyzer" / "main_analyzer.py")],
         "cwd": str(ROOT),
