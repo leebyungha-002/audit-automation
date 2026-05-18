@@ -270,7 +270,44 @@ def _safe_sheet(name, max_len=31):
 
 
 # =============================================================================
-# 2. 데이터 로드 (data/current → 당기, data/previous → 전기)
+# 2. 회사별 전용 전처리 모듈 동적 로드
+# =============================================================================
+
+def _apply_company_preprocess(df: pd.DataFrame, company_name: str) -> pd.DataFrame:
+    """
+    journal_analyzer/{company}/preprocess.py 가 존재하면 동적으로 임포트하여
+    preprocess(df) 함수를 실행한다. 파일이 없으면 df 를 그대로 반환한다.
+
+    규약
+    ----
+    각 회사 preprocess.py 는 반드시 아래 시그니처를 가져야 한다.
+      def preprocess(df: pd.DataFrame) -> pd.DataFrame
+    """
+    import importlib.util
+
+    module_path = os.path.join(BASE_DIR, company_name, 'preprocess.py')
+    if not os.path.isfile(module_path):
+        return df   # 전처리 모듈 없음 → 범용 로직으로 진행
+
+    spec   = importlib.util.spec_from_file_location(f'{company_name}.preprocess', module_path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        print(f'  [전처리 모듈 로드 오류] {company_name}/preprocess.py — {e}')
+        return df
+
+    fn = getattr(module, 'preprocess', None)
+    if not callable(fn):
+        print(f'  [경고] {company_name}/preprocess.py 에 preprocess() 함수가 없습니다.')
+        return df
+
+    print(f'  [전처리] {company_name}/preprocess.py 적용 중...')
+    return fn(df)
+
+
+# =============================================================================
+# 3. 데이터 로드 (data/current → 당기, data/previous → 전기)
 # =============================================================================
 
 def load_data(company_dir: str) -> pd.DataFrame:
@@ -1034,7 +1071,8 @@ def main():
     if df is None:
         print('[오류] data/current 또는 data/previous 폴더에 분개장 파일이 없습니다.')
         sys.exit(1)
-    df = _preprocess_df(df)
+    df = _apply_company_preprocess(df, company_name)   # 회사별 전용 전처리
+    df = _preprocess_df(df)                            # 공통 표준 전처리
     gc = _get_gubun_col(df)
     print(f'  총 {len(df):,}행'
           + (f' (당기: {(df[gc]=="당기").sum():,}건 / 전기: {(df[gc]=="전기").sum():,}건)' if gc else '')
