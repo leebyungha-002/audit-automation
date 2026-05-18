@@ -95,12 +95,21 @@ TOOLS = [
     },
     {
         "category": "리스 분석",
-        "name": "리스 완전성 검토 (lease_filter)",
-        "desc": "K-IFRS 1116 리스 완전성 검토 — 회사 미선택 시 input_data 직접분석, 선택 시 Playwright 결과 연계",
+        "name": "리스 완전성 검토 - JS회사 (lease_filter)",
+        "desc": "K-IFRS 1116 리스 완전성 검토 — 회사 미선택 시 input_data 직접분석, 선택 시 results 연계",
         "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_filter.py")],
         "cwd": str(ROOT / "lease_analyzer"),
-        "company": "optional_js",   # 선택 없음 + js 회사 목록
+        "company": "optional_js",
         "extra": "optional_company",
+    },
+    {
+        "category": "리스 분석",
+        "name": "리스 완전성 검토 - journal회사 (lease_filter)",
+        "desc": "K-IFRS 1116 리스 완전성 검토 — journal_analyzer 회사의 results 폴더 연계",
+        "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_filter.py"), "--base", "journal_analyzer"],
+        "cwd": str(ROOT / "lease_analyzer"),
+        "company": "journal",
+        "extra": None,
     },
     {
         "category": "시트 분리",

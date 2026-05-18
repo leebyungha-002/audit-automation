@@ -212,9 +212,12 @@ def _normalize_result_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     return df
 
 
-def load_from_result(company: str) -> pd.DataFrame:
+def load_from_result(company: str, base: str = None) -> pd.DataFrame:
     """회사 results/ 폴더에서 리스 완전성 결과 파일을 찾아 전체 시트 병합."""
-    results_dir = os.path.join(PROJECT_ROOT, company, 'results')
+    if base:
+        results_dir = os.path.join(PROJECT_ROOT, base, company, 'results')
+    else:
+        results_dir = os.path.join(PROJECT_ROOT, company, 'results')
     if not os.path.isdir(results_dir):
         raise FileNotFoundError(f"[오류] results 폴더가 없습니다: {results_dir}")
 
@@ -381,6 +384,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument('--company', '-c', metavar='COMPANY',
                    help='회사 폴더명 (예: dae_il). 지정 시 results/*리스*완전성*.xlsx 자동 탐색')
+    p.add_argument('--base', metavar='BASE',
+                   help='루트 하위 기준 폴더 (예: --base journal_analyzer)')
     p.add_argument('--no-filter', action='store_true',
                    help='키워드 필터링 생략 (계정과목이 이미 리스 특정 계정인 경우)')
     return p.parse_args()
@@ -401,7 +406,7 @@ def main() -> None:
     # ── 1. 데이터 로드
     print('\n[1/3] 데이터 로드')
     if args.company:
-        raw = load_from_result(args.company)
+        raw = load_from_result(args.company, base=args.base)
         output_file = os.path.join(OUTPUT_DIR, f'{args.company}_리스완전성검토_후보목록.xlsx')
     else:
         raw = load_ledger()
