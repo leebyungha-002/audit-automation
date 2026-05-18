@@ -86,12 +86,21 @@ TOOLS = [
     },
     {
         "category": "리스 분석",
-        "name": "리스 스케줄 생성 (lease_analyzer)",
+        "name": "리스 스케줄 생성 (lease_schedule)",
         "desc": "K-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
         "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_schedule.py")],
         "cwd": str(ROOT / "lease_analyzer"),
         "company": None,
         "extra": None,
+    },
+    {
+        "category": "리스 분석",
+        "name": "리스 완전성 검토 (lease_filter)",
+        "desc": "K-IFRS 1116 리스 완전성 검토 — 회사 미선택 시 input_data 직접분석, 선택 시 Playwright 결과 연계",
+        "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_filter.py")],
+        "cwd": str(ROOT / "lease_analyzer"),
+        "company": "optional_js",   # 선택 없음 + js 회사 목록
+        "extra": "optional_company",
     },
     {
         "category": "시트 분리",
@@ -276,6 +285,10 @@ class Launcher(QMainWindow):
         elif t["company"] == "journal":
             self._company_row.setVisible(True)
             self._company_combo.addItems(self._journal_companies)
+        elif t["company"] == "optional_js":
+            self._company_row.setVisible(True)
+            self._company_combo.addItem("(없음 — input_data 직접분석)")
+            self._company_combo.addItems(self._js_companies)
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -300,6 +313,10 @@ class Launcher(QMainWindow):
                 self._log_line("⚠  회사를 선택하세요.", "#FBBF24")
                 return
             cmd.append(company)
+        elif t["company"] == "optional_js":
+            selected = self._company_combo.currentText()
+            if not selected.startswith("(없음"):
+                cmd += ["--company", selected]
 
         # 시트 분리 모드 인자 추가
         if t["extra"] == "sheet_mode":
