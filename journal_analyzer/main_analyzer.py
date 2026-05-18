@@ -36,6 +36,12 @@ task_list 파라미터 시트 규격:
 # 0. Imports & 상수
 # =============================================================================
 import sys, os, glob, re, io, argparse, warnings, unicodedata
+
+# Windows 터미널 한글 깨짐 방지 (cp949 → UTF-8 강제)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 import pandas as pd
 import numpy as np
 import matplotlib

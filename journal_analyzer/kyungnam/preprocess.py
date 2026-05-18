@@ -22,7 +22,13 @@ kyungnam 엑셀 파일의 실제 컬럼명을 확인한 후
 우측(표준명)은 main_analyzer.py 의 COL_* 상수와 일치해야 한다.
 """
 
+import sys
 import pandas as pd
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # =============================================================================
 # 1. 헤더 매핑 테이블  (실제 파일 기준: 경남제약 분개장)
