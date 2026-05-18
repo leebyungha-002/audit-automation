@@ -67,6 +67,15 @@ TOOLS = [
         "extra": None,
     },
     {
+        "category": "데이터 주입",
+        "name": "데이터 주입 (data_injector)",
+        "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입",
+        "cmd": ["python", str(ROOT / "report" / "data_injector.py")],
+        "cwd": str(ROOT / "report"),
+        "company": "js",        # 루트 폴더 기준 회사 목록 공유
+        "extra": None,
+    },
+    {
         "category": "리스 분석",
         "name": "리스 스케줄 생성 (lease_analyzer)",
         "desc": "K-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
