@@ -68,11 +68,20 @@ TOOLS = [
     },
     {
         "category": "데이터 주입",
-        "name": "데이터 주입 (data_injector)",
-        "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입",
+        "name": "데이터 주입 - JS회사 (data_injector)",
+        "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (루트 회사)",
         "cmd": ["python", str(ROOT / "report" / "data_injector.py")],
         "cwd": str(ROOT / "report"),
-        "company": "js",        # 루트 폴더 기준 회사 목록 공유
+        "company": "js",
+        "extra": None,
+    },
+    {
+        "category": "데이터 주입",
+        "name": "데이터 주입 - journal회사 (data_injector)",
+        "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (journal_analyzer 회사)",
+        "cmd": ["python", str(ROOT / "report" / "data_injector.py"), "--base", "journal_analyzer"],
+        "cwd": str(ROOT / "report"),
+        "company": "journal",
         "extra": None,
     },
     {

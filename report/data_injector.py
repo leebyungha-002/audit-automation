@@ -671,13 +671,22 @@ def updated_path(original_path):
 # ─── 메인 ────────────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 2:
-        print('Usage: python data_injector.py <company_name>')
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description='매핑 리스트 기반 데이터 주입 엔진')
+    parser.add_argument('company', help='회사명')
+    parser.add_argument('--base', default=None,
+                        help='루트 하위 기준 폴더 (예: --base journal_analyzer)')
+    args = parser.parse_args()
 
-    company     = sys.argv[1]
-    script_dir  = os.path.dirname(os.path.abspath(__file__))
-    company_dir = os.path.normpath(os.path.join(script_dir, '..', company))
+    company    = args.company
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir   = os.path.normpath(os.path.join(script_dir, '..'))
+
+    if args.base:
+        company_dir = os.path.join(root_dir, args.base, company)
+    else:
+        company_dir = os.path.join(root_dir, company)
+
     audit_dir   = os.path.join(company_dir, '감사조서')
     results_dir = os.path.join(company_dir, 'results')
     raw_dir     = os.path.join(company_dir, 'raw_data')
