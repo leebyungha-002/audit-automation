@@ -49,7 +49,7 @@ def detect_journal_companies() -> list[str]:
 
 TOOLS = [
     {
-        "category": "Playwright JS",
+        "category": "감사자료 extractor",
         "name": "Playwright 자동화 (run.js)",
         "desc": "task_list 기반 웹 자동화 (계정별원장 다운로드, 분개장 AI 분석 등)",
         "cmd": ["node", "run.js"],
@@ -67,7 +67,7 @@ TOOLS = [
         "extra": None,
     },
     {
-        "category": "데이터 주입",
+        "category": "Data_Injector",
         "name": "데이터 주입 - JS회사 (data_injector)",
         "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (루트 회사)",
         "cmd": ["python", str(ROOT / "report" / "data_injector.py")],
@@ -76,7 +76,7 @@ TOOLS = [
         "extra": None,
     },
     {
-        "category": "데이터 주입",
+        "category": "Data_Injector",
         "name": "데이터 주입 - journal회사 (data_injector)",
         "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (journal_analyzer 회사)",
         "cmd": ["python", str(ROOT / "report" / "data_injector.py"), "--base", "journal_analyzer"],
