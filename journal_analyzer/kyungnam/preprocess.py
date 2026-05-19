@@ -11,15 +11,9 @@ main_analyzer.py 의 load_data() 완료 직후,
 
 처리 흐름
 ---------
-  1. _map_columns()  : 비표준 컬럼명 → 표준 컬럼명 매핑
-  2. _build_pk()     : 전표번호 + 순번 결합 → 고유 식별키(PK) 생성
+  1. _map_columns()  : 비표준 컬럼명 -> 표준 컬럼명 매핑
+  2. _build_pk()     : 전표번호 결합 -> 고유 식별키(PK) 생성
   3. preprocess()    : 위 두 단계를 순서대로 호출하는 공개 진입점
-
-커스터마이징 방법
------------------
-kyungnam 엑셀 파일의 실제 컬럼명을 확인한 후
-아래 COLUMN_MAP 의 좌측(원본)을 수정한다.
-우측(표준명)은 main_analyzer.py 의 COL_* 상수와 일치해야 한다.
 """
 
 import sys
@@ -31,30 +25,27 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # =============================================================================
-# 1. 헤더 매핑 테이블  (실제 파일 기준: 경남제약 분개장)
+# 1. 헤더 매핑 테이블  (실제 파일 기준: 경남제약 분개장, 20개 컬럼)
 #
-#  확인된 원본 컬럼 (9개)
-#  ┌────────────┬──────────────────────────────────────────┐
-#  │ 원본 컬럼  │ 비고                                      │
-#  ├────────────┼──────────────────────────────────────────┤
-#  │ 전표일자   │ 표준명 동일 → 매핑 불필요                  │
-#  │ 전표번호   │ 표준명 동일 → 매핑 불필요                  │
-#  │ 순번       │ PK 생성에 사용 (표준 컬럼 아님)             │
-#  │ 계정코드   │ 분석에 미사용 (그대로 유지)                 │
-#  │ 계정명     │ 표준명 동일 → 매핑 불필요                  │
-#  │ 전표구분   │ 분석에 미사용 (그대로 유지)                 │
-#  │ 차변금액   │ ★ '차변'으로 매핑 필요                     │
-#  │ 대변금액   │ ★ '대변'으로 매핑 필요                     │
-#  │ 적요       │ 표준명 동일 → 매핑 불필요                  │
-#  └────────────┴──────────────────────────────────────────┘
-#
-#  ※ 누락 컬럼: 거래처명, 사원명
-#     → 거래처명이 없어 거래처비교·특수관계자 등 분석은 빈 결과 반환
-#     → preprocess() 에서 빈 컬럼을 자동 생성하여 분석 오류를 방지함
+#  원본 컬럼      표준 컬럼명    비고
+#  결의일자    -> 전표일자       날짜 기반 분析의 기준일
+#  결의번호    -> 전표번호       전표 식별 키
+#  사원        -> 사원명         사원별집계 분析용
+#  차변금액    -> 차변           금액 분析 기준
+#  대변금액    -> 대변           금액 분析 기준
+#  회계일자    -> 등록일자       일자차이분析: 결의 -> 회계 지연 탐지
+#  계정과목    -> 계정명         main_analyzer fallback 이 처리 (COLUMN_MAP 불필요)
+#  거래처명    -> (유지)         표준명 동일
+#  적요        -> (유지)         표준명 동일
+#  부서/차대구분/승인요청일 등   분析 미사용, 그대로 유지
 # =============================================================================
 COLUMN_MAP: dict[str, str] = {
+    '결의일자': '전표일자',
+    '결의번호': '전표번호',
     '차변금액': '차변',
     '대변금액': '대변',
+    '사원':     '사원명',
+    '회계일자': '등록일자',   # 일자차이분析: 결의일자 vs 회계일자 지연 탐지
 }
 
 # PK 컬럼명 (main_analyzer 가 참조할 수 있도록 상수로 노출)
@@ -84,7 +75,6 @@ def _map_columns(df: pd.DataFrame) -> pd.DataFrame:
     for orig, target in COLUMN_MAP.items():
         if orig not in already_in_df:
             continue
-        # 목표 컬럼이 이미 존재하고 자기 자신이 아닌 경우 → 충돌 방지를 위해 skip
         if target in already_in_df and target != orig:
             continue
         if orig != target:
@@ -93,43 +83,24 @@ def _map_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=rename_dict)
 
 
-def _build_pk(df: pd.DataFrame, *, zero_pad_jid: int = 8, zero_pad_seq: int = 3) -> pd.DataFrame:
+def _build_pk(df: pd.DataFrame, *, zero_pad_jid: int = 8) -> pd.DataFrame:
     """
-    '전표번호' 와 '순번' 을 결합하여 고유 식별키(PK) 컬럼을 생성한다.
+    '전표번호' 를 기반으로 고유 식별키(PK) 컬럼을 생성한다.
+    (경남제약 파일에는 순번 컬럼이 없으므로 전표번호 단독 사용)
 
-    생성 규칙
-    ---------
-    두 컬럼 모두 존재  → '{전표번호:08d}-{순번:03d}'  예) '00002025-003'
-    전표번호만 존재    → '{전표번호}' 그대로 사용
-    둘 다 없음         → 행 인덱스 문자열로 대체 (경고 출력)
-
-    Parameters
-    ----------
-    zero_pad_jid : 전표번호 제로패딩 자릿수 (기본 8)
-    zero_pad_seq : 순번 제로패딩 자릿수 (기본 3)
+    전표번호 없음 -> 행 인덱스 문자열로 대체 (경고 출력)
     """
     df = df.copy()
     has_jid = '전표번호' in df.columns
-    has_seq = '순번'     in df.columns
 
-    if has_jid and has_seq:
-        jid = (df['전표번호']
-               .fillna('')
-               .astype(str)
-               .str.strip()
-               .str.zfill(zero_pad_jid))
-        seq = (df['순번']
-               .fillna('')
-               .astype(str)
-               .str.strip()
-               .str.zfill(zero_pad_seq))
-        df[PK_COL] = jid + '-' + seq
-
-    elif has_jid:
-        df[PK_COL] = df['전표번호'].fillna('').astype(str).str.strip()
-
+    if has_jid:
+        df[PK_COL] = (df['전표번호']
+                      .fillna('')
+                      .astype(str)
+                      .str.strip()
+                      .str.zfill(zero_pad_jid))
     else:
-        print(f'  [kyungnam/preprocess] ⚠ 전표번호·순번 컬럼을 찾지 못했습니다. '
+        print(f'  [kyungnam/preprocess] 전표번호 컬럼을 찾지 못했습니다. '
               f'PK 를 행 인덱스({len(df)}건)로 대체합니다.')
         df[PK_COL] = df.reset_index(drop=True).index.astype(str)
 
@@ -148,31 +119,22 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     --------------------------
     함수 시그니처 :  preprocess(df: pd.DataFrame) -> pd.DataFrame
     모듈 내 반드시 이 이름으로 정의되어야 한다.
-
-    Parameters
-    ----------
-    df : load_data() 가 반환한 원본(raw) 분개장 DataFrame
-
-    Returns
-    -------
-    pd.DataFrame : 컬럼명이 표준화되고 PK 컬럼이 추가된 DataFrame
     """
     print('  [kyungnam/preprocess] 컬럼 매핑 시작')
 
-    # Step 1 — 컬럼명 표준화 (차변금액→차변, 대변금액→대변)
+    # Step 1 — 컬럼명 표준화
     df = _map_columns(df)
 
-    # Step 2 — 누락 표준 컬럼 보정
-    # 거래처명·사원명이 없으면 빈 문자열 컬럼으로 생성하여 분석 함수 오류 방지
+    # Step 2 — 누락 표준 컬럼 보정 (분析 함수 오류 방지)
     MISSING_FILL = {'거래처명': '', '사원명': ''}
     for col, fill in MISSING_FILL.items():
         if col not in df.columns:
             df[col] = fill
-            print(f'  [kyungnam/preprocess] "{col}" 컬럼 없음 → 빈 컬럼 생성')
+            print(f'  [kyungnam/preprocess] "{col}" 컬럼 없음 -> 빈 컬럼 생성')
 
     print(f'  [kyungnam/preprocess] 최종 컬럼: {list(df.columns)}')
 
-    # Step 3 — 고유 식별키 생성 (전표번호 + 순번)
+    # Step 3 — 고유 식별키 생성
     df = _build_pk(df)
     print(f'  [kyungnam/preprocess] PK 샘플: {df[PK_COL].head(3).tolist()}')
 
