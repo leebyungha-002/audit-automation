@@ -474,7 +474,7 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
 # ── 4. 데이터 개요 ────────────────────────────────────────────────────────────
 def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
     summary = pd.DataFrame({
-        '구분': ['총 행수','총 차변','총 대변','계정 수','시작일','종료일'],
+        '항목': ['총 행수','총 차변','총 대변','계정 수','시작일','종료일'],
         '값': [len(df),
                df[COL_DEBIT].sum()  if COL_DEBIT   in df.columns else 0,
                df[COL_CREDIT].sum() if COL_CREDIT  in df.columns else 0,
@@ -980,17 +980,22 @@ def load_active_tasks(task_list_path: str) -> list:
     if df is None:
         raise ValueError(f"'분析목록' 시트를 찾을 수 없음: {task_list_path}")
 
-    col_no   = next((c for c in df.columns if '번호' in str(c)), None)
-    col_nm   = next((c for c in df.columns if str(c).strip().endswith('명')
-                     and '번호' not in str(c) and '설명' not in str(c)), None)
-    col_flag = next((c for c in df.columns if '여부' in str(c)), None)
+    col_no     = next((c for c in df.columns if '번호' in str(c)), None)
+    col_nm     = next((c for c in df.columns if str(c).strip().endswith('명')
+                       and '번호' not in str(c) and '설명' not in str(c)), None)
+    col_flag   = next((c for c in df.columns if '여부' in str(c)), None)
+    col_period = next((c for c in df.columns if '대상' in str(c)), None)
     if not all([col_no, col_nm, col_flag]):
         raise ValueError(f'分析번호/分析명/실행여부 컬럼 없음. 실제 컬럼: {df.columns.tolist()}')
 
     flag   = df[col_flag].astype(str).str.strip().str.upper()
     active = df[flag.isin(['Y','O'])].dropna(subset=[col_no])
-    tasks  = [(int(row[col_no]), str(row[col_nm]).strip()) for _, row in active.iterrows()]
-    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}" for n,nm in tasks]}')
+    tasks  = [
+        (int(row[col_no]), str(row[col_nm]).strip(),
+         str(row[col_period]).strip() if col_period and str(row[col_period]).strip() not in ('nan', '') else '당기')
+        for _, row in active.iterrows()
+    ]
+    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" for n,nm,p in tasks]}')
     return tasks
 
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
@@ -1088,15 +1093,20 @@ def main():
     # 3) 분析 순차 실행
     print('\n[분析 실행]')
     all_results: dict = {}
-    for task_no, task_name in active_tasks:
+    for task_no, task_name, 분析대상 in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
             continue
         _, func = ANALYSIS_REGISTRY[task_no]
         params_list = load_analysis_params(paths['task_list'], task_name)
-        print(f'  [{task_no:>3}] {task_name}', flush=True)
+        # 분析대상(당기/전기/전체)에 따라 df 슬라이싱
+        if '구분' in df.columns and 분析대상 in ('당기', '전기'):
+            task_df = df[df['구분'] == 분析대상].copy()
+        else:
+            task_df = df
+        print(f'  [{task_no:>3}] {task_name} [{분析대상} {len(task_df):,}행]', flush=True)
         try:
-            result = func(df, params_list)
+            result = func(task_df, params_list)
             if isinstance(result, dict):
                 for sname, sub_df in result.items():
                     all_results[sname] = sub_df
