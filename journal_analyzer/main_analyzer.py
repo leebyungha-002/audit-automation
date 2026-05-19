@@ -117,6 +117,31 @@ def _read_excel_with_header_detection(path, dtype_map=None):
     df = pd.read_excel(path, engine='openpyxl', dtype=dtype_map)
     return df, 0
 
+
+def _load_with_parquet_cache(path: str, dtype_map: dict = None) -> tuple:
+    """Excel 파일을 읽되, Parquet 캐시가 최신이면 캐시에서 빠르게 로드."""
+    dtype_map = dtype_map or {}
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(path)), 'cache')
+    cache_name = os.path.splitext(os.path.basename(path))[0] + '.parquet'
+    cache_path = os.path.join(cache_dir, cache_name)
+
+    if os.path.isfile(cache_path) and os.path.getmtime(cache_path) >= os.path.getmtime(path):
+        print(f'     ⚡ 캐시 로드: {cache_name}', flush=True)
+        df = pd.read_parquet(cache_path)
+        for col, dt in dtype_map.items():
+            if col in df.columns:
+                df[col] = df[col].astype(dt)
+        return df, 0
+
+    df, header_row = _read_excel_with_header_detection(path, dtype_map)
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        df.to_parquet(cache_path, index=False)
+        print(f'     💾 캐시 저장: {cache_name}', flush=True)
+    except Exception as e:
+        print(f'     ⚠️ 캐시 저장 실패: {e}', flush=True)
+    return df, header_row
+
 def _normalize_account_for_match(s):
     s = str(s)
     for full, half in [('（','('),('）',')'),('⦅','('),('⦆',')'),
@@ -339,7 +364,7 @@ def load_data(company_dir: str) -> pd.DataFrame:
                         continue
             elif ext == '.xlsx':
                 print(f'     📂 엑셀: {fname}', flush=True)
-                out, h = _read_excel_with_header_detection(path, dtype_map)
+                out, h = _load_with_parquet_cache(path, dtype_map)
                 if h > 0: print(f'     ℹ️ 헤더: {h+1}행', flush=True)
                 print(f'     ✅ {len(out)}행', flush=True)
                 return out

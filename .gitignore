@@ -8,3 +8,6 @@ node_modules/
 # Output Files
 CompanyA_Audit_Result.xlsx
 CompanyB_Audit_Result.xlsx
+
+# Parquet 캐시 (자동 생성, 커밋 불필요)
+journal_analyzer/**/data/cache/
