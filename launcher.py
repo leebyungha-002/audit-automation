@@ -129,6 +129,15 @@ TOOLS = [
         "company": None,
         "extra": None,
     },
+    {
+        "category": "적정성 분석",
+        "name": "이자비용 적정성 분석 (interest_expense_analysis)",
+        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증 (대일 기본)",
+        "cmd": ["python", str(ROOT / "interest_expense_analysis.py")],
+        "cwd": str(ROOT),
+        "company": None,
+        "extra": None,
+    },
 ]
 
 
