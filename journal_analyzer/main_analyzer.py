@@ -214,9 +214,12 @@ def _preprocess_df(df):
     for col in df.columns:
         if any(n in str(col).strip() for n in reg_names):
             try:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                df[col] = df[col].fillna(0).astype('int64').astype(str)
-                df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
+                ser_r = df[col]
+                num_r = pd.to_numeric(ser_r, errors='coerce')
+                if num_r.notna().sum() > len(ser_r) * 0.5:
+                    df[col] = pd.to_datetime(num_r.fillna(0).astype('int64').astype(str), format='%Y%m%d', errors='coerce')
+                else:
+                    df[col] = pd.to_datetime(ser_r, errors='coerce')
             except Exception:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
             break
