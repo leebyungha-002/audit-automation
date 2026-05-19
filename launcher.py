@@ -43,6 +43,17 @@ def detect_journal_companies() -> list[str]:
     )
 
 
+def detect_interest_companies() -> list[str]:
+    """interest_analyzer/ 하위 폴더를 회사로 간주"""
+    ia_dir = ROOT / "interest_analyzer"
+    if not ia_dir.exists():
+        return []
+    return sorted(
+        p.name for p in ia_dir.iterdir()
+        if p.is_dir() and not p.name.startswith((".", "_", "__"))
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 도구 정의
 # ──────────────────────────────────────────────────────────────────────────────
@@ -132,10 +143,10 @@ TOOLS = [
     {
         "category": "적정성 분석",
         "name": "이자비용 적정성 분석 (interest_expense_analysis)",
-        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증 (대일 기본)",
-        "cmd": ["python", str(ROOT / "interest_expense_analysis.py")],
-        "cwd": str(ROOT),
-        "company": None,
+        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증 (interest_analyzer/<회사>/input)",
+        "cmd": ["python", str(ROOT / "interest_analyzer" / "interest_expense_analysis.py")],
+        "cwd": str(ROOT / "interest_analyzer"),
+        "company": "interest",
         "extra": None,
     },
 ]
@@ -154,6 +165,7 @@ class Launcher(QMainWindow):
 
         self._js_companies = detect_js_companies()
         self._journal_companies = detect_journal_companies()
+        self._interest_companies = detect_interest_companies()
 
         self._build_ui()
         self._tool_list.setCurrentRow(0)
@@ -307,6 +319,9 @@ class Launcher(QMainWindow):
             self._company_row.setVisible(True)
             self._company_combo.addItem("(없음 — input_data 직접분석)")
             self._company_combo.addItems(self._js_companies)
+        elif t["company"] == "interest":
+            self._company_row.setVisible(True)
+            self._company_combo.addItems(self._interest_companies)
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -325,7 +340,7 @@ class Launcher(QMainWindow):
         cmd = list(t["cmd"])
 
         # 회사명 인자 추가
-        if t["company"] in ("js", "journal"):
+        if t["company"] in ("js", "journal", "interest"):
             company = self._company_combo.currentText().strip()
             if not company:
                 self._log_line("⚠  회사를 선택하세요.", "#FBBF24")
