@@ -582,7 +582,7 @@ def analyze_date_difference(df: pd.DataFrame, params_list: list) -> dict:
     j_sum.columns = ['전표번호','전표일자','등록일자','일자차이','계정명','차변합계','대변합계']
 
     detail = filtered.sort_values(['일자차이', COL_JOURNAL_ID], ascending=[False, True])
-    dc = [c for c in [COL_JOURNAL_ID, COL_DATE, reg_col, '일자차이',
+    dc = [c for c in ['구분', COL_JOURNAL_ID, COL_DATE, reg_col, '일자차이',
                        COL_ACCOUNT, COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC] if c in detail.columns]
     return {'일자차이_요약': j_sum, '일자차이_상세': detail[dc]}
 
@@ -647,7 +647,7 @@ def analyze_round_numbers(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     if not records: return pd.DataFrame({'결과':['라운드넘버 없음']})
     result  = pd.concat(records, ignore_index=True)
     amt_col = next((c for c in ('차변','대변','금액') if c in result.columns), None)
-    out_cols = [c for c in [COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT, '금액열', amt_col,
+    out_cols = [c for c in ['구분', COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT, '금액열', amt_col,
                              COL_DESC, COL_CLIENT, '라운드단위'] if c and c in result.columns]
     return result[out_cols].sort_values(amt_col, ascending=False) if amt_col else result[out_cols]
 
@@ -902,7 +902,7 @@ def analyze_benford_deviation(df: pd.DataFrame, params_list: list) -> dict:
         deviant_df = subset[subset['Digit'].isin(deviant_set)].copy()
         deviant_df['이탈정도'] = deviant_df['Digit'].map(
             lambda d: round(counts.get(d,0)-BENFORD_PROBS[d],3))
-        out_cols = [c for c in [COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT, COL_CLIENT, COL_DESC,
+        out_cols = [c for c in ['구분', COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT, COL_CLIENT, COL_DESC,
                                  tcol, 'Digit', '이탈정도'] if c in deviant_df.columns]
         for d in sorted(deviant_set):
             sub = deviant_df[deviant_df['Digit'] == d].head(max_per)
@@ -924,7 +924,8 @@ def analyze_benford_deviation(df: pd.DataFrame, params_list: list) -> dict:
 def analyze_monthly_full_account(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     work = df.copy()
     work['Month'] = pd.to_datetime(work[COL_DATE], errors='coerce').dt.month
-    return work.groupby([COL_ACCOUNT, 'Month'])[[COL_DEBIT, COL_CREDIT]].sum().reset_index()
+    grp = ['구분', COL_ACCOUNT, 'Month'] if '구분' in work.columns else [COL_ACCOUNT, 'Month']
+    return work.groupby(grp)[[COL_DEBIT, COL_CREDIT]].sum().reset_index()
 
 
 # =============================================================================
