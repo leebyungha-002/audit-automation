@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 journal_analyzer/main_analyzer.py  v2
-analysis.py 19개 분析 메뉴 완전 이식 — DataFrame 반환 방식
+analysis.py 19개 분석 메뉴 완전 이식 — DataFrame 반환 방식
 
 폴더 구조:
   journal_analyzer/
@@ -12,21 +12,21 @@ analysis.py 19개 분析 메뉴 완전 이식 — DataFrame 반환 방식
       ├── data/
       │   ├── current/                  ← 당기 분개장 (csv/xlsx)
       │   └── previous/                 ← 전기 분개장 (csv/xlsx)
-      └── results/                      ← 분析 결과 저장
+      └── results/                      ← 분석 결과 저장
 
 task_list 파라미터 시트 규격:
   거래처비교   : 계정과목 / 금액열(차변·대변·both) / 실행여부
-  벤포드분析   : 계정과목 / 금액열 / 실행여부
-  일자차이분析 : 기준일수 / 실행여부
-  상대계정분析 : 계정과목 / 금액열 / 실행여부
+  벤포드분석   : 계정과목 / 금액열 / 실행여부
+  일자차이분석 : 기준일수 / 실행여부
+  상대계정분석 : 계정과목 / 금액열 / 실행여부
   키워드검색   : 키워드 / 실행여부
   라운드넘버   : 계정과목 / 금액열 / 최소금액 / 실행여부
   특수관계자   : 거래처명 / 실행여부
   자산부채교차 : 구분(자산·부채) / 계정과목 / 실행여부
   매출비용교차 : 구분(매출·비용) / 계정과목 / 실행여부
-  심층분析     : 계정과목 / 개수 / 금액열(차변·대변·both) / 실행여부
-  AI계정별분析 : 계정과목 / 실행여부
-  거래처분析   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
+  심층분석     : 계정과목 / 개수 / 금액열(차변·대변·both) / 실행여부
+  AI계정별분석 : 계정과목 / 실행여부
+  거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
 실행:  python main_analyzer.py sejoong
@@ -54,7 +54,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 warnings.filterwarnings('ignore', category=pd.errors.DtypeWarning)
 
 BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
-TASK_MASTER_SHEET = '분析목록'
+TASK_MASTER_SHEET = '분석목록'
 
 # 컬럼명 상수
 COL_DATE       = '전표일자'
@@ -66,7 +66,7 @@ COL_DEBIT      = '차변'
 COL_CREDIT     = '대변'
 COL_EMPLOYEE   = '사원명'
 
-# 분析 상수
+# 분석 상수
 BENFORD_MIN_ROWS        = 5
 BENFORD_PROBS           = {1:0.301,2:0.176,3:0.125,4:0.097,5:0.079,6:0.067,7:0.058,8:0.051,9:0.046}
 DEFAULT_BENFORD_TARGETS = [('복리후생비','차변'),('접대비','차변'),('여비교통비','차변')]
@@ -290,7 +290,7 @@ def draw_benford_chart(account_name, direction, actual_probs, benford_probs):
                  color='red', marker='o', linestyle='--', label='벤포드 법칙')
         plt.bar(digits, [actual_probs.get(d,0.0)*100 for d in digits],
                 color='skyblue', alpha=0.7, label=f'실제 ({account_name})')
-        plt.title(f'벤포드 분析: {account_name} ({direction})')
+        plt.title(f'벤포드 분석: {account_name} ({direction})')
         plt.legend(); plt.grid(axis='y', linestyle='--', alpha=0.5)
         buf = io.BytesIO()
         plt.savefig(buf, format='png'); plt.close(); buf.seek(0)
@@ -390,7 +390,7 @@ def load_data(company_dir: str) -> pd.DataFrame:
 
 
 # =============================================================================
-# 3. 분析 함수 (2~19번)
+# 3. 분석 함수 (2~19번)
 #    시그니처: (df: DataFrame, params_list: list[dict]) → DataFrame | dict[str, DataFrame]
 #    dict 반환 시 키 = 시트명
 # =============================================================================
@@ -460,7 +460,7 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     return out
 
 
-# ── 3. 벤포드 분析 ────────────────────────────────────────────────────────────
+# ── 3. 벤포드 분석 ────────────────────────────────────────────────────────────
 def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
     targets = []
     for p in params_list:
@@ -494,7 +494,7 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
                          '차이(%p)':round((actual-theory)*100,2),
                          '이상여부':'Y' if abs(actual-theory)>0.05 else ''})
 
-    out = {'벤포드분析': pd.DataFrame(rows)}
+    out = {'벤포드분석': pd.DataFrame(rows)}
     if images: out['_benford_images'] = images   # 특수 키: save_results에서 차트 삽입
     return out
 
@@ -576,7 +576,7 @@ def analyze_employee_summary(df: pd.DataFrame, params_list: list) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-# ── 7. 일자차이 분析 ──────────────────────────────────────────────────────────
+# ── 7. 일자차이 분석 ──────────────────────────────────────────────────────────
 def analyze_date_difference(df: pd.DataFrame, params_list: list) -> dict:
     days_threshold = None
     for p in params_list:
@@ -585,22 +585,22 @@ def analyze_date_difference(df: pd.DataFrame, params_list: list) -> dict:
             try: days_threshold = int(float(v)); break
             except (TypeError, ValueError): pass
     if not days_threshold or days_threshold <= 0:
-        return {'일자차이분析': pd.DataFrame({'안내':['기준일수 파라미터가 없거나 0 이하입니다.']})}
+        return {'일자차이분석': pd.DataFrame({'안내':['기준일수 파라미터가 없거나 0 이하입니다.']})}
 
     reg_names = ['등록일자','등록일','작성일자','작성일','생성일자','입력일자','입력일']
     reg_col = next((c for c in df.columns if any(n in str(c) for n in reg_names)), None)
     if reg_col is None:
-        return {'일자차이분析': pd.DataFrame({'오류':['등록일자 컬럼 없음',
+        return {'일자차이분석': pd.DataFrame({'오류':['등록일자 컬럼 없음',
                                                        f'컬럼: {list(df.columns[:15])}']})}
 
     df2 = df[(df[COL_DATE].notna()) & (df[reg_col].notna())].copy()
     if df2.empty:
-        return {'일자차이분析': pd.DataFrame({'오류':['전표일자 또는 등록일자 없음']})}
+        return {'일자차이분석': pd.DataFrame({'오류':['전표일자 또는 등록일자 없음']})}
 
     df2['일자차이'] = (df2[reg_col] - df2[COL_DATE]).dt.days
     filtered = df2[df2['일자차이'] >= days_threshold].copy()
     if filtered.empty:
-        return {'일자차이분析': pd.DataFrame({'결과':[f'{days_threshold}일 이상 차이 전표 없음']})}
+        return {'일자차이분석': pd.DataFrame({'결과':[f'{days_threshold}일 이상 차이 전표 없음']})}
 
     j_sum = filtered.groupby(COL_JOURNAL_ID).agg({
         COL_DATE:'first', reg_col:'first', '일자차이':'first',
@@ -615,7 +615,7 @@ def analyze_date_difference(df: pd.DataFrame, params_list: list) -> dict:
     return {'일자차이_요약': j_sum, '일자차이_상세': detail[dc]}
 
 
-# ── 8. 상대계정 분析 ──────────────────────────────────────────────────────────
+# ── 8. 상대계정 분석 ──────────────────────────────────────────────────────────
 def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
     out = {}
     for p in params_list:
@@ -636,7 +636,7 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         summary  = summary.sort_values(sort_col, ascending=False)
         sname    = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}')
         out[sname] = summary
-    return out or {'상대계정분析': pd.DataFrame({'안내':['파라미터에 계정과목이 없습니다.']})}
+    return out or {'상대계정분석': pd.DataFrame({'안내':['파라미터에 계정과목이 없습니다.']})}
 
 
 # ── 9. 키워드 검색 ────────────────────────────────────────────────────────────
@@ -653,7 +653,7 @@ def analyze_keyword_search(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     return result.sort_values('AbsAmt', ascending=False).drop(columns=['AbsAmt'])
 
 
-# ── 10. 라운드넘버 분析 ───────────────────────────────────────────────────────
+# ── 10. 라운드넘버 분석 ───────────────────────────────────────────────────────
 def analyze_round_numbers(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     ALL_UNITS = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000]
     records = []
@@ -680,7 +680,7 @@ def analyze_round_numbers(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     return result[out_cols].sort_values(amt_col, ascending=False) if amt_col else result[out_cols]
 
 
-# ── 11. 특수관계자 분析 ───────────────────────────────────────────────────────
+# ── 11. 특수관계자 분석 ───────────────────────────────────────────────────────
 def analyze_related_party(df: pd.DataFrame, params_list: list) -> dict:
     parties = [_nv(p.get('거래처명','')) for p in params_list if _nv(p.get('거래처명',''))]
     if not parties:
@@ -750,7 +750,7 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
     return merged if not merged.empty else pd.DataFrame({'결과':['동시 발생 거래처 없음']})
 
 
-# ── 14. 심층분析 (계정별 Top) ─────────────────────────────────────────────────
+# ── 14. 심층분석 (계정별 Top) ─────────────────────────────────────────────────
 def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
     config = []
     for p in params_list:
@@ -760,7 +760,7 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
         direction = _nv(p.get('금액열',''), blank_vals=('nan','none','')) or 'both'
         if direction not in ('차변','대변','both'): direction = 'both'
         config.append((acct, top_n, direction))
-    if not config: return {'심층분析': pd.DataFrame({'안내':['계정과목 파라미터가 없습니다.']})}
+    if not config: return {'심층분석': pd.DataFrame({'안내':['계정과목 파라미터가 없습니다.']})}
 
     gc = _get_gubun_col(df)
     has_g = gc is not None
@@ -806,13 +806,13 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
         if not combined.empty:
             out[sname] = combined
 
-    return out or {'심층분析': pd.DataFrame({'결과':['데이터 없음']})}
+    return out or {'심층분석': pd.DataFrame({'결과':['데이터 없음']})}
 
 
-# ── 15. AI 계정별 분析 ────────────────────────────────────────────────────────
+# ── 15. AI 계정별 분석 ────────────────────────────────────────────────────────
 def analyze_ai_preparation(df: pd.DataFrame, params_list: list) -> dict:
     targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
-    if not targets: return {'AI분析': pd.DataFrame({'안내':['계정과목 파라미터 없음']})}
+    if not targets: return {'AI분석': pd.DataFrame({'안내':['계정과목 파라미터 없음']})}
     out = {}
     for acct in targets:
         filtered = df[df[COL_ACCOUNT].str.contains(acct, na=False, regex=False)].copy()
@@ -837,7 +837,7 @@ def analyze_ai_preparation(df: pd.DataFrame, params_list: list) -> dict:
 
     if GLOBAL_SAFE_MAP:
         out['_암호해독표'] = pd.DataFrame(list(GLOBAL_SAFE_MAP.items()), columns=['실명','가명'])
-    return out or {'AI분析': pd.DataFrame({'결과':['분析 대상 없음']})}
+    return out or {'AI분석': pd.DataFrame({'결과':['분석 대상 없음']})}
 
 
 # ── 16. 데이터·헤더 확인 ──────────────────────────────────────────────────────
@@ -854,7 +854,7 @@ def analyze_header_check(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ── 17. 거래처 분析 ───────────────────────────────────────────────────────────
+# ── 17. 거래처 분석 ───────────────────────────────────────────────────────────
 def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
     out = {}
     for i, p in enumerate(params_list, 1):
@@ -890,7 +890,7 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         out[sname]               = filtered[dc]
         out[sname + '_월별합산'] = monthly
 
-    return out or {'거래처분析': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
+    return out or {'거래처분석': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
 
 
 # ── 18. 벤포드 이탈 상세 추출 ────────────────────────────────────────────────
@@ -948,7 +948,7 @@ def analyze_benford_deviation(df: pd.DataFrame, params_list: list) -> dict:
     return out or {'벤포드이탈': pd.DataFrame({'결과':['추출 데이터 없음']})}
 
 
-# ── 19. 월별 전계정 분析 ──────────────────────────────────────────────────────
+# ── 19. 월별 전계정 분석 ──────────────────────────────────────────────────────
 def analyze_monthly_full_account(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     work = df.copy()
     work['Month'] = pd.to_datetime(work[COL_DATE], errors='coerce').dt.month
@@ -957,27 +957,27 @@ def analyze_monthly_full_account(df: pd.DataFrame, params_list: list) -> pd.Data
 
 
 # =============================================================================
-# 4. 분析 레지스트리  {번호: (이름, 함수)}
+# 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
 ANALYSIS_REGISTRY: dict = {
     2:  ('거래처비교',      analyze_client_comparison),
-    3:  ('벤포드분析',      analyze_benford),
+    3:  ('벤포드분석',      analyze_benford),
     4:  ('데이터개요',      analyze_data_overview),
     5:  ('계정명리스트',    analyze_account_list),
     6:  ('사원별집계',      analyze_employee_summary),
-    7:  ('일자차이분析',    analyze_date_difference),
-    8:  ('상대계정분析',    analyze_counterpart),
+    7:  ('일자차이분석',    analyze_date_difference),
+    8:  ('상대계정분석',    analyze_counterpart),
     9:  ('키워드검색',      analyze_keyword_search),
     10: ('라운드넘버',      analyze_round_numbers),
-    11: ('특수관계자분析',  analyze_related_party),
+    11: ('특수관계자분석',  analyze_related_party),
     12: ('자산부채교차',    analyze_asset_liability_cross),
     13: ('매출비용교차',    analyze_revenue_expense_cross),
-    14: ('심층분析',        analyze_top_accounts),
-    15: ('AI계정별분析',    analyze_ai_preparation),
+    14: ('심층분석',        analyze_top_accounts),
+    15: ('AI계정별분석',    analyze_ai_preparation),
     16: ('헤더확인',        analyze_header_check),
-    17: ('거래처분析',      analyze_client_detail),
+    17: ('거래처분석',      analyze_client_detail),
     18: ('벤포드이탈',      analyze_benford_deviation),
-    19: ('월별전계정분析',  analyze_monthly_full_account),
+    19: ('월별전계정분석',  analyze_monthly_full_account),
 }
 
 
@@ -1006,7 +1006,7 @@ def load_active_tasks(task_list_path: str) -> list:
             if all(any(k in str(c) for c in tmp.columns) for k in ('번호','명','여부')):
                 df = tmp; break
     if df is None:
-        raise ValueError(f"'분析목록' 시트를 찾을 수 없음: {task_list_path}")
+        raise ValueError(f"'분석목록' 시트를 찾을 수 없음: {task_list_path}")
 
     col_no     = next((c for c in df.columns if '번호' in str(c)), None)
     col_nm     = next((c for c in df.columns if str(c).strip().endswith('명')
@@ -1014,7 +1014,7 @@ def load_active_tasks(task_list_path: str) -> list:
     col_flag   = next((c for c in df.columns if '여부' in str(c)), None)
     col_period = next((c for c in df.columns if '대상' in str(c)), None)
     if not all([col_no, col_nm, col_flag]):
-        raise ValueError(f'分析번호/分析명/실행여부 컬럼 없음. 실제 컬럼: {df.columns.tolist()}')
+        raise ValueError(f'분석번호/분석명/실행여부 컬럼 없음. 실제 컬럼: {df.columns.tolist()}')
 
     flag   = df[col_flag].astype(str).str.strip().str.upper()
     active = df[flag.isin(['Y','O'])].dropna(subset=[col_no])
@@ -1069,14 +1069,14 @@ def load_settings(task_list_path: str) -> dict:
 def save_results(results: dict, output_dir: str, company_name: str,
                  settings: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
-    out_path = os.path.join(output_dir, f'분析결과_{company_name}.xlsx')
+    out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
 
     settings      = settings or {}
     client_name   = settings.get('ClientName', company_name)
     start_date    = settings.get('StartDate', '')
     end_date      = settings.get('EndDate', '')
     header_line1  = f'회사명: {client_name}'
-    header_line2  = f'분析기간: {start_date} ~ {end_date}' if start_date else ''
+    header_line2  = f'분석기간: {start_date} ~ {end_date}' if start_date else ''
 
     # 특수 키 사전 추출 (ExcelWriter에 넘기지 않음)
     benford_images = results.pop('_benford_images', None)
@@ -1102,8 +1102,8 @@ def save_results(results: dict, output_dir: str, company_name: str,
         if header_line2:
             ws.cell(2, 1).value = header_line2
 
-    if benford_images and '벤포드분析' in wb.sheetnames:
-        ws_bf = wb['벤포드분析']
+    if benford_images and '벤포드분석' in wb.sheetnames:
+        ws_bf = wb['벤포드분석']
         r = 7   # startrow=2 이므로 데이터 시작이 4행 → 차트는 7행부터
         for _acct, _dir, img_buf in benford_images:
             if img_buf:
@@ -1126,14 +1126,14 @@ def save_results(results: dict, output_dir: str, company_name: str,
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='분개장 분析 자동화')
+    parser = argparse.ArgumentParser(description='분개장 분석 자동화')
     parser.add_argument('company', nargs='?', help='고객사 이름 (예: sejoong)')
     args = parser.parse_args()
     company_name = (args.company or input('고객사 이름: ')).strip()
     if not company_name:
         print('[오류] 고객사 이름이 비어 있습니다.'); sys.exit(1)
 
-    print(f'\n{"="*60}\n  분개장 분析 자동화 — {company_name}\n{"="*60}')
+    print(f'\n{"="*60}\n  분개장 분석 자동화 — {company_name}\n{"="*60}')
     paths = resolve_paths(company_name)
 
     # 1) 태스크 리스트
@@ -1142,7 +1142,7 @@ def main():
     except (FileNotFoundError, ValueError) as e:
         print(f'[오류] {e}'); sys.exit(1)
     if not active_tasks:
-        print('실행할 분析이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
+        print('실행할 분석이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
 
     # 2) 분개장 로드
     print('\n[분개장 로드]')
@@ -1157,21 +1157,21 @@ def main():
           + (f' (당기: {(df[gc]=="당기").sum():,}건 / 전기: {(df[gc]=="전기").sum():,}건)' if gc else '')
           + f'\n  컬럼: {df.columns.tolist()}')
 
-    # 3) 분析 순차 실행
-    print('\n[분析 실행]')
+    # 3) 분석 순차 실행
+    print('\n[분석 실행]')
     all_results: dict = {}
-    for task_no, task_name, 분析대상 in active_tasks:
+    for task_no, task_name, 분석대상 in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
             continue
         _, func = ANALYSIS_REGISTRY[task_no]
         params_list = load_analysis_params(paths['task_list'], task_name)
-        # 분析대상(당기/전기/전체)에 따라 df 슬라이싱
-        if '구분' in df.columns and 분析대상 in ('당기', '전기'):
-            task_df = df[df['구분'] == 분析대상].copy()
+        # 분석대상(당기/전기/전체)에 따라 df 슬라이싱
+        if '구분' in df.columns and 분석대상 in ('당기', '전기'):
+            task_df = df[df['구분'] == 분석대상].copy()
         else:
             task_df = df
-        print(f'  [{task_no:>3}] {task_name} [{분析대상} {len(task_df):,}행]', flush=True)
+        print(f'  [{task_no:>3}] {task_name} [{분석대상} {len(task_df):,}행]', flush=True)
         try:
             result = func(task_df, params_list)
             if isinstance(result, dict):
