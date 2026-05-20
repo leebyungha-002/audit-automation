@@ -1044,34 +1044,73 @@ def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
 # 6. 결과 저장
 # =============================================================================
 
-def save_results(results: dict, output_dir: str, company_name: str) -> str:
+def load_settings(task_list_path: str) -> dict:
+    """task_list settings 시트에서 회사정보(ClientName/StartDate/EndDate 등) 읽기."""
+    try:
+        xl = pd.ExcelFile(task_list_path)
+        if 'settings' not in xl.sheet_names:
+            return {}
+        df = pd.read_excel(task_list_path, sheet_name='settings', header=None)
+        settings = {}
+        for _, row in df.iterrows():
+            key = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ''
+            val = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ''
+            if not key or not val or key in ('항목', 'key', 'Key'):
+                continue
+            # 날짜 형식 정리: '2026-01-01 00:00:00' → '2026-01-01'
+            if 'Date' in key or '일자' in key:
+                val = val.split(' ')[0].split('T')[0]
+            settings[key] = val
+        return settings
+    except Exception:
+        return {}
+
+
+def save_results(results: dict, output_dir: str, company_name: str,
+                 settings: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f'분析결과_{company_name}.xlsx')
+
+    settings      = settings or {}
+    client_name   = settings.get('ClientName', company_name)
+    start_date    = settings.get('StartDate', '')
+    end_date      = settings.get('EndDate', '')
+    header_line1  = f'회사명: {client_name}'
+    header_line2  = f'분析기간: {start_date} ~ {end_date}' if start_date else ''
 
     # 특수 키 사전 추출 (ExcelWriter에 넘기지 않음)
     benford_images = results.pop('_benford_images', None)
     decoder        = results.pop('_암호해독표', None)
 
+    # startrow=2: 1~2행을 비워두고 3행부터 컬럼헤더+데이터 기록
     with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
         for sheet, df in results.items():
             sname = _safe_sheet(sheet)
             if df is None or (isinstance(df, pd.DataFrame) and df.empty):
                 pd.DataFrame([['결과 없음']]).to_excel(
-                    writer, sheet_name=sname, index=False, header=False)
+                    writer, sheet_name=sname, index=False, header=False, startrow=2)
             elif isinstance(df, pd.DataFrame):
-                df.to_excel(writer, sheet_name=sname, index=False)
+                df.to_excel(writer, sheet_name=sname, index=False, startrow=2)
 
-    # 벤포드 차트 삽입
-    if benford_images:
-        wb = openpyxl.load_workbook(out_path)
-        if '벤포드분析' in wb.sheetnames:
-            ws = wb['벤포드분析']
-            r  = 5
-            for _acct, _dir, img_buf in benford_images:
-                if img_buf:
-                    ws.add_image(XLImage(img_buf), f'K{r}')
-                    r += 25
-        wb.save(out_path)
+    # 회사 정보 상단 삽입 + 벤포드 차트 삽입 (openpyxl로 한 번에 처리)
+    wb = openpyxl.load_workbook(out_path)
+    from openpyxl.styles import Font
+    bold = Font(bold=True)
+    for ws in wb.worksheets:
+        ws.cell(1, 1).value = header_line1
+        ws.cell(1, 1).font  = bold
+        if header_line2:
+            ws.cell(2, 1).value = header_line2
+
+    if benford_images and '벤포드분析' in wb.sheetnames:
+        ws_bf = wb['벤포드분析']
+        r = 7   # startrow=2 이므로 데이터 시작이 4행 → 차트는 7행부터
+        for _acct, _dir, img_buf in benford_images:
+            if img_buf:
+                ws_bf.add_image(XLImage(img_buf), f'K{r}')
+                r += 25
+
+    wb.save(out_path)
 
     # 암호해독표 → 별도 파일
     if decoder is not None:
@@ -1148,7 +1187,8 @@ def main():
 
     # 4) 결과 저장
     print('\n[결과 저장]')
-    out_path = save_results(all_results, paths['output'], company_name)
+    settings = load_settings(paths['task_list'])
+    out_path = save_results(all_results, paths['output'], company_name, settings)
     print(f'\n  ✅ 완료: {out_path}')
     print(f'  시트 수: {len(all_results)}개')
 
