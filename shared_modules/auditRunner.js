@@ -1503,8 +1503,8 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         try {
             const isRelatedAccountTask = taskName && taskName.includes('상대계정');
             if (isRelatedAccountTask) {
-                // opacity-0 요소: '상대계정 목록' 테이블 출현으로 분析 완료 감지
-                await page.locator('text=상대계정 목록').waitFor({ state: 'attached', timeout: 300000 });
+                // 분析 완료 후 DOM에 삽입되는 다운로드 버튼으로 완료 감지 (opacity-0이라 attached 사용)
+                await page.locator('button:has-text("요약 엑셀 다운로드"), button:has-text("엑셀 다운로드"), button:has-text("결과 다운로드")').first().waitFor({ state: 'attached', timeout: 300000 });
                 await page.waitForTimeout(1000);
                 console.log('  [상대계정] 결과 테이블 감지 — force click으로 다운로드 시도');
             } else {
