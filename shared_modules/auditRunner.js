@@ -1442,14 +1442,74 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                 }
                 if (await combo.count().catch(() => 0) > 0) {
                     await combo.click();
-                    await page.waitForTimeout(300);
-                    await page.keyboard.press('Control+A');
-                    await page.keyboard.press('Backspace');
-                    await page.keyboard.type(account, { delay: 50 });
                     await page.waitForTimeout(500);
-                    await page.keyboard.press('Enter');
-                    console.log(`  계정과목: ${account}`);
-
+                    // Popover+Command UI 감지: 트리거 클릭 후 [cmdk-input] 존재 여부 확인
+                    const cmdInput = page.locator('[cmdk-input]').first();
+                    const hasCmdInput = await cmdInput.count().catch(() => 0) > 0;
+                    if (hasCmdInput) {
+                        // 신규 UI: Popover 내 CommandInput에 직접 타이핑
+                        await cmdInput.fill('');
+                        await cmdInput.type(account, { delay: 50 });
+                    } else {
+                        // 구 UI: 키보드로 직접 타이핑
+                        await page.keyboard.press('Control+A');
+                        await page.keyboard.press('Backspace');
+                        await page.keyboard.type(account, { delay: 50 });
+                    }
+                    await page.waitForTimeout(800);
+                    // 드롭다운 항목 클릭: cmdk-item 우선 → [코드]계정명 패턴 탐색 → locator 폴백
+                    let acctSelected = false;
+                    // 전략 1: [cmdk-item] (Popover+Command 신규 UI)
+                    if (!acctSelected) {
+                        try {
+                            const cmdItem = page.locator('[cmdk-item]').filter({ hasText: account }).first();
+                            if (await cmdItem.count() > 0) {
+                                const txt = await cmdItem.textContent().catch(() => '');
+                                await cmdItem.click();
+                                acctSelected = true;
+                                console.log('  계정과목: ' + account + ' → cmdk-item 클릭: ' + txt.trim().substring(0, 40));
+                            }
+                        } catch {}
+                    }
+                    // 전략 2: page.evaluate로 [코드]계정명 패턴 탐색 (구 UI 호환)
+                    if (!acctSelected) {
+                        const clickedOpt = await page.evaluate((acc) => {
+                            const codePattern = /^\[\d+\]/;
+                            const tags = ["li","div","button","span","p","a"];
+                            for (const tag of tags) {
+                                for (const el of document.querySelectorAll(tag)) {
+                                    const txt = (el.textContent || "").trim();
+                                    if (txt.includes(acc) && (codePattern.test(txt) || txt === acc) && el.offsetParent !== null && el.children.length <= 2) {
+                                        el.click();
+                                        return txt;
+                                    }
+                                }
+                            }
+                            return null;
+                        }, account);
+                        if (clickedOpt) {
+                            acctSelected = true;
+                            console.log("  계정과목: " + account + " → 드롭다운 클릭: " + clickedOpt.substring(0,40));
+                        }
+                    }
+                    // 전략 3: locator로 [코드] 패턴 항목 클릭
+                    if (!acctSelected) {
+                        try {
+                            const opt = page.locator("div, li, button, span").filter({ hasText: new RegExp("\\[\\d+\\].*" + account.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }).first();
+                            if (await opt.count() > 0 && await opt.isVisible({ timeout: 1500 })) {
+                                const txt = await opt.textContent().catch(() => "");
+                                await opt.click();
+                                acctSelected = true;
+                                console.log("  계정과목: " + account + " → locator 클릭: " + (txt||"").trim().substring(0,40));
+                            }
+                        } catch {}
+                    }
+                    if (!acctSelected) {
+                        await page.keyboard.press("ArrowDown");
+                        await page.waitForTimeout(300);
+                        await page.keyboard.press("Enter");
+                        console.log("  계정과목: " + account + " (ArrowDown+Enter 폴백)");
+                    }
                     // 계정 변경 후 데이터 리로드 대기
                     // 요약 통계(총 차변 합계 등) 또는 networkidle로 갱신 확인
                     try {
@@ -1489,7 +1549,17 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                     const btnText = await runBtn.textContent().catch(() => '');
                     await runBtn.click();
                     console.log('  ✓ 분석 실행 클릭: ' + btnText.trim());
-                    await page.waitForTimeout(3000);
+                    // 분析 완료 감지: 버튼 변화 폴링 (10초 x 6회)
+                    for (let chk = 1; chk <= 6; chk++) {
+                        await page.waitForTimeout(10000);
+                        const btnsAfter = await page.locator('button').allTextContents().catch(() => []);
+                        console.log('  [디버그] 분석 후 ' + (chk*10) + 's 버튼: [' + btnsAfter.map(t => t.trim()).filter(Boolean).join(' | ') + ']');
+                        const hasDownload = btnsAfter.some(t => /다운로드|download/i.test(t));
+                        if (hasDownload) { console.log('  [디버그] 다운로드 버튼 감지 — 대기 종료'); break; }
+                    }
+                    const debugSsPath = require('path').join(__dirname, '..', 'graphy', 'debug_상대계정_' + (account || 'unknown') + '.png');
+                    await page.screenshot({ path: debugSsPath, fullPage: false }).catch(() => {});
+                    console.log('  [디버그] 스크린샷: ' + debugSsPath);
                 } else {
                     console.log('  [경고] 분석 실행 버튼을 찾지 못했습니다.');
                 }
