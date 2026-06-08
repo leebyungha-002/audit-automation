@@ -1476,21 +1476,22 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                     await page.waitForTimeout(800);
                     // 드롭다운 항목 클릭: cmdk-item 우선 → [코드]계정명 패턴 탐색 → locator 폴백
                     let acctSelected = false;
-                    // 전략 1: [cmdk-item] — 계정명 정확 일치 우선, 괄호 안 포함 배제
+                    // 전략 1: [cmdk-item] — [코드] 제거 후 텍스트만 비교, 정확 일치 우선
                     if (!acctSelected) {
                         try {
+                            const acctName = account.replace(/^\[\d+\]\s*/, '').trim();
                             const allItems = await page.locator('[cmdk-item]').all();
                             let bestItem = null;
                             for (const item of allItems) {
                                 const txt = (await item.textContent().catch(() => '')).trim();
                                 const nameOnly = txt.replace(/^\[\d+\]\s*/, '');
-                                if (nameOnly === account || nameOnly.startsWith(account + '(') || nameOnly.startsWith(account + ' ')) { bestItem = { el: item, txt }; break; }
+                                if (nameOnly === acctName || nameOnly.startsWith(acctName + '(') || nameOnly.startsWith(acctName + ' ')) { bestItem = { el: item, txt }; break; }
                             }
                             if (!bestItem) {
                                 for (const item of allItems) {
                                     const txt = (await item.textContent().catch(() => '')).trim();
                                     const nameOnly = txt.replace(/^\[\d+\]\s*/, '');
-                                    if (nameOnly.includes(account) && !nameOnly.includes('(' + account + ')')) { bestItem = { el: item, txt }; break; }
+                                    if (nameOnly.includes(acctName) && !nameOnly.includes('(' + acctName + ')')) { bestItem = { el: item, txt }; break; }
                                 }
                             }
                             if (bestItem) {
