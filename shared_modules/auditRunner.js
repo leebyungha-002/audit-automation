@@ -1503,7 +1503,10 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         try {
             const isRelatedAccountTask = taskName && taskName.includes('상대계정');
             if (isRelatedAccountTask) {
-                await page.locator('text=요약 엑셀 다운로드').waitFor({ state: 'visible', timeout: 300000 });
+                // opacity-0 요소: '상대계정 목록' 테이블 출현으로 분析 완료 감지
+                await page.locator('text=상대계정 목록').waitFor({ state: 'attached', timeout: 300000 });
+                await page.waitForTimeout(1000);
+                console.log('  [상대계정] 결과 테이블 감지 — force click으로 다운로드 시도');
             } else {
                 await page.waitForSelector(dlSel, { state: 'visible', timeout: 300000 });
             }
@@ -1513,6 +1516,7 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
             if (dlBtns.length === 0) dlBtns = await page.locator('text=요약 엑셀 다운로드').all();
             if (dlBtns.length === 0) dlBtns = await page.locator('button:has-text("요약 엑셀 다운로드")').all();
 
+            const clickOptions = (taskName && taskName.includes('상대계정')) ? { force: true } : {};
             const safeTask = taskName.replace(/[\\/?*[\]:]/g, '_');
             const safeAcc  = account   ? `_${account}`   : '';
             const safeDir  = direction ? `_${direction}`  : '';
@@ -1539,7 +1543,7 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                             resolve(download);
                         }
                         page.on('download', onDl);
-                        dlBtns[i].click().catch(() => {
+                        dlBtns[i].click(clickOptions).catch(() => {
                             clearTimeout(timer);
                             page.off('download', onDl);
                             resolve(null);
