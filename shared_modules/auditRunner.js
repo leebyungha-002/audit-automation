@@ -1499,9 +1499,14 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         // 결과 대기 (최대 5분) + 다운로드
         // 월별트렌드분석: 버튼 1(금액추이)·2(건수)만 다운로드. 버튼 3(Top10)은 이상치 루프에서 처리.
         const isMonthlyTrendTask = taskName === '월별트렌드분석';
-        const dlSel = 'button:has-text("결과 다운로드"), button:has-text("엑셀 다운로드"), text=요약 엑셀 다운로드';
+        const dlSel = 'button:has-text("결과 다운로드"), button:has-text("엑셀 다운로드")';
         try {
-            await page.waitForSelector(dlSel, { state: 'visible', timeout: 300000 });
+            const isRelatedAccountTask = taskName && taskName.includes('상대계정');
+            if (isRelatedAccountTask) {
+                await page.locator('text=요약 엑셀 다운로드').waitFor({ state: 'visible', timeout: 300000 });
+            } else {
+                await page.waitForSelector(dlSel, { state: 'visible', timeout: 300000 });
+            }
 
             let dlBtns = await page.locator('button:has-text("엑셀 다운로드")').all();
             if (dlBtns.length === 0) dlBtns = await page.locator('button:has-text("결과 다운로드")').all();
