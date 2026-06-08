@@ -599,7 +599,8 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
         await masterBook.xlsx.writeFile(masterPath);
         console.log(`[${menuName}] 마스터 파일에 '${targetName}' 시트 병합 완료.`);
     } else {
-        const finalName = targetName.startsWith(filePrefix) ? targetName : `${filePrefix}${targetName}`;
+        const safeTarget = targetName.replace(/[\\/?*[\]:]/g, '_');
+        const finalName = safeTarget.startsWith(filePrefix) ? safeTarget : `${filePrefix}${safeTarget}`;
         const finalPath = path.join(rawDataDir, finalName.endsWith('.xlsx') ? finalName : `${finalName}.xlsx`);
         // OneDrive 동기화로 인한 파일 잠금(EBUSY) 대비 재시도
         let copied = false;
