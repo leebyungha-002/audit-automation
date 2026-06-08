@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 const path = require('path');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
@@ -1228,14 +1228,15 @@ async function uploadFileToZone(page, config, filePath, areaIndex, areaLabel, me
 async function returnToAiDashboard(page, menuName) {
     const btnSel = 'button:has-text("초기화면으로"), a:has-text("초기화면으로")';
     try {
-        await page.waitForSelector(btnSel, { state: 'visible', timeout: 5000 });
+        // 이미 대시보드에 있으면 성공 처리 (이중 호출 방지)
+        const hasHome = await page.locator('button,a').filter({ hasText: '초기화면으로' }).first().isVisible({ timeout: 1000 }).catch(() => false);
+        if (!hasHome) {
+            const onBoard = await page.locator('button,a').filter({ hasText: '상세보기' }).first().isVisible({ timeout: 1500 }).catch(() => false);
+            if (onBoard) { console.log(`[${menuName}] ✓ 이미 대시보드 — 세션 유지 중.`); return true; }
+        }
+        await page.waitForSelector(btnSel, { state: 'visible', timeout: 8000 });
         await page.click(btnSel);
         await page.waitForTimeout(1500);
-        // 대시보드 확인: 분석 카드 중 하나가 나타나면 복귀 성공
-        await page.waitForSelector(
-            'text=전표분석, text=일반사항 분석, text=월별 트렌드 분석, text=공휴일전표',
-            { timeout: 10000 }
-        );
         console.log(`[${menuName}] ✓ [초기화면으로] 복귀 완료 — 분개장 세션 유지 중.`);
         return true;
     } catch (e) {
@@ -1393,6 +1394,8 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         '월별트렌드분석': '월별 트렌드 분석',
         '현금흐름분석': '현금 흐름 분석',
     };
+    // 한자析(U+6790) 변형 키 자동 추가: 엑셀에서 한자로 입력된 작업명 대응
+    Object.keys(TASK_UI_MAP).forEach(k => { TASK_UI_MAP[k.replace(/석/g, String.fromCodePoint(0x6790))] = TASK_UI_MAP[k]; });
 
     const returnToDashboard = async () => {
         const btnSel = 'button:has-text("초기화면으로"), a:has-text("초기화면으로")';
@@ -1415,18 +1418,32 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         const logTag  = `${taskName}${account ? `/${account}` : ''}`;
         console.log(`\n--- [${menuName} / ${logTag}] 처리 시작 ---`);
 
-        // 카드 클릭
+        // 카드 클릭: 첫 단어(순수 한글)로 컨테이너 탐색 → 상세보기 버튼 또는 헤딩 클릭
         try {
-            const card = page.locator(`text="${uiLabel}"`).first();
-            if (await card.count().catch(() => 0) === 0) {
-                console.log(`  [경고] "${uiLabel}" 카드 미발견.`);
-                continue;
+            const keyword = uiLabel.split(' ')[0];
+            let clicked = false;
+            try {
+                const btn = page.locator('div,section,li,article,[class*="card"]')
+                    .filter({ has: page.locator('h1,h2,h3,h4,p,span').filter({ hasText: keyword }) })
+                    .locator('button,a').filter({ hasText: '상세보기' }).first();
+                if (await btn.count().catch(() => 0) > 0) { await btn.click(); clicked = true; }
+            } catch {}
+            if (!clicked) {
+                const heading = page.locator('h1,h2,h3,h4').filter({ hasText: keyword }).first();
+                if (await heading.count().catch(() => 0) > 0) { await heading.click(); clicked = true; }
             }
-            await card.waitFor({ state: 'visible', timeout: 8000 });
-            await card.click();
+            if (!clicked) {
+                clicked = await page.evaluate((kw) => {
+                    for (const el of document.querySelectorAll('h1,h2,h3,h4,p,button,span')) {
+                        if ((el.textContent||'').trim().includes(kw) && el.offsetParent) { el.click(); return true; }
+                    }
+                    return false;
+                }, keyword).catch(() => false);
+            }
+            if (!clicked) { console.log(`  [경고] "${uiLabel}" 카드 미발견.`); continue; }
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            console.log(`  ✓ 카드 "${uiLabel}" 진입 완료`);
+            console.log(`  ✓ 카드"${uiLabel}" 진입 완료`);
         } catch (e) {
             console.log(`  [경고] 카드 클릭 실패: ${e.message}`);
             continue;
@@ -1459,15 +1476,27 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
                     await page.waitForTimeout(800);
                     // 드롭다운 항목 클릭: cmdk-item 우선 → [코드]계정명 패턴 탐색 → locator 폴백
                     let acctSelected = false;
-                    // 전략 1: [cmdk-item] (Popover+Command 신규 UI)
+                    // 전략 1: [cmdk-item] — 계정명 정확 일치 우선, 괄호 안 포함 배제
                     if (!acctSelected) {
                         try {
-                            const cmdItem = page.locator('[cmdk-item]').filter({ hasText: account }).first();
-                            if (await cmdItem.count() > 0) {
-                                const txt = await cmdItem.textContent().catch(() => '');
-                                await cmdItem.click();
+                            const allItems = await page.locator('[cmdk-item]').all();
+                            let bestItem = null;
+                            for (const item of allItems) {
+                                const txt = (await item.textContent().catch(() => '')).trim();
+                                const nameOnly = txt.replace(/^\[\d+\]\s*/, '');
+                                if (nameOnly === account || nameOnly.startsWith(account + '(') || nameOnly.startsWith(account + ' ')) { bestItem = { el: item, txt }; break; }
+                            }
+                            if (!bestItem) {
+                                for (const item of allItems) {
+                                    const txt = (await item.textContent().catch(() => '')).trim();
+                                    const nameOnly = txt.replace(/^\[\d+\]\s*/, '');
+                                    if (nameOnly.includes(account) && !nameOnly.includes('(' + account + ')')) { bestItem = { el: item, txt }; break; }
+                                }
+                            }
+                            if (bestItem) {
+                                await bestItem.el.click();
                                 acctSelected = true;
-                                console.log('  계정과목: ' + account + ' → cmdk-item 클릭: ' + txt.trim().substring(0, 40));
+                                console.log('  계정과목: ' + account + ' → cmdk-item 클릭: ' + bestItem.txt.substring(0, 40));
                             }
                         } catch {}
                     }
