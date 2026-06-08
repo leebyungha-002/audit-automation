@@ -1479,16 +1479,21 @@ async function handleGoogleAiAnalysis(page, menu, config, resultsDir, filePrefix
         // 거래방향 라디오
         if (direction) await clickRadioByLabel(page, direction, '거래방향');
 
-        // 상대계정분석은 계정/방향 선택 후 "분석 실행" 버튼을 눌러야 결과가 나타남
+        // 상대계정분석은 계정/방향 선택 후 분석 실행 버튼을 눈러야 결과가 나타남
         if (taskName && (taskName.includes('상대계정') || menuName.includes('상대계정'))) {
             try {
-                const runBtn = page.locator('button:has-text("분석 실행")').first();
+                const allBtns = await page.locator('button').allTextContents().catch(() => []);
+                console.log('  [디버그] 상대계정분석 버튼 목록: [' + allBtns.map(t => t.trim()).filter(Boolean).join(' | ') + ']');
+                const runBtn = page.locator('button').filter({ hasText: /분석.{0,3}실행|실행/ }).first();
                 if (await runBtn.count().catch(() => 0) > 0) {
+                    const btnText = await runBtn.textContent().catch(() => '');
                     await runBtn.click();
-                    console.log('  ✓ 분석 실행 클릭');
+                    console.log('  ✓ 분석 실행 클릭: ' + btnText.trim());
                     await page.waitForTimeout(3000);
+                } else {
+                    console.log('  [경고] 분석 실행 버튼을 찾지 못했습니다.');
                 }
-            } catch { /* 버튼 없으면 무시 */ }
+            } catch (e) { console.log('  [경고] 분석 실행 버튼 처리 오류: ' + e.message); }
         }
 
         // 결과 대기 (최대 5분) + 다운로드
