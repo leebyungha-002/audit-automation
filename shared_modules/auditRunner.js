@@ -764,7 +764,8 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
                     await page.waitForTimeout(3000);
                 }
                 await page.waitForTimeout(500); // 렌더링 안정화 대기
-                await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', accountName, rawDataDir, menuName, filePrefix);
+                const ledgerTarget = String(task['파일명'] ?? `${accountName}_${base}`);
+                await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', ledgerTarget, rawDataDir, menuName, filePrefix);
 
             } else {
                 // 상세 거래 검색 / 벤포드: 라디오 버튼 선택(옵션) → 검색 → 다운로드
