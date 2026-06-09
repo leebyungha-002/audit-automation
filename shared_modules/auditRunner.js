@@ -34,6 +34,7 @@ const DEFAULT_MENU_LABEL_MAP = {
     '총계정원장':             '총계정원장 조회',
     '상세거래검색':           '상세 거래 검색',
     '상세검색_시나리오':      '상세 거래 검색',   // 시나리오 시트 → 동일 UI 카드 진입
+    '이자비용적정성test':     '상세 거래 검색',   // 작업명 컬럼 사용 시트 → 동일 UI 카드 진입
     '이중거래처분석':         '매입/매출 이중거래처 분석',
     '벤포드':                 '벤포드 법칙 분석',
     '벤포드법칙분석':         '벤포드 법칙 분석',
@@ -626,8 +627,10 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
     const { menuName, tasks } = menu;
     const base = getBaseMenuName(menuName);
 
-    // ── 상세검색_시나리오 시트: 전용 핸들러로 위임 ───────────────────────────
-    if (base === '상세검색_시나리오') {
+    // ── 상세검색_시나리오 시트: 전용 핸들러로 위임
+    // '작업명' 컬럼이 있는 시트는 이름에 관계없이 동일 핸들러로 처리
+    const hasTaskName = tasks.some(t => '작업명' in t && t['작업명'] !== null);
+    if (base === '상세검색_시나리오' || hasTaskName) {
         return handleDetailSearchScenario(page, menu, config, rawDataDir, filePrefix);
     }
 
