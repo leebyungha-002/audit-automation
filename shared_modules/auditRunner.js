@@ -443,7 +443,8 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                         await page.waitForTimeout(300);
                         console.log(`  거래처명: ${vendorName}`);
                     } else {
-                        await page.keyboard.press('Escape');
+                        // Escape 대신 Tab: Escape는 드롭다운을 닫으며 이전 선택값을 복원하므로 사용 금지
+                        await page.keyboard.press('Tab');
                         await page.waitForTimeout(200);
                     }
                 } catch {
@@ -464,7 +465,8 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                         await page.waitForTimeout(300);
                         console.log(`  적요: ${description}`);
                     } else {
-                        await page.keyboard.press('Escape');
+                        // Escape 대신 Tab: 이전 선택값 복원 방지
+                        await page.keyboard.press('Tab');
                         await page.waitForTimeout(200);
                     }
                 } catch {
@@ -513,19 +515,15 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
             // 9. 다음 태스크가 있으면: [초기화] 버튼 클릭 → 폼 안정화 → 다음 계정 입력 준비
             const isLastOverall = gi === allGroups.length - 1 && ti === groupTasks.length - 1;
             if (!isLastOverall) {
-                const resetSel = config.selectors.resetButton;
-                if (resetSel) {
-                    try {
-                        await page.waitForSelector(resetSel, { state: 'visible', timeout: 5000 });
-                        await page.click(resetSel);
-                        await page.waitForTimeout(1000); // 폼 초기화 안정화 대기
-                        await page.waitForSelector(comboSel, { state: 'visible', timeout: 10000 });
-                        console.log(`  → [초기화] 완료, 다음 계정 입력 준비`);
-                    } catch (e) {
-                        console.log(`[경고] 초기화 버튼 클릭 실패 (다음 계정으로 진행): ${e.message}`);
-                    }
-                } else {
-                    console.log(`[경고] config.selectors.resetButton 이 설정되지 않았습니다. 초기화를 건너뜁니다.`);
+                const resetSel = config.selectors.resetButton || 'button:has-text("초기화")';
+                try {
+                    await page.waitForSelector(resetSel, { state: 'visible', timeout: 5000 });
+                    await page.locator(resetSel).last().click(); // last(): 폼 하단 메인 초기화 버튼 우선
+                    await page.waitForTimeout(1000); // 폼 초기화 안정화 대기
+                    await page.waitForSelector(comboSel, { state: 'visible', timeout: 10000 });
+                    console.log(`  → [초기화] 완료, 다음 계정 입력 준비`);
+                } catch (e) {
+                    console.log(`[경고] 초기화 버튼 클릭 실패 (다음 계정으로 진행): ${e.message}`);
                 }
             }
         }
