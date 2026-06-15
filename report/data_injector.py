@@ -154,6 +154,29 @@ def inject_data(ws_src, ws_tgt, start_cell, src_range=None):
     return count
 
 
+# ─── 잔존 데이터 클리어 ──────────────────────────────────────────────────────
+# PIVOT_AGING / ANALYSIS_INJECT 처럼 매번 가변 행수를 주입하는 경우, 재실행 시
+# 이전 결과보다 행/열이 줄어들면 끝부분 잔존 데이터가 남을 수 있다.
+# 주입 전 고정 범위를 비워(clear) 이를 방지한다.
+
+_CLEAR_MAX_ROWS = 200
+_CLEAR_MAX_COLS = 30
+_NO_FILL = PatternFill(fill_type=None)
+
+
+def _clear_range(ws, start_row, start_col, n_rows=_CLEAR_MAX_ROWS, n_cols=_CLEAR_MAX_COLS, reset_fill=False):
+    """start_row~start_row+n_rows-1 행, start_col~start_col+n_cols-1 열의 셀 값을 비운다.
+
+    reset_fill=True 이면 강조 서식(예: _YELLOW_FILL)도 함께 초기화한다.
+    """
+    for r in range(start_row, start_row + n_rows):
+        for c in range(start_col, start_col + n_cols):
+            cell = ws.cell(row=r, column=c)
+            cell.value = None
+            if reset_fill:
+                cell.fill = _NO_FILL
+
+
 # ─── 매핑 파일 로드 ──────────────────────────────────────────────────────────
 
 def load_mapping(mapping_path):
@@ -290,6 +313,9 @@ def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
 
     start_row, start_col = _parse_cell(start_cell)
 
+    # 재실행 시 이전 결과보다 행/열이 줄어들 경우 잔존 데이터 제거
+    _clear_range(ws_aging, start_row, start_col)
+
     for c_idx, h in enumerate(headers):
         ws_aging.cell(row=start_row, column=start_col + c_idx).value = h
 
@@ -307,6 +333,10 @@ def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
     else:
         ws_analysis = wb_tgt.create_sheet(title=analysis_sheet)
         print(f'    [Aging] 시트 신규 생성: {analysis_sheet}')
+
+    # 재실행 시 잔존 데이터 제거 (B4↑ 월 헤더 행 / A5↓ 거래처 리스트 열)
+    _clear_range(ws_analysis, 4, 2, n_rows=1)
+    _clear_range(ws_analysis, 5, 1, n_cols=1)
 
     month_list = headers[1:-1]  # '거래처명'·'합계' 제외한 월 헤더
     for c_idx, month in enumerate(month_list):
@@ -382,6 +412,10 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
         print(f'    [Analysis] 시트 신규 생성: {tgt_sheet_name}')
 
     start_row, start_col = _parse_cell(start_cell)
+
+    # 재실행 시 이전 결과보다 행이 줄어들 경우 잔존 데이터·강조 서식 제거
+    _clear_range(ws, start_row, start_col, n_rows=1)
+    _clear_range(ws, start_row + 1, start_col, reset_fill=True)
 
     # ── 헤더 주입 ─────────────────────────────────────────────────────
     for c_idx, col_name in enumerate(df.columns):
