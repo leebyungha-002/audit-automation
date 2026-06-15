@@ -612,12 +612,44 @@ def _extract_first_image_zip(src_path, sheet_name):
         return None, None
 
 
+def _remove_images_at(ws, start_cell):
+    """대상 시트에서 start_cell과 동일한 anchor 위치의 기존 이미지를 제거한다.
+
+    재실행 시 그래프가 중첩되지 않도록 새 이미지 추가 전에 호출한다.
+    Returns: 제거된 이미지 수.
+    """
+    start_row, start_col = _parse_cell(start_cell)
+    target_pos = (start_row - 1, start_col - 1)  # openpyxl anchor는 0-based
+
+    def _anchor_pos(img):
+        anchor = img.anchor
+        if isinstance(anchor, str):
+            try:
+                r, c = _parse_cell(anchor)
+                return (r - 1, c - 1)
+            except ValueError:
+                return None
+        _from = getattr(anchor, '_from', None)
+        return (_from.row, _from.col) if _from is not None else None
+
+    images = getattr(ws, '_images', [])
+    kept = [img for img in images if _anchor_pos(img) != target_pos]
+    removed = len(images) - len(kept)
+    ws._images = kept
+    return removed
+
+
 def inject_image(ws_src, src_path, src_sheet, ws_tgt, start_cell):
     """소스 시트의 첫 번째 이미지를 대상 시트의 start_cell 위치에 복사한다.
 
     시도 순서: ws._images → ZIP 직접 추출(PNG/JPEG) → win32com 후처리 예약.
+    주입 전 동일 위치의 기존 이미지는 제거한다(재실행 시 중첩 방지).
     Returns (주입개수: int, win32com_필요: bool).
     """
+    removed = _remove_images_at(ws_tgt, start_cell)
+    if removed:
+        print(f'    [MOVE_IMAGE] 기존 이미지 {removed}개 제거 (재주입 전)')
+
     # ── 1. ws._images 경로 (Pillow 필요) ────────────────────────────────
     if _PILLOW_OK and getattr(ws_src, '_images', None):
         new_img = XLImage(BytesIO(ws_src._images[0]._data()))
@@ -681,6 +713,16 @@ def inject_image_win32com(src_path, src_sheet, tgt_path, tgt_sheet, start_cell):
             wb_src.Close(False)
             wb_tgt.Close(False)
             return 0
+
+        # 기존 그래프 제거 (재실행 시 중첩 방지)
+        target_addr = start_cell.upper().replace('$', '')
+        for i in range(ws_t.Shapes.Count, 0, -1):
+            try:
+                addr = ws_t.Shapes(i).TopLeftCell.Address(False, False)
+            except Exception:
+                continue
+            if addr.upper() == target_addr:
+                ws_t.Shapes(i).Delete()
 
         ws_t.Range(start_cell).Select()
         ws_t.Paste()
