@@ -303,6 +303,43 @@ async function downloadAndAddSheet(page, downloadBtnSelector, sheetName, workboo
     console.log(`[${menuName}] '${safeSheetName}' 시트 추가 완료.`);
 }
 
+// ─── 다운로드 → workbook 단일 시트에 누적 추가 헬퍼 ─────────────────────────
+// 그룹 내 여러 계정 결과를 sheetName 시트 하나에 누적(append). 첫 호출 시
+// 헤더 행을 포함해 시트를 생성하고, 이후 호출부터는 헤더를 제외한 데이터 행만
+// 기존 시트 마지막 행 다음부터 추가한다. 파일은 저장하지 않음.
+async function downloadAndAppendToSheet(page, downloadBtnSelector, sheetName, workbook, menuName) {
+    console.log(`[${menuName}] '${sheetName}' 결과 다운로드 대기 중...`);
+    await page.waitForSelector(downloadBtnSelector, { state: 'visible', timeout: 30000 });
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.click(downloadBtnSelector);
+    const download = await downloadPromise;
+    const downloadPath = await download.path();
+    console.log(`[${menuName}] 다운로드 캡처 완료.`);
+
+    const safeSheetName = sheetName.substring(0, 31).replace(/[\\/?*[\]:]/g, '_');
+    const srcBook = new ExcelJS.Workbook();
+    await srcBook.xlsx.readFile(downloadPath);
+    const srcSheet = srcBook.worksheets[0];
+
+    let destSheet = workbook.getWorksheet(safeSheetName);
+    const isNewSheet = !destSheet;
+    if (isNewSheet) destSheet = workbook.addWorksheet(safeSheetName);
+
+    let destRowNumber = isNewSheet ? 0 : destSheet.rowCount;
+    srcSheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        // 두 번째 이후 호출에서는 소스의 헤더 행(1행)을 건너뛰고 데이터 행만 추가
+        if (!isNewSheet && rowNumber === 1) return;
+        destRowNumber += 1;
+        const destRow = destSheet.getRow(destRowNumber);
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+            destRow.getCell(colNumber).value = cell.value;
+        });
+        destRow.commit();
+    });
+    console.log(`[${menuName}] '${safeSheetName}' 시트에 결과 추가 완료 (현재 ${destSheet.rowCount}행).`);
+}
+
 // ─── 리스 완전성 자동 연동: lease_filter.py 실행 ─────────────────────────────
 function runLeaseFilter(companyName, noFilter = false) {
     const leaseScript = path.join(__dirname, '..', 'lease_analyzer', 'lease_filter.py');
@@ -361,6 +398,12 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
         const groupBook    = new ExcelJS.Workbook();
         const safeFileName = taskName.substring(0, 50).replace(/[\\/?*[\]:]/g, '_');
         const groupFilePath = path.join(resultsDir, `${filePrefix}${safeFileName}.xlsx`);
+
+        // '분석옵션' 컬럼에 '단일시트'/'통합' 입력 시, 그룹 내 모든 계정 결과를 계정별 시트가 아닌
+        // 하나의 시트로 합쳐서 저장 (다운로드 결과에 이미 '계정과목' 컬럼이 포함되어 있음)
+        const groupOptionRaw  = String(groupTasks[0]['분석옵션'] ?? groupTasks[0]['분석 옵션'] ?? '').trim();
+        const mergeIntoOneSheet = /단일시트|통합|merge/i.test(groupOptionRaw);
+        const combinedSheetName = taskName.substring(0, 31).replace(/[\\/?*[\]:]/g, '_');
 
         // 상세 거래 검색 카드 UI 레이블 (뒤로가기 후 재진입에 사용)
         const cardUiLabel = getMenuUiLabel(menuName, config);
@@ -505,6 +548,8 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                     const safeName = accountName.replace(/[^\w가-힣]/g, '_');
                     console.log(`  [안내] '${accountName}' 검색 결과 없음. 버튼 목록: [${btns.map(t => t.trim()).filter(Boolean).join(' | ')}]`);
                     await page.screenshot({ path: `graphy/debug_no_result_${safeName}.png` }).catch(() => {});
+                } else if (mergeIntoOneSheet) {
+                    await downloadAndAppendToSheet(page, downloadSel, combinedSheetName, groupBook, menuName);
                 } else {
                     await downloadAndAddSheet(page, downloadSel, accountName, groupBook, menuName);
                 }
