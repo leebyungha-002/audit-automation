@@ -96,10 +96,14 @@ def find_file_by_keyword(directories, keyword, exclude_suffixes=None):
 # ─── 시트 탐색 ────────────────────────────────────────────────────────────────
 
 def resolve_sheet(sheetnames, keyword):
-    """정확히 일치 → keyword 포함 첫 번째 시트 순으로 탐색."""
+    """정확히 일치 → 대소문자 무시 일치 → keyword 포함 첫 번째 시트 순으로 탐색."""
     if keyword in sheetnames:
         return keyword
-    matched = [s for s in sheetnames if keyword in s]
+    kw_lower = keyword.lower()
+    for s in sheetnames:
+        if s.lower() == kw_lower:
+            return s
+    matched = [s for s in sheetnames if kw_lower in s.lower()]
     return matched[0] if matched else None
 
 
