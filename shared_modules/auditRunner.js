@@ -419,59 +419,69 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
             const startDateRaw = task['시작일'] ?? task['시작일자'] ?? task['기간시작'] ?? null;
             const endDateRaw   = task['종료일'] ?? task['종료일자'] ?? task['기간종료'] ?? null;
 
-            if (!accountName) {
-                console.log(`[${taskName}] 계정과목 없음 — 건너뜁니다.`);
+            // 계정과목·거래처명 모두 없으면 처리 불가 → 건너뜀
+            if (!accountName && !vendorName) {
+                console.log(`[${taskName}] 계정과목·거래처명 모두 없음 — 건너뜁니다.`);
                 continue;
             }
-            console.log(`\n--- [${taskName} / ${accountName}] 처리 시작 ---`);
+            // 계정과목 없이 거래처명만 있을 때: 거래처명 단독 검색 모드
+            const vendorOnlyMode = !accountName && !!vendorName;
+            // 시트명: 계정과목 우선, 없으면 거래처명
+            const sheetLabel = accountName || vendorName;
+            if (vendorOnlyMode) {
+                console.log(`\n--- [${taskName} / 거래처: ${vendorName}] 거래처명 단독 검색 ---`);
+            } else {
+                console.log(`\n--- [${taskName} / ${accountName}] 처리 시작 ---`);
+            }
 
             try {
-                // 1. 콤보박스가 보일 때까지 대기 후 계정과목 입력
-                // (초기화는 이전 반복 종료 시점에 수행되므로 여기서는 생략)
-                // 계정과목 콤보박스: 1차 클릭으로 활성화 → 내부 input 클릭으로 포커스 → 타이핑
+                // 1. 콤보박스가 보일 때까지 대기
                 await page.waitForSelector(comboSel, { state: 'visible', timeout: 10000 });
                 await page.waitForTimeout(500);
-                await page.click(comboSel);           // 1차 클릭: 콤보박스 활성화
-                await page.waitForTimeout(400);
-                // 활성화 후 내부 input(또는 콤보박스 자체)에 포커스를 확실히 맞춤
-                const acctInput = page.locator('input[placeholder*="계정"], input[placeholder*="입력"]').first();
-                if (await acctInput.isVisible({ timeout: 800 }).catch(() => false)) {
-                    await acctInput.click();           // 내부 input 클릭으로 활성화
-                } else {
-                    await page.click(comboSel);        // input이 없으면 콤보박스 재클릭
-                }
-                await page.waitForTimeout(300);
-                await page.keyboard.type(accountName, { delay: 50 });  // Ctrl+A/Backspace 없이 바로 타이핑
-                await page.waitForTimeout(700);
 
-                // 드롭다운 옵션 선택: 정확한 텍스트 일치 우선 → 첫 번째 옵션 클릭 → ArrowDown+Enter 폴백
-                let acctSelected = false;
-                try {
-                    const exactOpt = page.locator(`[role="option"]:text-is("${accountName}")`).first();
-                    if (await exactOpt.isVisible({ timeout: 1500 })) {
-                        await exactOpt.click();
-                        acctSelected = true;
-                        console.log(`  계정과목: ${accountName} (정확히 일치하는 옵션 클릭)`);
+                // 2. 계정과목 입력 (계정과목이 있을 때만)
+                if (accountName) {
+                    await page.click(comboSel);           // 1차 클릭: 콤보박스 활성화
+                    await page.waitForTimeout(400);
+                    const acctInput = page.locator('input[placeholder*="계정"], input[placeholder*="입력"]').first();
+                    if (await acctInput.isVisible({ timeout: 800 }).catch(() => false)) {
+                        await acctInput.click();
+                    } else {
+                        await page.click(comboSel);
                     }
-                } catch {}
-                if (!acctSelected) {
+                    await page.waitForTimeout(300);
+                    await page.keyboard.type(accountName, { delay: 50 });
+                    await page.waitForTimeout(700);
+
+                    // 드롭다운 옵션 선택: 정확한 텍스트 일치 우선 → 첫 번째 옵션 클릭 → ArrowDown+Enter 폴백
+                    let acctSelected = false;
                     try {
-                        const firstOpt = page.locator('[role="option"]').first();
-                        if (await firstOpt.isVisible({ timeout: 1000 })) {
-                            const optText = await firstOpt.textContent().catch(() => '');
-                            await firstOpt.click();
+                        const exactOpt = page.locator(`[role="option"]:text-is("${accountName}")`).first();
+                        if (await exactOpt.isVisible({ timeout: 1500 })) {
+                            await exactOpt.click();
                             acctSelected = true;
-                            console.log(`  계정과목: ${accountName} → 첫 번째 옵션 클릭 ("${optText?.trim()}")`);
+                            console.log(`  계정과목: ${accountName} (정확히 일치하는 옵션 클릭)`);
                         }
                     } catch {}
+                    if (!acctSelected) {
+                        try {
+                            const firstOpt = page.locator('[role="option"]').first();
+                            if (await firstOpt.isVisible({ timeout: 1000 })) {
+                                const optText = await firstOpt.textContent().catch(() => '');
+                                await firstOpt.click();
+                                acctSelected = true;
+                                console.log(`  계정과목: ${accountName} → 첫 번째 옵션 클릭 ("${optText?.trim()}")`);
+                            }
+                        } catch {}
+                    }
+                    if (!acctSelected) {
+                        await page.keyboard.press('ArrowDown');
+                        await page.waitForTimeout(200);
+                        await page.keyboard.press('Enter');
+                        console.log(`  계정과목: ${accountName} (ArrowDown+Enter 폴백)`);
+                    }
+                    await page.waitForTimeout(400);
                 }
-                if (!acctSelected) {
-                    await page.keyboard.press('ArrowDown');
-                    await page.waitForTimeout(200);
-                    await page.keyboard.press('Enter');
-                    console.log(`  계정과목: ${accountName} (ArrowDown+Enter 폴백)`);
-                }
-                await page.waitForTimeout(400);
 
                 // 3. 거래처명 — 두 번째 combobox: 항상 먼저 지우고, 값 있으면 입력
                 try {
@@ -545,17 +555,17 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                 if (!dlVisible) {
                     // 결과 없음: 현재 버튼 목록 + 스크린샷으로 원인 파악
                     const btns = await page.locator('button').allTextContents().catch(() => []);
-                    const safeName = accountName.replace(/[^\w가-힣]/g, '_');
-                    console.log(`  [안내] '${accountName}' 검색 결과 없음. 버튼 목록: [${btns.map(t => t.trim()).filter(Boolean).join(' | ')}]`);
+                    const safeName = sheetLabel.replace(/[^\w가-힣]/g, '_');
+                    console.log(`  [안내] '${sheetLabel}' 검색 결과 없음. 버튼 목록: [${btns.map(t => t.trim()).filter(Boolean).join(' | ')}]`);
                     await page.screenshot({ path: `graphy/debug_no_result_${safeName}.png` }).catch(() => {});
                 } else if (mergeIntoOneSheet) {
                     await downloadAndAppendToSheet(page, downloadSel, combinedSheetName, groupBook, menuName);
                 } else {
-                    await downloadAndAddSheet(page, downloadSel, accountName, groupBook, menuName);
+                    await downloadAndAddSheet(page, downloadSel, sheetLabel, groupBook, menuName);
                 }
 
             } catch (e) {
-                console.log(`[경고] [${taskName} / ${accountName}] 처리 중 오류 (다음 계정으로 진행): ${e.message}`);
+                console.log(`[경고] [${taskName} / ${sheetLabel}] 처리 중 오류 (다음 계정으로 진행): ${e.message}`);
             }
 
             // 9. 다음 태스크가 있으면: [초기화] 버튼 클릭 → 폼 안정화 → 다음 계정 입력 준비
