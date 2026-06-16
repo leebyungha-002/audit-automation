@@ -764,14 +764,30 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             }
 
             // 3) 분석 시작 클릭 → AI 감사인 의견 생성 완료까지 대기
-            // AI 의견은 API 호출로 생성되므로 networkidle로 응답 완료를 확인 후 다운로드
             await page.click('button:has-text("분석 시작")');
             console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중...`);
-            await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {
-                console.log(`  [경고] networkidle 타임아웃 — AI 의견 미완성 상태일 수 있습니다.`);
-            });
-            await page.waitForTimeout(1500);  // 렌더링 안정화
-            console.log(`  ✓ AI 분석 완료`);
+
+            // AI 의견은 스트리밍/비동기 API로 생성되므로 DOM에 의견 텍스트가
+            // 실제로 나타날 때까지 최대 90초 폴링
+            const aiOpinionAppeared = await page.waitForFunction(() => {
+                // 페이지 전체 텍스트에서 AI 의견 완성 신호 탐지
+                // "감사인 의견", "AI 의견", "종합 의견" 등 의미 있는 텍스트가 충분히 쌓이면 완료로 판단
+                const body = document.body.innerText || '';
+                const idx = body.search(/감사인\s*의견|AI\s*의견|종합\s*의견|audit\s*opinion/i);
+                if (idx === -1) return false;
+                // 의견 텍스트가 최소 50자 이상이어야 완성으로 간주
+                const snippet = body.slice(idx, idx + 200);
+                return snippet.replace(/\s/g, '').length >= 50;
+            }, {}, { timeout: 90000 }).catch(() => null);
+
+            if (aiOpinionAppeared) {
+                console.log(`  ✓ AI 감사인 의견 렌더링 확인`);
+            } else {
+                console.log(`  [경고] AI 감사인 의견 미감지 — 스크린샷 저장 후 다운로드 진행`);
+                const safeName = accountName.replace(/[^\w가-힣]/g, '_');
+                await page.screenshot({ path: `graphy/debug_benford_ai_${safeName}.png` }).catch(() => {});
+            }
+            await page.waitForTimeout(1000);  // 렌더링 안정화
 
             // 4) 결과 다운로드 (벤포드 결과 섹션의 "엑셀 다운로드" 버튼)
             // 동일 계정에 차변/대변을 모두 분석하는 경우가 있어 파일명에 분석 기준(차변/대변)을 포함
