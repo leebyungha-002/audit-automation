@@ -524,10 +524,10 @@ def inject_lease_schedule(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cel
 # ─── 이미지 복사 ─────────────────────────────────────────────────────────────
 
 def _extract_first_image_zip(src_path, sheet_name):
-    """xlsx ZIP 내부 drawing XML을 직접 파싱해 첫 번째 이미지 바이트를 추출.
+    """xlsx ZIP 내부 drawing XML을 직접 파싱해 첫 번째 이미지 바이트와 표시 크기를 추출.
 
     ws._images 가 비어있는 경우(EMF 등)의 폴백용.
-    Returns (img_bytes, ext_lower) 또는 (None, None).
+    Returns (img_bytes, ext_lower, width_px, height_px) 또는 (None, None, None, None).
     """
     NS_R   = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
@@ -592,34 +592,59 @@ def _extract_first_image_zip(src_path, sheet_name):
             if not drawing_file or drawing_file not in znames:
                 return None, None
 
-            # 4. drawing → 첫 번째 blip rId (PNG/JPEG 등 래스터 이미지)
+            # 4. drawing → 첫 번째 blip rId + 표시 크기 (cx/cy in EMU)
             #    blip 없으면 Chart/Shape 객체일 가능성 → 'no_blip' 마커 반환
+            NS_XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+            draw_tree = rxl(drawing_file)
             img_rid = None
-            for blip in rxl(drawing_file).iter(_tag(NS_A, 'blip')):
+            for blip in draw_tree.iter(_tag(NS_A, 'blip')):
                 img_rid = blip.get(_tag(NS_R, 'embed'))
                 if img_rid:
                     break
             if not img_rid:
-                return None, 'no_blip'  # drawing은 있지만 래스터 이미지 아님(Chart 등)
+                return None, 'no_blip', None, None
+
+            # drawing XML에서 표시 크기 추출 (xdr:ext → oneCellAnchor, a:ext → spPr)
+            EMU_PER_PX = 9525  # 914400 EMU/inch ÷ 96 DPI
+            width_px = height_px = None
+            for ext_el in draw_tree.iter(_tag(NS_XDR, 'ext')):
+                cx, cy = ext_el.get('cx'), ext_el.get('cy')
+                if cx and cy:
+                    try:
+                        width_px = round(int(cx) / EMU_PER_PX)
+                        height_px = round(int(cy) / EMU_PER_PX)
+                    except ValueError:
+                        pass
+                    break
+            if width_px is None:
+                for ext_el in draw_tree.iter(_tag(NS_A, 'ext')):
+                    cx, cy = ext_el.get('cx'), ext_el.get('cy')
+                    if cx and cy:
+                        try:
+                            width_px = round(int(cx) / EMU_PER_PX)
+                            height_px = round(int(cy) / EMU_PER_PX)
+                        except ValueError:
+                            pass
+                        break
 
             # 5. drawing rels → 이미지 파일
             drels_path = _rels(drawing_file)
             if drels_path not in znames:
-                return None, None
+                return None, None, None, None
             img_file = None
             for r in _iter_rels(rxl(drels_path)):
                 if r.get('Id') == img_rid:
                     img_file = _resolve(drawing_file, r.get('Target'))
                     break
             if not img_file or img_file not in znames:
-                return None, None
+                return None, None, None, None
 
             ext = img_file.rsplit('.', 1)[-1].lower()
-            return zf.read(img_file), ext
+            return zf.read(img_file), ext, width_px, height_px
 
     except Exception as e:
         print(f'    [MOVE_IMAGE] ZIP 추출 오류: {e}')
-        return None, None
+        return None, None, None, None
 
 
 def _remove_images_at(ws, start_cell):
@@ -662,16 +687,22 @@ def inject_image(ws_src, src_path, src_sheet, ws_tgt, start_cell):
 
     # ── 1. ws._images 경로 (Pillow 필요) ────────────────────────────────
     if _PILLOW_OK and getattr(ws_src, '_images', None):
-        new_img = XLImage(BytesIO(ws_src._images[0]._data()))
+        orig = ws_src._images[0]
+        new_img = XLImage(BytesIO(orig._data()))
         new_img.anchor = start_cell
+        # 원본 표시 크기 보존 (없으면 PIL 기본값 유지)
+        if getattr(orig, 'width', None):
+            new_img.width = orig.width
+        if getattr(orig, 'height', None):
+            new_img.height = orig.height
         ws_tgt.add_image(new_img)
-        print('    [MOVE_IMAGE] ws._images 경로로 복사 완료')
+        print(f'    [MOVE_IMAGE] ws._images 경로로 복사 완료 ({new_img.width}×{new_img.height}px)')
         return 1, False
 
     print('    [MOVE_IMAGE] ws._images 비어있음 — ZIP 직접 추출 시도')
 
     # ── 2. ZIP/XML 직접 추출 ────────────────────────────────────────────
-    img_bytes, ext = _extract_first_image_zip(src_path, src_sheet)
+    img_bytes, ext, width_px, height_px = _extract_first_image_zip(src_path, src_sheet)
 
     if img_bytes is None:
         if ext == 'no_blip':
@@ -689,7 +720,14 @@ def inject_image(ws_src, src_path, src_sheet, ws_tgt, start_cell):
 
     new_img = XLImage(BytesIO(img_bytes))
     new_img.anchor = start_cell
+    # drawing XML에서 추출한 원본 표시 크기 적용
+    if width_px:
+        new_img.width = width_px
+    if height_px:
+        new_img.height = height_px
     ws_tgt.add_image(new_img)
+    size_info = f'{width_px}×{height_px}px' if width_px else '크기미확인'
+    print(f'    [MOVE_IMAGE] ZIP 경로로 복사 완료 ({size_info})')
     return 1, False
 
 
