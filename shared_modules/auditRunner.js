@@ -763,10 +763,15 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
                 if (!set) console.log(`  [경고] 금액 기준열 '${amountCol}' 설정 실패 — 기본값(코드) 유지`);
             }
 
-            // 3) 분석 시작 클릭
+            // 3) 분석 시작 클릭 → AI 감사인 의견 생성 완료까지 대기
+            // AI 의견은 API 호출로 생성되므로 networkidle로 응답 완료를 확인 후 다운로드
             await page.click('button:has-text("분석 시작")');
-            await page.waitForTimeout(2000);
-            console.log(`  ✓ 분석 시작 클릭`);
+            console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중...`);
+            await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {
+                console.log(`  [경고] networkidle 타임아웃 — AI 의견 미완성 상태일 수 있습니다.`);
+            });
+            await page.waitForTimeout(1500);  // 렌더링 안정화
+            console.log(`  ✓ AI 분석 완료`);
 
             // 4) 결과 다운로드 (벤포드 결과 섹션의 "엑셀 다운로드" 버튼)
             // 동일 계정에 차변/대변을 모두 분석하는 경우가 있어 파일명에 분석 기준(차변/대변)을 포함
@@ -776,8 +781,8 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             const dlBtn = config.selectors.benfordDownloadBtn || 'button:has-text("엑셀 다운로드")';
             await handleDownloadAndSave(page, dlBtn, targetName, rawDataDir, menuName, filePrefix);
 
-            // 5) 다음 계정을 위해 잠시 대기 (화면 유지 — combobox 변경으로 재분석)
-            await page.waitForTimeout(500);
+            // 5) 다음 계정 처리 전 여유 대기 (API 연속 호출 부하 방지)
+            await page.waitForTimeout(2000);
         }
 
     } else if (IS_LEDGER_MENU || IS_SEARCH_MENU) {
