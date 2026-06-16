@@ -770,18 +770,25 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중... (기준 텍스트: ${baselineLen}자)`);
 
             // page.evaluate 폴링: SPA 리렌더링으로 waitForFunction 컨텍스트가 파괴되는 문제 회피
-            // 전략: 텍스트가 기준보다 늘어난 뒤 5초 간격 2회 연속 동일 → 페이지 안정 = AI 의견 포함 완료
+            // 전략: 분석 클릭 후 텍스트 변화 감지 → 이후 5초 간격 2회 연속 동일 = AI 의견 포함 완전 로드
+            // (baselineLen 비교 제거 — 이전 분석 잔류 텍스트로 기준값이 이미 높을 수 있음)
             let aiFound = false;
-            let prevLen = 0;
+            let prevLen = -1;
             let stableCount = 0;
+            let analysisStarted = false;
             for (let attempt = 0; attempt < 24 && !aiFound; attempt++) {  // 최대 120초
                 await page.waitForTimeout(5000);
                 try {
                     const currentLen = await page.evaluate(() => (document.body.innerText || '').length);
                     console.log(`  [대기] ${(attempt + 1) * 5}초 경과 — 페이지 텍스트: ${currentLen}자`);
-                    if (currentLen > baselineLen + 150) {
-                        stableCount = (currentLen === prevLen) ? stableCount + 1 : 0;
-                        if (stableCount >= 2) aiFound = true;  // 10초간 텍스트 변화 없음 = 완전 로드
+                    if (prevLen === -1) { prevLen = currentLen; continue; }
+                    if (currentLen !== prevLen) {
+                        analysisStarted = true;
+                        stableCount = 0;
+                    } else {
+                        stableCount++;
+                        // 변화 후 10초 안정(2회) → 완료 / 변화 없어도 30초 안정(6회) → 이미 완료 상태
+                        if ((analysisStarted && stableCount >= 2) || stableCount >= 6) aiFound = true;
                     }
                     prevLen = currentLen;
                 } catch { stableCount = 0; /* 컨텍스트 전환 중 오류 무시 */ }
