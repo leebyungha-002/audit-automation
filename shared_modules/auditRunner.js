@@ -770,17 +770,21 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중... (기준 텍스트: ${baselineLen}자)`);
 
             // page.evaluate 폴링: SPA 리렌더링으로 waitForFunction 컨텍스트가 파괴되는 문제 회피
-            // 텍스트 길이가 기준 대비 1000자 이상 증가 → 차트+표+AI의견 모두 렌더링 완료로 판단
+            // 전략: 텍스트가 기준보다 늘어난 뒤 5초 간격 2회 연속 동일 → 페이지 안정 = AI 의견 포함 완료
             let aiFound = false;
-            for (let attempt = 0; attempt < 30 && !aiFound; attempt++) {
-                await page.waitForTimeout(3000);
+            let prevLen = 0;
+            let stableCount = 0;
+            for (let attempt = 0; attempt < 24 && !aiFound; attempt++) {  // 최대 120초
+                await page.waitForTimeout(5000);
                 try {
                     const currentLen = await page.evaluate(() => (document.body.innerText || '').length);
-                    console.log(`  [대기] ${(attempt + 1) * 3}초 경과 — 페이지 텍스트: ${currentLen}자`);
-                    if (currentLen >= baselineLen + 1000) {
-                        aiFound = true;
+                    console.log(`  [대기] ${(attempt + 1) * 5}초 경과 — 페이지 텍스트: ${currentLen}자`);
+                    if (currentLen > baselineLen + 150) {
+                        stableCount = (currentLen === prevLen) ? stableCount + 1 : 0;
+                        if (stableCount >= 2) aiFound = true;  // 10초간 텍스트 변화 없음 = 완전 로드
                     }
-                } catch { /* 컨텍스트 전환 중 오류 무시 */ }
+                    prevLen = currentLen;
+                } catch { stableCount = 0; /* 컨텍스트 전환 중 오류 무시 */ }
             }
 
             if (aiFound) {
