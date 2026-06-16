@@ -529,9 +529,10 @@ def _extract_first_image_zip(src_path, sheet_name):
     ws._images 가 비어있는 경우(EMF 등)의 폴백용.
     Returns (img_bytes, ext_lower) 또는 (None, None).
     """
-    NS_R  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
-    NS_SS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
-    NS_A  = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    NS_R   = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
+    NS_SS  = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    NS_A   = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 
     def _tag(ns, local): return f'{{{ns}}}{local}'
 
@@ -549,14 +550,19 @@ def _extract_first_image_zip(src_path, sheet_name):
         d, f = path.rsplit('/', 1)
         return f'{d}/_rels/{f}.rels'
 
+    def _iter_rels(xml_el):
+        """rels 파일의 Relationship 요소 반복 — 패키지 ns 우선, 없으면 ns 없는 태그."""
+        items = list(xml_el.iter(_tag(NS_REL, 'Relationship')))
+        return items if items else list(xml_el.iter('Relationship'))
+
     try:
         with zipfile.ZipFile(src_path, 'r') as zf:
             znames = set(zf.namelist())
             def rxl(p): return ET.fromstring(zf.read(p))
 
-            # 1. workbook → 시트 파일 경로
+            # 1. workbook → 시트 파일 경로 (rels: NS_REL / sheet r:id: NS_R)
             rid_map = {r.get('Id'): r.get('Target')
-                       for r in rxl('xl/_rels/workbook.xml.rels').iter(_tag(NS_R, 'Relationship'))}
+                       for r in _iter_rels(rxl('xl/_rels/workbook.xml.rels'))}
             sheet_file = None
             for s in rxl('xl/workbook.xml').iter(_tag(NS_SS, 'sheet')):
                 if s.get('name') == sheet_name:
@@ -579,7 +585,7 @@ def _extract_first_image_zip(src_path, sheet_name):
             if srels_path not in znames:
                 return None, None
             drawing_file = None
-            for r in rxl(srels_path).iter(_tag(NS_R, 'Relationship')):
+            for r in _iter_rels(rxl(srels_path)):
                 if r.get('Id') == drawing_rid:
                     drawing_file = _resolve(sheet_file, r.get('Target'))
                     break
@@ -601,7 +607,7 @@ def _extract_first_image_zip(src_path, sheet_name):
             if drels_path not in znames:
                 return None, None
             img_file = None
-            for r in rxl(drels_path).iter(_tag(NS_R, 'Relationship')):
+            for r in _iter_rels(rxl(drels_path)):
                 if r.get('Id') == img_rid:
                     img_file = _resolve(drawing_file, r.get('Target'))
                     break
