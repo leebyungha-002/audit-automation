@@ -711,8 +711,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
 
             // 1) 계정과목 선택 (첫 번째 combobox)
             const combos = page.locator(comboboxSelector);
-            const comboCount = await combos.count().catch(() => 0);
-            const accountCombo = comboCount > 0 ? combos.first() : null;
+            const accountCombo = (await combos.count().catch(() => 0)) > 0 ? combos.first() : null;
             if (accountCombo) {
                 await accountCombo.click();
                 await page.waitForTimeout(500);
@@ -721,7 +720,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
                 await page.keyboard.type(accountName, { delay: 50 });
                 await page.waitForTimeout(500);
                 await page.keyboard.press('Enter');
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(800); // 계정 선택 후 금액기준열 콤보 렌더링 대기
                 console.log(`  ✓ 계정과목 '${accountName}' 선택`);
             }
 
@@ -731,6 +730,8 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             ).trim();
             if (amountCol) {
                 let set = false;
+                // 계정 선택 후 콤보 상태 재평가
+                const comboCount = await combos.count().catch(() => 0);
 
                 // 전략 1: native <select> — 차변/대변/코드 옵션을 포함한 select를 탐색
                 try {
@@ -764,43 +765,43 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             }
 
             // 3) 분석 시작 클릭 → AI 감사인 의견 생성 완료까지 대기
-            // 클릭 전 기준 텍스트 길이 측정 (분석 결과 추가 여부 판단용)
+            // AI 의견은 서버에서 별도 생성되며 DOM text에 나타나지 않음.
+            // 차트/테이블은 ~15s에 안정화되지만 AI 생성은 최대 90s 소요.
+            // 전략: 분석 클릭 후 최소 90초 대기(AI 생성 시간 확보) + 텍스트 안정화 확인
             const baselineLen = await page.evaluate(() => (document.body.innerText || '').length).catch(() => 0);
             await page.click('button:has-text("분석 시작")');
+            const clickedAt = Date.now();
             console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중... (기준 텍스트: ${baselineLen}자)`);
 
-            // page.evaluate 폴링: SPA 리렌더링으로 waitForFunction 컨텍스트가 파괴되는 문제 회피
-            // 전략: 분석 클릭 후 텍스트 변화 감지 → 이후 5초 간격 2회 연속 동일 = AI 의견 포함 완전 로드
-            // (baselineLen 비교 제거 — 이전 분석 잔류 텍스트로 기준값이 이미 높을 수 있음)
-            let aiFound = false;
+            // 1단계: 차트/테이블 로드 완료까지 대기 (텍스트 안정화)
             let prevLen = -1;
             let stableCount = 0;
             let analysisStarted = false;
-            for (let attempt = 0; attempt < 24 && !aiFound; attempt++) {  // 최대 120초
+            let chartLoaded = false;
+            for (let attempt = 0; attempt < 24 && !chartLoaded; attempt++) {
                 await page.waitForTimeout(5000);
                 try {
                     const currentLen = await page.evaluate(() => (document.body.innerText || '').length);
                     console.log(`  [대기] ${(attempt + 1) * 5}초 경과 — 페이지 텍스트: ${currentLen}자`);
                     if (prevLen === -1) { prevLen = currentLen; continue; }
-                    if (currentLen !== prevLen) {
-                        analysisStarted = true;
-                        stableCount = 0;
-                    } else {
+                    if (currentLen !== prevLen) { analysisStarted = true; stableCount = 0; }
+                    else {
                         stableCount++;
-                        // 변화 후 10초 안정(2회) → 완료 / 변화 없어도 30초 안정(6회) → 이미 완료 상태
-                        if ((analysisStarted && stableCount >= 2) || stableCount >= 6) aiFound = true;
+                        if ((analysisStarted && stableCount >= 2) || stableCount >= 6) chartLoaded = true;
                     }
                     prevLen = currentLen;
-                } catch { stableCount = 0; /* 컨텍스트 전환 중 오류 무시 */ }
+                } catch { stableCount = 0; }
             }
 
-            if (aiFound) {
-                console.log(`  ✓ AI 분석 완료 감지`);
-            } else {
-                console.log(`  [경고] AI 감사인 의견 미감지 (90초 초과) — 스크린샷 저장 후 다운로드 진행`);
-                const safeName = accountName.replace(/[^\w가-힣]/g, '_');
-                await page.screenshot({ path: `graphy/debug_benford_ai_${safeName}.png` }).catch(() => {});
+            // 2단계: AI 의견 생성 대기 — 분석 시작 후 30초 추가 대기 (AI가 20초 내 생성됨)
+            const elapsed2 = Date.now() - clickedAt;
+            const aiWait = Math.max(0, 30000 - elapsed2);
+            if (aiWait > 0) {
+                console.log(`  [대기] AI 의견 생성 중... (${Math.ceil(aiWait / 1000)}초 대기)`);
+                await page.waitForTimeout(aiWait);
             }
+            console.log(`  ✓ AI 생성 대기 완료 (총 ${Math.round((Date.now() - clickedAt) / 1000)}초 경과)`);
+
             await page.waitForTimeout(1000);  // 렌더링 안정화
 
             // 4) 결과 다운로드 (벤포드 결과 섹션의 "엑셀 다운로드" 버튼)
@@ -1913,21 +1914,23 @@ async function runAudit(config, companyDir) {
 
         // ── 1. 로그인 (세션이 없을 때만) ─────────────────────────────────────
         const emailSelector = config.selectors.loginId || 'input[type="email"]';
-        const loginFormVisible = await page.$(emailSelector)
-            .then(el => !!el)
-            .catch(() => false);
+        const loginFormVisible = await page.locator(emailSelector).isVisible().catch(() => false);
 
         if (loginFormVisible && config.credentials?.userId) {
-            console.log(`[${companyName}] 로그인 폼 감지. 로그인을 진행합니다...`);
-            const pwSelector = config.selectors.loginPassword || 'input[type="password"]';
-            const loginBtnSelector = config.selectors.loginButton || 'button:has-text("로그인")';
-
-            await page.waitForSelector(emailSelector, { state: 'visible', timeout: 30000 });
-            await page.fill(emailSelector, config.credentials.userId);
-            await page.fill(pwSelector, config.credentials.userPassword ?? '');
-            await page.click(loginBtnSelector);
-            console.log(`[${companyName}] 로그인 완료. 화면 전환 대기 중...`);
-            await page.waitForTimeout(2000);
+            try {
+                // 3초 내에 실제로 입력 가능 상태인지 재확인 (false positive 방지)
+                await page.waitForSelector(emailSelector, { state: 'visible', timeout: 3000 });
+                console.log(`[${companyName}] 로그인 폼 감지. 로그인을 진행합니다...`);
+                const pwSelector = config.selectors.loginPassword || 'input[type="password"]';
+                const loginBtnSelector = config.selectors.loginButton || 'button:has-text("로그인")';
+                await page.fill(emailSelector, config.credentials.userId);
+                await page.fill(pwSelector, config.credentials.userPassword ?? '');
+                await page.click(loginBtnSelector);
+                console.log(`[${companyName}] 로그인 완료. 화면 전환 대기 중...`);
+                await page.waitForTimeout(2000);
+            } catch {
+                console.log(`[${companyName}] 기존 세션 감지 (로그인 폼 미활성). 로그인을 생략합니다.`);
+            }
         } else if (!loginFormVisible) {
             console.log(`[${companyName}] 기존 세션 감지. 로그인을 생략합니다.`);
         } else {
