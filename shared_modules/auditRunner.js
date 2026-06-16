@@ -764,26 +764,29 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             }
 
             // 3) 분석 시작 클릭 → AI 감사인 의견 생성 완료까지 대기
+            // 클릭 전 기준 텍스트 길이 측정 (분석 결과 추가 여부 판단용)
+            const baselineLen = await page.evaluate(() => (document.body.innerText || '').length).catch(() => 0);
             await page.click('button:has-text("분석 시작")');
-            console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중...`);
+            console.log(`  ✓ 분석 시작 클릭 — AI 감사인 의견 생성 대기 중... (기준 텍스트: ${baselineLen}자)`);
 
-            // AI 의견은 스트리밍/비동기 API로 생성되므로 DOM에 의견 텍스트가
-            // 실제로 나타날 때까지 최대 90초 폴링
-            const aiOpinionAppeared = await page.waitForFunction(() => {
-                // 페이지 전체 텍스트에서 AI 의견 완성 신호 탐지
-                // "감사인 의견", "AI 의견", "종합 의견" 등 의미 있는 텍스트가 충분히 쌓이면 완료로 판단
-                const body = document.body.innerText || '';
-                const idx = body.search(/감사인\s*의견|AI\s*의견|종합\s*의견|audit\s*opinion/i);
-                if (idx === -1) return false;
-                // 의견 텍스트가 최소 50자 이상이어야 완성으로 간주
-                const snippet = body.slice(idx, idx + 200);
-                return snippet.replace(/\s/g, '').length >= 50;
-            }, {}, { timeout: 90000 }).catch(() => null);
+            // page.evaluate 폴링: SPA 리렌더링으로 waitForFunction 컨텍스트가 파괴되는 문제 회피
+            // 텍스트 길이가 기준 대비 1000자 이상 증가 → 차트+표+AI의견 모두 렌더링 완료로 판단
+            let aiFound = false;
+            for (let attempt = 0; attempt < 30 && !aiFound; attempt++) {
+                await page.waitForTimeout(3000);
+                try {
+                    const currentLen = await page.evaluate(() => (document.body.innerText || '').length);
+                    console.log(`  [대기] ${(attempt + 1) * 3}초 경과 — 페이지 텍스트: ${currentLen}자`);
+                    if (currentLen >= baselineLen + 1000) {
+                        aiFound = true;
+                    }
+                } catch { /* 컨텍스트 전환 중 오류 무시 */ }
+            }
 
-            if (aiOpinionAppeared) {
-                console.log(`  ✓ AI 감사인 의견 렌더링 확인`);
+            if (aiFound) {
+                console.log(`  ✓ AI 분석 완료 감지`);
             } else {
-                console.log(`  [경고] AI 감사인 의견 미감지 — 스크린샷 저장 후 다운로드 진행`);
+                console.log(`  [경고] AI 감사인 의견 미감지 (90초 초과) — 스크린샷 저장 후 다운로드 진행`);
                 const safeName = accountName.replace(/[^\w가-힣]/g, '_');
                 await page.screenshot({ path: `graphy/debug_benford_ai_${safeName}.png` }).catch(() => {});
             }
