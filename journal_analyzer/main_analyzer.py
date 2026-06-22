@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-journal_analyzer/main_analyzer.py  v2
-analysis.py 19개 분석 메뉴 완전 이식 — DataFrame 반환 방식
+journal_analyzer/main_analyzer.py  v3
+analysis.py 20개 분석 메뉴 — DataFrame 반환 방식
 
 폴더 구조:
   journal_analyzer/
@@ -74,6 +74,7 @@ DEFAULT_KEYWORDS        = ['상품권','접대','가수금','선물','회식','�
 MASK_TARGET_COLS        = ['적요','관리항목4','비고','내용']
 GLOBAL_SAFE_MAP: dict   = {}
 _CLIENT_COUNTER         = 1
+_COMPANY_DIR            = None
 
 
 # =============================================================================
@@ -956,6 +957,226 @@ def analyze_monthly_full_account(df: pd.DataFrame, params_list: list) -> pd.Data
     return work.groupby(grp)[[COL_DEBIT, COL_CREDIT]].sum().reset_index()
 
 
+# ── 20. 당기증감분석 (계정별 거래처별) ───────────────────────────────────────
+def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
+    """전기 계정별_거래처별명세에서 기초잔액, 당기 분개장에서 증감 산출하여 기말잔액 계산.
+    자산(차변): 기초잔액 + 당기증가(차변) - 당기감소(대변) = 기말잔액
+    부채(대변): 기초잔액 + 당기증가(대변) - 당기감소(차변) = 기말잔액
+    """
+    global _COMPANY_DIR
+    if _COMPANY_DIR is None:
+        return {'잔액증감분석': pd.DataFrame({'오류': ['company_dir 미설정']})}
+
+    prev_dir = os.path.join(_COMPANY_DIR, 'data', 'previous')
+    if not os.path.isdir(prev_dir):
+        return {'잔액증감분석': pd.DataFrame({'오류': [f'previous 폴더 없음: {prev_dir}']})}
+
+    # ── 전기 명세 파일 탐색 ──
+    prev_file = None
+    for f in sorted(os.listdir(prev_dir)):
+        if ('계정별' in f or '거래처별' in f) and f.endswith('.xlsx') and not f.startswith('~$'):
+            if '명세' in f or '거래처별' in f:
+                prev_file = os.path.join(prev_dir, f)
+                break
+    if not prev_file:
+        return {'잔액증감분석': pd.DataFrame({'오류': ['전기 계정별_거래처별명세 파일 없음']})}
+
+    # ── 거래처 매핑 파일 탐색 ──
+    vendor_mapping = {}
+    for f in sorted(os.listdir(prev_dir)):
+        if '매핑' in f and not f.startswith('~$'):
+            map_path = os.path.join(prev_dir, f)
+            try:
+                if f.endswith('.csv'):
+                    for enc in ['utf-8', 'cp949', 'euc-kr']:
+                        try:
+                            mdf = pd.read_csv(map_path, encoding=enc)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                else:
+                    mdf = pd.read_excel(map_path)
+                if '분개장거래처' in mdf.columns and '전기명세거래처' in mdf.columns:
+                    for _, row in mdf.iterrows():
+                        acct = str(row.get('계정명', '')).strip()
+                        j_v = str(row.get('분개장거래처', '')).strip()
+                        p_v = str(row.get('전기명세거래처', '')).strip()
+                        if j_v and p_v and p_v not in ('nan', ''):
+                            vendor_mapping[(acct, j_v)] = p_v
+                    print(f'    └ 거래처 매핑: {len(vendor_mapping)}건')
+            except Exception as e:
+                print(f'    ⚠️ 매핑 파일 로드 실패: {e}')
+            break
+
+    # ── 파라미터 로드 (params_list → 직접 탐색 fallback) ──
+    targets = []
+    for p in params_list:
+        acct = _nv(p.get('계정명', p.get('계정과목', '')))
+        gubun = _nv(p.get('구분', ''))
+        if acct and gubun in ('차변', '대변'):
+            targets.append((acct, gubun))
+
+    if not targets:
+        task_path = os.path.join(
+            _COMPANY_DIR, f'task_list_{os.path.basename(_COMPANY_DIR)}.xlsx')
+        if os.path.isfile(task_path):
+            txl = pd.ExcelFile(task_path)
+            for s in txl.sheet_names:
+                if '증감' in s and ('거래처' in s or '계정' in s or '게정' in s):
+                    tdf = pd.read_excel(txl, sheet_name=s, header=None)
+                    for i, row in tdf.iterrows():
+                        vals = [str(v).strip() for v in row if pd.notna(v)]
+                        if '구분' in vals:
+                            for j in range(i + 1, len(tdf)):
+                                drow = tdf.iloc[j]
+                                a = str(drow.iloc[0]).strip() if pd.notna(drow.iloc[0]) else ''
+                                g = str(drow.iloc[1]).strip() if len(drow) > 1 and pd.notna(drow.iloc[1]) else ''
+                                if a and a not in ('nan', '') and g in ('차변', '대변'):
+                                    targets.append((a, g))
+                            break
+                    break
+
+    if not targets:
+        return {'잔액증감분석': pd.DataFrame({'안내': ['파라미터에 계정명/구분이 없습니다.']})}
+
+    print(f'    └ 분석 대상: {len(targets)}개 계정')
+
+    # ── 전기 명세 ExcelFile ──
+    prev_xl = pd.ExcelFile(prev_file)
+    prev_sheets = prev_xl.sheet_names
+
+    def _find_prev_sheet(acct_name):
+        if acct_name in prev_sheets:
+            return acct_name
+        norm = acct_name.replace(' ', '')
+        for s in prev_sheets:
+            if s.replace(' ', '') == norm:
+                return s
+        norm2 = re.sub(r'[\s()（）]', '', acct_name)
+        for s in prev_sheets:
+            if re.sub(r'[\s()（）]', '', s) == norm2:
+                return s
+        for s in prev_sheets:
+            if acct_name in s or s in acct_name:
+                return s
+        return None
+
+    def _load_prev_balances(sheet_name):
+        pdf = pd.read_excel(prev_xl, sheet_name=sheet_name, header=0)
+        pdf.columns = [str(c).strip() for c in pdf.columns]
+        vendor_col = next((c for c in pdf.columns if '거래처' in c), None)
+        bal_col = next((c for c in pdf.columns if '잔' in c), None)
+        if not vendor_col or not bal_col:
+            return {}
+        balances = {}
+        for _, row in pdf.iterrows():
+            vendor = str(row[vendor_col]).strip() if pd.notna(row[vendor_col]) else ''
+            if not vendor or vendor.replace(' ', '') in ('합계:', '합계', 'nan', ''):
+                continue
+            try:
+                bal = float(row[bal_col]) if pd.notna(row[bal_col]) else 0
+            except (ValueError, TypeError):
+                bal = 0
+            balances[vendor] = balances.get(vendor, 0) + bal
+        return balances
+
+    # ── 계정별 분석 실행 ──
+    all_results = {}
+
+    for acct_name, gubun in targets:
+        is_asset = (gubun == '차변')
+
+        prev_sheet = _find_prev_sheet(acct_name)
+        prev_balances = _load_prev_balances(prev_sheet) if prev_sheet else {}
+        if prev_sheet:
+            print(f'      {acct_name}: 전기 {len(prev_balances)}건 (시트: {prev_sheet})')
+        else:
+            print(f'      {acct_name}: 전기 시트 없음')
+
+        mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
+        current = df[mask].copy()
+
+        journal_vendors = {}
+        if not current.empty and COL_CLIENT in current.columns:
+            for vendor, group in current.groupby(COL_CLIENT):
+                v = str(vendor).strip()
+                if v and v != 'nan':
+                    journal_vendors[v] = {
+                        'debit': group[COL_DEBIT].sum() if COL_DEBIT in group.columns else 0,
+                        'credit': group[COL_CREDIT].sum() if COL_CREDIT in group.columns else 0,
+                    }
+
+        if not prev_balances and not journal_vendors:
+            continue
+
+        acct_map_j2p = {k[1]: v for k, v in vendor_mapping.items() if k[0] == acct_name}
+        acct_map_p2j = {v: k[1] for k, v in vendor_mapping.items() if k[0] == acct_name}
+
+        all_vendors = set(prev_balances.keys()) | set(journal_vendors.keys())
+        rows = []
+        matched_prev = set()
+        matched_journal = set()
+
+        for vendor in sorted(all_vendors):
+            prev_bal = prev_balances.get(vendor, 0)
+            prev_key = vendor
+            if prev_bal == 0 and vendor in acct_map_j2p:
+                prev_key = acct_map_j2p[vendor]
+                prev_bal = prev_balances.get(prev_key, 0)
+
+            jv = journal_vendors.get(vendor, None)
+            journal_key = vendor
+            if jv is None and vendor in acct_map_p2j:
+                journal_key = acct_map_p2j[vendor]
+                jv = journal_vendors.get(journal_key, None)
+            if jv is None:
+                jv = {'debit': 0, 'credit': 0}
+
+            matched_prev.add(prev_key)
+            matched_journal.add(journal_key)
+
+            debit_sum = jv['debit']
+            credit_sum = jv['credit']
+
+            if is_asset:
+                increase = debit_sum
+                decrease = credit_sum
+                ending = prev_bal + increase - decrease
+                row = {
+                    '계정명': acct_name, '거래처명': vendor,
+                    '기초잔액': prev_bal, '당기증가': increase,
+                    '당기감소': decrease, '기말잔액': ending,
+                }
+            else:
+                increase = credit_sum
+                decrease = debit_sum
+                ending = prev_bal + increase - decrease
+                row = {
+                    '계정명': acct_name, '거래처명': vendor,
+                    '기초잔액': prev_bal, '당기감소': decrease,
+                    '당기증가': increase, '기말잔액': ending,
+                }
+            rows.append(row)
+
+        if rows:
+            result_df = pd.DataFrame(rows)
+            amount_cols = [c for c in result_df.columns if c not in ('계정명', '거래처명')]
+            result_df = result_df[result_df[amount_cols].abs().sum(axis=1) > 0]
+
+            if not result_df.empty:
+                result_df = result_df.sort_values('기말잔액', key=abs, ascending=False)
+                total = {c: result_df[c].sum() for c in amount_cols}
+                total['계정명'] = acct_name
+                total['거래처명'] = '합  계'
+                result_df = pd.concat(
+                    [result_df, pd.DataFrame([total])], ignore_index=True)
+                sname = _safe_sheet(
+                    f'증감_{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct_name)[:20]}')
+                all_results[sname] = result_df
+
+    return all_results or {'잔액증감분석': pd.DataFrame({'결과': ['분석 대상 없음']})}
+
+
 # =============================================================================
 # 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
@@ -978,6 +1199,7 @@ ANALYSIS_REGISTRY: dict = {
     17: ('거래처분석',      analyze_client_detail),
     18: ('벤포드이탈',      analyze_benford_deviation),
     19: ('월별전계정분석',  analyze_monthly_full_account),
+    20: ('잔액증감분석',    analyze_balance_movement),
 }
 
 
@@ -1133,8 +1355,10 @@ def main():
     if not company_name:
         print('[오류] 고객사 이름이 비어 있습니다.'); sys.exit(1)
 
+    global _COMPANY_DIR
     print(f'\n{"="*60}\n  분개장 분석 자동화 — {company_name}\n{"="*60}')
     paths = resolve_paths(company_name)
+    _COMPANY_DIR = paths['company_dir']
 
     # 1) 태스크 리스트
     try:
