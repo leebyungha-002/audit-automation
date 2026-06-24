@@ -628,9 +628,11 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
     console.log(`[${menuName}] 임시 다운로드 캡처 완료.`);
 
     // 마스터 파일 병합 대상
-    const MASTER_MERGE_MENUS = ['상세 거래 검색', '총계정원장조회', '총계정원장'];
+    const MASTER_MERGE_MENUS = ['상세 거래 검색', '총계정원장조회', '총계정원장', '벤포드 법칙 분석'];
     if (MASTER_MERGE_MENUS.includes(menuName)) {
-        const baseFileName = (menuName === '상세 거래 검색') ? '상세거래검색.xlsx' : '총계정원장.xlsx';
+        const baseFileName = (menuName === '상세 거래 검색') ? '상세거래검색.xlsx'
+            : (menuName === '벤포드 법칙 분석') ? '벤포드법칙분석.xlsx'
+            : '총계정원장.xlsx';
         const masterPath = path.join(rawDataDir, `${filePrefix}${baseFileName}`);
 
         const masterBook = new ExcelJS.Workbook();
@@ -808,7 +810,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             // 동일 계정에 차변/대변을 모두 분석하는 경우가 있어 파일명에 분석 기준(차변/대변)을 포함
             const targetName = task['파일명']
                 ? String(task['파일명'])
-                : `벤포드_${accountName}${amountCol ? `_${amountCol}` : ''}`;
+                : `${accountName}${amountCol ? `_${amountCol}` : ''}`;
             const dlBtn = config.selectors.benfordDownloadBtn || 'button:has-text("엑셀 다운로드")';
             await handleDownloadAndSave(page, dlBtn, targetName, rawDataDir, menuName, filePrefix);
 
