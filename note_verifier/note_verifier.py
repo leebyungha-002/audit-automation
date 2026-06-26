@@ -223,6 +223,10 @@ def run_verify(audit_path: str, src_path: str,
                 else:
                     audit_v = None
 
+                # bool(수식 검증값) · 문자열 셀은 덮어쓰지 않음
+                if isinstance(cell.value, (bool, str)):
+                    continue
+
                 if src_v is not None:
                     fill_v = round(src_v * unit_scale)
                     cell.value = fill_v
