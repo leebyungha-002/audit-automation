@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 journal_analyzer/main_analyzer.py  v3
@@ -1269,6 +1269,104 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
     return out or {'총계정원장': pd.DataFrame({'결과': ['분석 대상 없음']})}
 
 
+# ── 22. 은행조회서 완전성 ──────────────────────────────────────────────────────
+_BANK_DEFAULT_ACCOUNTS = [
+    '이자비용', '단기차입금', '장기차입금',
+    '유동성장기부채', '유동성장기차입금',
+    '전환사채', '유동성전환사채',
+    '전환상환우선주', '유동성전환상환우선주',
+]
+
+_FI_PATTERN = re.compile(
+    r'([\w가-힣()（）]*'
+    r'(?:저축은행|저축|은행|금고|신협|조합|증권|캐피탈|카드|보험|파이낸스|크레딧|리스))'
+)
+
+
+def _extract_fi(client_name: str) -> str:
+    name = str(client_name).strip()
+    if not name or name.lower() in ('nan', 'none', ''):
+        return ''
+    m = _FI_PATTERN.search(name)
+    return m.group(1) if m else ''
+
+
+def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
+    """22. 은행조회서 완전성: 차입금/이자비용 등 관련 계정 상세내역 + 금융기관 요약."""
+    # 파라미터 시트에 계정 목록이 있으면 사용, 없으면 기본값
+    account_list = [
+        _nv(p.get('계정과목', '') or p.get('계정명', '') or p.get('계정', ''))
+        for p in params_list
+    ]
+    account_list = [a for a in account_list if a]
+    if not account_list:
+        account_list = list(_BANK_DEFAULT_ACCOUNTS)
+
+    all_rows = []
+    for acct in account_list:
+        mask = df[COL_ACCOUNT].astype(str).str.contains(acct, na=False)
+        sub = df[mask].copy()
+        if sub.empty:
+            continue
+        sub.insert(0, '조회계정', acct)
+        all_rows.append(sub)
+
+    if not all_rows:
+        return {'은행조회서완전성': pd.DataFrame({'안내': ['해당 계정의 전표 내역이 없습니다.']})}
+
+    combined = pd.concat(all_rows, ignore_index=True)
+
+    # 금융기관명 추출 (거래처명 바로 뒤에 컬럼 삽입)
+    if COL_CLIENT in combined.columns:
+        combined['금융기관명'] = combined[COL_CLIENT].apply(_extract_fi)
+    else:
+        combined['금융기관명'] = ''
+
+    priority = ['조회계정']
+    if '구분' in combined.columns: priority.append('구분')
+    for c in [COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT, COL_DEBIT, COL_CREDIT, COL_CLIENT]:
+        if c in combined.columns: priority.append(c)
+    priority.append('금융기관명')
+    if COL_DESC in combined.columns: priority.append(COL_DESC)
+    other = [c for c in combined.columns if c not in priority]
+    combined = combined[priority + other]
+
+    acct_order = {a: i for i, a in enumerate(account_list)}
+    combined['_sort'] = combined['조회계정'].map(acct_order).fillna(999)
+    sort_cols = ['_sort', COL_DATE] if COL_DATE in combined.columns else ['_sort']
+    combined = combined.sort_values(sort_cols).drop(columns=['_sort'])
+
+    results = {'은행조회서완전성': combined}
+
+    # 금융기관별 요약 피벗
+    has_fi = combined[combined['금융기관명'].astype(str).str.strip() != '']
+    if not has_fi.empty and COL_CLIENT in has_fi.columns:
+        pivot = has_fi.groupby(['금융기관명', '조회계정']).size().unstack(fill_value=0)
+        acct_cols = [a for a in account_list if a in pivot.columns]
+        pivot = pivot.reindex(columns=acct_cols, fill_value=0)
+        try:
+            pivot_mark = pivot.map(lambda x: '○' if x > 0 else '-')
+        except AttributeError:
+            pivot_mark = pivot.applymap(lambda x: '○' if x > 0 else '-')
+
+        raw_clients = (
+            has_fi.groupby('금융기관명')[COL_CLIENT]
+            .apply(lambda s: ', '.join(sorted(s.dropna().astype(str).unique())))
+            .rename('거래처명(원본)')
+        )
+        agg_kw = {'전표건수': ('조회계정', 'count')}
+        if COL_DEBIT  in has_fi.columns: agg_kw['차변합계'] = (COL_DEBIT,  'sum')
+        if COL_CREDIT in has_fi.columns: agg_kw['대변합계'] = (COL_CREDIT, 'sum')
+        totals = has_fi.groupby('금융기관명').agg(**agg_kw)
+
+        summary = pivot_mark.join(raw_clients).join(totals).reset_index()
+        summary.insert(1, '조회서발송', 'Y')
+        results['금융기관_조회서목록'] = summary
+
+    return results
+
+
+
 # =============================================================================
 # 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
@@ -1293,6 +1391,7 @@ ANALYSIS_REGISTRY: dict = {
     19: ('월별전계정분석',  analyze_monthly_full_account),
     20: ('잔액증감분석',    analyze_balance_movement),
     21: ('총계정원장',      analyze_general_ledger),
+    22: ('은행조회서완전성', analyze_bank_confirmation),
 }
 
 
