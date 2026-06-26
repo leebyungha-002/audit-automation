@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K-IFRS 1116 리스 회계처리 자동화 스크립트
@@ -597,9 +597,17 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 
 def main():
-    pattern = os.path.join(INPUT_DIR, 'lease_*_information_*.xlsx')
-    files   = sorted(f for f in glob.glob(pattern)
-                     if not os.path.basename(f).startswith('~$'))
+    import argparse
+    _parser = argparse.ArgumentParser(add_help=False)
+    _parser.add_argument('company', nargs='?', default=None, help='처리할 회사명 (생략 시 전체)')
+    _args, _ = _parser.parse_known_args()
+
+    if _args.company:
+        _glob = os.path.join(INPUT_DIR, f'lease_{_args.company}_information_*.xlsx')
+    else:
+        _glob = os.path.join(INPUT_DIR, 'lease_*_information_*.xlsx')
+    files = sorted(f for f in glob.glob(_glob)
+                   if not os.path.basename(f).startswith('~$'))
 
     if not files:
         print(f'[안내] 처리할 파일 없음 — 경로: {INPUT_DIR}')

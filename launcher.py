@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 감사 자동화 런처 — 도구 선택 및 실행 GUI
@@ -6,6 +6,7 @@
 
 import sys
 import os
+import re
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -54,6 +55,20 @@ def detect_interest_companies() -> list[str]:
     )
 
 
+def detect_lease_companies() -> list[str]:
+    """lease_analyzer/input_data/ 의 파일명에서 회사명 추출"""
+    in_dir = ROOT / 'lease_analyzer' / 'input_data'
+    if not in_dir.exists():
+        return []
+    _pat = re.compile(r'^lease_(.+)_information_', re.IGNORECASE)
+    companies = set()
+    for f in in_dir.iterdir():
+        if f.is_file() and f.suffix.lower() == '.xlsx':
+            m = _pat.match(f.name)
+            if m:
+                companies.add(m.group(1))
+    return sorted(companies)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 도구 정의
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,7 +116,7 @@ TOOLS = [
         "desc": "K-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
         "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_schedule.py")],
         "cwd": str(ROOT / "lease_analyzer"),
-        "company": None,
+        "company": "lease",
         "extra": None,
     },
     {
@@ -137,8 +152,8 @@ TOOLS = [
         "desc": "키워드 기반 감사 조서 자동 분류 GUI",
         "cmd": ["python", str(ROOT / "file_classifier" / "main.py")],
         "cwd": str(ROOT / "file_classifier"),
-        "company": None,
-        "extra": None,
+        "company": "js",
+        "extra": "company_flag",
     },
     {
         "category": "적정성 분석",
@@ -166,6 +181,7 @@ class Launcher(QMainWindow):
         self._js_companies = detect_js_companies()
         self._journal_companies = detect_journal_companies()
         self._interest_companies = detect_interest_companies()
+        self._lease_companies = detect_lease_companies()
 
         self._build_ui()
         self._tool_list.setCurrentRow(0)
@@ -322,6 +338,9 @@ class Launcher(QMainWindow):
         elif t["company"] == "interest":
             self._company_row.setVisible(True)
             self._company_combo.addItems(self._interest_companies)
+        elif t["company"] == "lease":
+            self._company_row.setVisible(True)
+            self._company_combo.addItems(self._lease_companies)
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -340,12 +359,15 @@ class Launcher(QMainWindow):
         cmd = list(t["cmd"])
 
         # 회사명 인자 추가
-        if t["company"] in ("js", "journal", "interest"):
+        if t["company"] in ("js", "journal", "interest", "lease"):
             company = self._company_combo.currentText().strip()
             if not company:
                 self._log_line("⚠  회사를 선택하세요.", "#FBBF24")
                 return
-            cmd.append(company)
+            if t.get("extra") == "company_flag":
+                cmd += ["--company", company]
+            else:
+                cmd.append(company)
         elif t["company"] == "optional_js":
             selected = self._company_combo.currentText()
             if not selected.startswith("(없음"):

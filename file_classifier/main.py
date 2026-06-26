@@ -1,4 +1,4 @@
-"""
+﻿"""
 감사 조서 자동 분류기 (Audit Evidence Auto-Classifier)
 ------------------------------------------------------
 실행 방법: python main.py
@@ -558,14 +558,25 @@ class ManualMoverTab(QWidget):
 class AuditClassifierApp(QMainWindow):
     """감사 조서 자동 분류기 메인 윈도우 (탭 구조)."""
 
-    def __init__(self):
+    def __init__(self, company=None):
         super().__init__()
+        self._company = company
         self.keyword_map = {}
         self.setWindowTitle("감사 조서 자동 분류기")
         self.setMinimumSize(800, 620)
 
         self._load_category_map()   # 먼저 매핑 로드
         self._build_ui()            # 탭 UI 구성
+        if company:
+            import os as _os
+            _project_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            _company_dir = _os.path.join(_project_root, company)
+            if _os.path.isdir(_company_dir) and hasattr(self, 'tab_auto'):
+                self.tab_auto.target_folder = _company_dir
+                self.tab_auto.target_lbl.setText(_company_dir)
+                self.tab_auto.target_lbl.setStyleSheet(
+                    'color:#111827; border:1px solid #D1D5DB; padding:4px 8px; border-radius:5px; background:#FAFAFA;')
+                self.tab_auto.target_folder_changed.emit(_company_dir)
 
     # ── 매핑 엑셀 로드 ──────────────────────────
     def _load_category_map(self):
@@ -654,9 +665,13 @@ class AuditClassifierApp(QMainWindow):
 # 5. 진입점
 # ══════════════════════════════════════════════
 def main():
+    import argparse
+    _parser = argparse.ArgumentParser(add_help=False)
+    _parser.add_argument('--company', default=None, help='회사 폴더명 (대상 폴더 자동 설정)')
+    _args, _ = _parser.parse_known_args()
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    win = AuditClassifierApp()
+    app.setStyle('Fusion')
+    win = AuditClassifierApp(company=_args.company)
     win.show()
     sys.exit(app.exec())
 
