@@ -628,17 +628,21 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         if direction not in ('차변','대변'): direction = '차변'
         if not acct: continue
         tcol  = COL_DEBIT if direction == '차변' else COL_CREDIT
-        mask  = df[COL_ACCOUNT].astype(str).str.contains(acct, na=False) & (df[tcol] > 0)
+        mask  = _account_match_flexible(df[COL_ACCOUNT], acct) & (df[tcol] > 0)
         target = df[mask]
         if target.empty: continue
         jids    = target[COL_JOURNAL_ID].unique()
         related = df[df[COL_JOURNAL_ID].isin(jids)].copy()
-        summary = (related.groupby(COL_ACCOUNT)[[COL_DEBIT, COL_CREDIT]]
-                         .agg(['sum','count']).reset_index())
-        summary.columns = ['상대계정명','차변합계','차변건수','대변합계','대변건수']
-        sort_col = '대변합계' if direction == '차변' else '차변합계'
-        summary  = summary.sort_values(sort_col, ascending=False)
-        sname    = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}')
+        # 지정 방향의 반대 측(상대계정) 금액만 집계
+        counter_col = COL_CREDIT if direction == '차변' else COL_DEBIT
+        sum_label   = '대변합계' if direction == '차변' else '차변합계'
+        cnt_label   = '대변건수' if direction == '차변' else '차변건수'
+        summary = (related[related[counter_col] > 0]
+                   .groupby(COL_ACCOUNT)[[counter_col]]
+                   .agg(['sum','count']).reset_index())
+        summary.columns = ['상대계정명', sum_label, cnt_label]
+        summary = summary.sort_values(sum_label, ascending=False)
+        sname   = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}')
         out[sname] = summary
     return out or {'상대계정분석': pd.DataFrame({'안내':['파라미터에 계정과목이 없습니다.']})}
 
