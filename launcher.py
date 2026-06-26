@@ -113,7 +113,7 @@ TOOLS = [
     {
         "category": "리스 분석",
         "name": "리스 스케줄 생성 (lease_schedule)",
-        "desc": "K-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
+        "desc": "⚠ 실행 전 lease_analyzer/input_data/ 폴더에 lease_{회사명}_information_{연도}.xlsx 파일을 먼저 업로드하세요.\nK-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
         "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_schedule.py")],
         "cwd": str(ROOT / "lease_analyzer"),
         "company": "lease",
