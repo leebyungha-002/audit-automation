@@ -149,7 +149,7 @@ TOOLS = [
     {
         "category": "파일 분류",
         "name": "감사조서 파일 분류 (file_classifier)",
-        "desc": "키워드 기반 감사 조서 자동 분류 GUI",
+        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI",
         "cmd": ["python", str(ROOT / "file_classifier" / "main.py")],
         "cwd": str(ROOT / "file_classifier"),
         "company": "js",
