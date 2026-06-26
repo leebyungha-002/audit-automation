@@ -628,10 +628,11 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
     console.log(`[${menuName}] 임시 다운로드 캡처 완료.`);
 
     // 마스터 파일 병합 대상
-    const MASTER_MERGE_MENUS = ['상세 거래 검색', '총계정원장조회', '총계정원장', '벤포드 법칙 분석'];
-    if (MASTER_MERGE_MENUS.includes(menuName)) {
-        const baseFileName = (menuName === '상세 거래 검색') ? '상세거래검색.xlsx'
-            : (menuName === '벤포드 법칙 분석') ? '벤포드법칙분석.xlsx'
+    const _baseMN = menuName.replace(/^host_?\d+_?/i, '');
+    const MASTER_MERGE_MENUS = ['상세 거래 검색', '총계정원장조회', '총계정원장', '벤포드법칙분석'];
+    if (MASTER_MERGE_MENUS.includes(_baseMN)) {
+        const baseFileName = (_baseMN === '상세 거래 검색') ? '상세거래검색.xlsx'
+            : (_baseMN === '벤포드법칙분석') ? '벤포드법칙분석.xlsx'
             : '총계정원장.xlsx';
         const masterPath = path.join(rawDataDir, `${filePrefix}${baseFileName}`);
 
