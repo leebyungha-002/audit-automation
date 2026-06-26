@@ -624,7 +624,9 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
     out = {}
     for p in params_list:
         acct      = _nv(p.get('계정과목',''))
-        direction = _nv(p.get('금액열',''), blank_vals=('nan','none','')) or '차변'
+        direction = (_nv(p.get('금액열',''), blank_vals=('nan','none',''))
+                     or _nv(p.get('구분',''), blank_vals=('nan','none',''))
+                     or '차변')
         if direction not in ('차변','대변'): direction = '차변'
         if not acct: continue
         tcol  = COL_DEBIT if direction == '차변' else COL_CREDIT
