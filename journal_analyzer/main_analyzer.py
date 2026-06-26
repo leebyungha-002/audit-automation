@@ -1194,6 +1194,72 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     return all_results or {'잔액증감분석': pd.DataFrame({'결과': ['분석 대상 없음']})}
 
 
+# ── 21. 총계정원장 ────────────────────────────────────────────────────────────
+def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
+    """계정별 월별 차변/대변 집계. 연도 2개 이상이면 연도 비교 형식(행=월, 열=연도)으로 출력.
+    구분(자산/부채/매출액)은 시트명 접두어로 사용."""
+    out = {}
+    for p in params_list:
+        acct  = _nv(p.get('계정과목', ''))
+        gubun = _nv(p.get('구분', ''))
+        if not acct: continue
+
+        mask   = _account_match_flexible(df[COL_ACCOUNT], acct)
+        subset = df[mask].copy()
+        if subset.empty:
+            continue
+
+        subset['YM']    = pd.to_datetime(subset[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
+        subset          = subset[subset['YM'].notna()]
+        subset['Year']  = subset['YM'].str[:4]
+        subset['Month'] = subset['YM'].str[5:7].astype(int)
+
+        years = sorted(subset['Year'].unique())
+        dr    = subset[subset[COL_DEBIT]  > 0]
+        cr    = subset[subset[COL_CREDIT] > 0]
+
+        if len(years) >= 2:
+            da = dr.groupby(['Year', 'Month']).agg(
+                차변합계=(COL_DEBIT, 'sum'), 차변건수=(COL_DEBIT, 'count')).reset_index()
+            ca = cr.groupby(['Year', 'Month']).agg(
+                대변합계=(COL_CREDIT, 'sum'), 대변건수=(COL_CREDIT, 'count')).reset_index()
+            ym = pd.merge(da, ca, on=['Year', 'Month'], how='outer').fillna(0)
+
+            result = pd.DataFrame({'Month': range(1, 13)})
+            for year in years:
+                yd = ym[ym['Year'] == year][
+                    ['Month', '차변합계', '대변합계', '차변건수', '대변건수']
+                ].rename(columns={c: f'{year}_{c}' for c in ['차변합계', '대변합계', '차변건수', '대변건수']})
+                result = pd.merge(result, yd, on='Month', how='left').fillna(0)
+            for year in years:
+                result[f'{year}_차변건수'] = result[f'{year}_차변건수'].astype(int)
+                result[f'{year}_대변건수'] = result[f'{year}_대변건수'].astype(int)
+            if len(years) == 2:
+                y0, y1 = years[0], years[1]
+                result['증감_차변합계'] = result[f'{y1}_차변합계'] - result[f'{y0}_차변합계']
+                result['증감_대변합계'] = result[f'{y1}_대변합계'] - result[f'{y0}_대변합계']
+            result.insert(0, '월', result['Month'].apply(lambda x: f'{x}월'))
+            result = result.drop(columns=['Month'])
+        else:
+            da = dr.groupby('YM').agg(차변합계=(COL_DEBIT, 'sum'), 차변건수=(COL_DEBIT, 'count')).reset_index()
+            ca = cr.groupby('YM').agg(대변합계=(COL_CREDIT, 'sum'), 대변건수=(COL_CREDIT, 'count')).reset_index()
+            result = pd.merge(da, ca, on='YM', how='outer').fillna(0).sort_values('YM')
+            result['차변건수'] = result['차변건수'].astype(int)
+            result['대변건수'] = result['대변건수'].astype(int)
+            result = result.rename(columns={'YM': '월'})
+
+        total = {'월': '합  계'}
+        for col in result.columns[1:]:
+            total[col] = result[col].sum()
+        result = pd.concat([result, pd.DataFrame([total])], ignore_index=True)
+
+        prefix = f'{gubun}_' if gubun else ''
+        sname  = _safe_sheet(f'{prefix}{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct)[:22]}')
+        out[sname] = result
+
+    return out or {'총계정원장': pd.DataFrame({'결과': ['분석 대상 없음']})}
+
+
 # =============================================================================
 # 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
@@ -1217,6 +1283,7 @@ ANALYSIS_REGISTRY: dict = {
     18: ('벤포드이탈',      analyze_benford_deviation),
     19: ('월별전계정분석',  analyze_monthly_full_account),
     20: ('잔액증감분석',    analyze_balance_movement),
+    21: ('총계정원장',      analyze_general_ledger),
 }
 
 
