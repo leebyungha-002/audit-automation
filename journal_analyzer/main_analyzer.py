@@ -398,12 +398,17 @@ def load_data(company_dir: str) -> pd.DataFrame:
 
 # ── 2. 거래처 전기/당기 비교 ──────────────────────────────────────────────────
 def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
-    account_list = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
-    if not account_list: account_list = ['접대비']
-    value_type = next(
-        (_nv(p.get('금액열',''), blank_vals=('nan','none','')) for p in params_list
-         if _nv(p.get('금액열',''), blank_vals=('nan','none',''))), '차변')
-    if value_type not in ('차변','대변','both'): value_type = '차변'
+    # 계정별 방향 매핑 (금액열 → 구분 순으로 fallback)
+    acct_dir = {}
+    for p in params_list:
+        acct = _nv(p.get('계정과목',''))
+        if not acct: continue
+        vtype = (_nv(p.get('금액열',''), blank_vals=('nan','none',''))
+                 or _nv(p.get('구분',''), blank_vals=('nan','none',''))
+                 or '차변')
+        if vtype not in ('차변','대변','both'): vtype = '차변'
+        acct_dir[acct] = vtype
+    if not acct_dir: acct_dir = {'접대비': '차변'}
 
     if COL_ACCOUNT not in df.columns or COL_CLIENT not in df.columns: return {}
     if '구분' not in df.columns: return {}
@@ -412,18 +417,21 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     gc = _get_gubun_col(df_w)
     if gc: df_w[gc] = df_w[gc].astype(str).str.strip()
 
-    mask = pd.Series(False, index=df_w.index)
-    for a in account_list: mask |= _account_match_flexible(df_w[COL_ACCOUNT], a)
-    filtered = df_w[mask].copy()
-    if filtered.empty: return {}
-
-    if value_type == '차변':
-        filtered['_amt'] = pd.to_numeric(filtered[COL_DEBIT], errors='coerce').fillna(0)
-    elif value_type == '대변':
-        filtered['_amt'] = pd.to_numeric(filtered[COL_CREDIT], errors='coerce').fillna(0)
-    else:
-        filtered['_amt'] = (pd.to_numeric(filtered[COL_DEBIT], errors='coerce').fillna(0)
-                          + pd.to_numeric(filtered[COL_CREDIT], errors='coerce').fillna(0))
+    # 계정별로 개별 방향 적용 후 합치기
+    parts = []
+    for acct, vtype in acct_dir.items():
+        sub = df_w[_account_match_flexible(df_w[COL_ACCOUNT], acct)].copy()
+        if sub.empty: continue
+        if vtype == '차변':
+            sub['_amt'] = pd.to_numeric(sub[COL_DEBIT], errors='coerce').fillna(0)
+        elif vtype == '대변':
+            sub['_amt'] = pd.to_numeric(sub[COL_CREDIT], errors='coerce').fillna(0)
+        else:
+            sub['_amt'] = (pd.to_numeric(sub[COL_DEBIT], errors='coerce').fillna(0)
+                          + pd.to_numeric(sub[COL_CREDIT], errors='coerce').fillna(0))
+        parts.append(sub)
+    if not parts: return {}
+    filtered = pd.concat(parts, ignore_index=True)
 
     pivot = filtered.pivot_table(index=[COL_ACCOUNT, COL_CLIENT], columns='구분',
                                  values='_amt', aggfunc=['sum','count'], fill_value=0)
