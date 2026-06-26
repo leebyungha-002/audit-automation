@@ -164,6 +164,24 @@ TOOLS = [
         "company": "interest",
         "extra": None,
     },
+    {
+        "category": "주석 검증",
+        "name": "감사주석 검증 - JS회사 (note_verifier)",
+        "desc": "정산표/DSD와 감사조서 주석을 시트별 비교 검증 — 블록1 자동채움 + 차이 색상 표시 (루트 회사)",
+        "cmd": ["python", str(ROOT / "note_verifier" / "note_verifier.py")],
+        "cwd": str(ROOT),
+        "company": "js",
+        "extra": "company_flag",
+    },
+    {
+        "category": "주석 검증",
+        "name": "감사주석 검증 - journal회사 (note_verifier)",
+        "desc": "정산표/DSD와 감사조서 주석을 시트별 비교 검증 — 블록1 자동채움 + 차이 색상 표시 (journal_analyzer 회사)",
+        "cmd": ["python", str(ROOT / "note_verifier" / "note_verifier.py"), "--base", "journal_analyzer"],
+        "cwd": str(ROOT),
+        "company": "journal",
+        "extra": "company_flag",
+    },
 ]
 
 
