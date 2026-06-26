@@ -1,0 +1,50 @@
+# 세션 로그
+
+## 2026-06-26 (2차)
+
+**완료 작업**:
+- 런처앱 [리스 분析] 리스 스케줄 생성 및 [파일 분류] 감사조서 파일 분류 도구에 회사 선택 콤보박스 추가
+- 이전 세션의 은행조회서 완전성(메뉴 22) 관련 작업도 완료 상태로 인계됨
+
+**변경 파일**:
+- `launcher.py`: `detect_lease_companies()` 추가, lease_schedule `"company": "lease"`, file_classifier `"company": "js"` + `"extra": "company_flag"` 설정, `_on_tool_selected()` / `_run()` 분기 처리
+- `lease_analyzer/lease_schedule.py`: `main()`에 `company` positional 인수 추가 (선택 회사 파일만 처리)
+- `file_classifier/main.py`: `--company` 인수 추가, `AuditClassifierApp(company=...)` 전달 시 대상 폴더 자동 설정
+
+**미해결 이슈**: 없음
+
+**다음 할 일**:
+1. 필요 시 기능 테스트 (런처앱 실행 후 리스·파일분류 도구에서 회사 선택 동작 확인)
+2. sejoong / kyungnam mapping_list 작성 → data_injector 연동
+
+---
+
+## 2026-06-26 (3차)
+
+**완료 작업**:
+- 감사주석 검증 도구(note_verifier) 개발 완료
+  - C안(감사조서 마스터 템플릿) 채택: 블록1(좌)에 정산표/DSD 자동채움, 블록2(우)와 비교
+  - PyQt6 GUI: 파일선택·소스유형(정산표/DSD)·소스단위(천원/원) 선택 → 검증결과 xlsx 저장
+  - 블록 경계 자동 감지(빈 열 2개 연속), bool/문자열 셀 덮어쓰기 방지
+  - launcher.py에 [주석 검증] JS/journal 두 항목 추가
+- sejoong 정산표 구조 확인: 원 단위 저장, 시트명 1~33 감사조서와 일치
+
+**변경 파일**:
+- `note_verifier/note_verifier.py` (신규)
+- `launcher.py` (주석 검증 도구 2개 추가)
+
+**미해결 이슈**:
+- note_verifier 정산표 단위 자동 감지 미구현
+  - sejoong 정산표: 원 단위 (현재 사용자가 수동 선택)
+  - 다른 회사 정산표: 천원 단위
+  - **해법**: 소스 파일 숫자 중간값 > 10,000,000 이면 원 단위로 자동 판정 (÷1,000 적용)
+  - 구현 위치: `run_verify()` 시작 부분에 `_detect_unit()` 함수 추가
+
+**다음 할 일**:
+1. note_verifier — 정산표 단위 자동 감지 구현 (`_detect_unit()`)
+2. note_verifier — sejoong으로 실제 테스트 (감사조서 + 정산표_sejoong_25년.xlsx)
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
+
+---
+
+---
