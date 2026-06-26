@@ -471,15 +471,17 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
         if acct: targets.append((acct, col))
     if not targets: targets = list(DEFAULT_BENFORD_TARGETS)
 
-    rows, images = [], []
+    out, images = {}, []
     for acct, direction in targets:
         tcol   = COL_DEBIT if direction == '차변' else COL_CREDIT
         mask   = _account_match_flexible(df[COL_ACCOUNT], acct)
         subset = df[mask & (df[tcol] > 0)].copy()
         n      = len(subset)
+        sheet_key = f'벤포드_{acct}_{direction}'
         if n < BENFORD_MIN_ROWS:
-            rows.append({'계정':acct,'방향':direction,'숫자':'-','발생건수':0,
-                         '실제비율(%)':0,'이론비율(%)':0,'차이(%p)':0,'비고':f'데이터 부족({n}건)'})
+            out[sheet_key] = pd.DataFrame([{'계정':acct,'방향':direction,'숫자':'-','발생건수':0,
+                                            '실제비율(%)':0,'이론비율(%)':0,'차이(%p)':0,
+                                            '비고':f'데이터 부족({n}건)'}])
             continue
         subset['Digit'] = subset[tcol].apply(get_first_digit)
         dg     = subset[subset['Digit'] >= 1]['Digit']
@@ -487,6 +489,7 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
         raw    = dg.value_counts().sort_index()
         img    = draw_benford_chart(acct, direction, counts, BENFORD_PROBS)
         if img: images.append((acct, direction, img))
+        rows = []
         for d in range(1, 10):
             actual = counts.get(d, 0.0)
             theory = BENFORD_PROBS[d]
@@ -494,8 +497,8 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
                          '실제비율(%)':round(actual*100,2),'이론비율(%)':round(theory*100,2),
                          '차이(%p)':round((actual-theory)*100,2),
                          '이상여부':'Y' if abs(actual-theory)>0.05 else ''})
+        out[sheet_key] = pd.DataFrame(rows)
 
-    out = {'벤포드분석': pd.DataFrame(rows)}
     if images: out['_benford_images'] = images   # 특수 키: save_results에서 차트 삽입
     return out
 
@@ -1324,13 +1327,12 @@ def save_results(results: dict, output_dir: str, company_name: str,
         if header_line2:
             ws.cell(2, 1).value = header_line2
 
-    if benford_images and '벤포드분석' in wb.sheetnames:
-        ws_bf = wb['벤포드분석']
-        r = 7   # startrow=2 이므로 데이터 시작이 4행 → 차트는 7행부터
+    if benford_images:
         for _acct, _dir, img_buf in benford_images:
-            if img_buf:
-                ws_bf.add_image(XLImage(img_buf), f'K{r}')
-                r += 25
+            if not img_buf: continue
+            sname = _safe_sheet(f'벤포드_{_acct}_{_dir}')
+            if sname in wb.sheetnames:
+                wb[sname].add_image(XLImage(img_buf), 'K4')
 
     wb.save(out_path)
 
