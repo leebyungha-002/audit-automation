@@ -373,6 +373,35 @@ function runLeaseFilter(companyName, noFilter = false) {
     }
 }
 
+// ─── 은행조회서완전성 자동 연동: bank_confirmation_filter.py 실행 ───────────
+function runBankConfirmation(filePath) {
+    const script = path.join(__dirname, '..', 'bank_confirmation_filter.py');
+    if (!fs.existsSync(script)) {
+        console.log(`[은행조회서완전성] bank_confirmation_filter.py 를 찾을 수 없습니다: ${script}`);
+        return;
+    }
+    console.log(`\n[은행조회서완전성] bank_confirmation_filter.py 자동 실행`);
+    const result = spawnSync('python', [script, '--file', filePath], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        timeout: 60000,
+    });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) {
+        const errLines = result.stderr.split('\n').filter(l =>
+            l.trim() && !l.includes('UserWarning') && !l.includes('pkg_resources')
+        );
+        if (errLines.length) console.error('[은행조회서완전성]', errLines.join('\n'));
+    }
+    if (result.status === 0) {
+        console.log('[은행조회서완전성] bank_confirmation_filter.py 완료');
+    } else if (result.status !== null) {
+        console.log(`[은행조회서완전성] bank_confirmation_filter.py 종료 코드: ${result.status}`);
+    } else if (result.error) {
+        console.log(`[은행조회서완전성] bank_confirmation_filter.py 실행 실패: ${result.error.message}`);
+    }
+}
+
 // ─── 상세검색_시나리오 전용 핸들러 ───────────────────────────────────────────
 // 동일 '작업명' 행들을 하나의 엑셀 파일로 묶고, 계정과목명을 시트명으로 사용.
 // 각 계정 처리 후 '뒤로가기'로 검색 화면으로 복귀하여 다음 계정을 이어서 처리.
@@ -611,6 +640,12 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
             const optionRaw = String(groupTasks[0]['분석옵션'] ?? groupTasks[0]['분석 옵션'] ?? '').trim();
             const noFilter  = /no.?filter|전건/i.test(optionRaw);
             runLeaseFilter(config.companyName, noFilter);
+        }
+
+        // 12. 은행조회서완전성 시나리오이면 bank_confirmation_filter.py 자동 연동
+        //     저장된 그룹 파일에 금융기관명 컬럼 + 조회서목록 요약 시트를 추가
+        if (/은행/.test(taskName)) {
+            runBankConfirmation(groupFilePath);
         }
     }
 }
