@@ -1433,6 +1433,7 @@ def save_results(results: dict, output_dir: str, company_name: str,
 def main():
     parser = argparse.ArgumentParser(description='분개장 분석 자동화')
     parser.add_argument('company', nargs='?', help='고객사 이름 (예: sejoong)')
+    parser.add_argument('--task', type=int, nargs='+', metavar='N', help='실행할 분석 번호 (예: --task 21  또는  --task 3 8 21)')
     args = parser.parse_args()
     company_name = (args.company or input('고객사 이름: ')).strip()
     if not company_name:
@@ -1448,6 +1449,9 @@ def main():
         active_tasks = load_active_tasks(paths['task_list'])
     except (FileNotFoundError, ValueError) as e:
         print(f'[오류] {e}'); sys.exit(1)
+    if args.task:
+        active_tasks = [(n, nm, p) for n, nm, p in active_tasks if n in args.task]
+        print(f'  [필터] --task {args.task} → {len(active_tasks)}개 실행')
     if not active_tasks:
         print('실행할 분석이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
 
