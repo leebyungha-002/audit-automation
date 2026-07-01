@@ -170,7 +170,7 @@ def _b2_hdr_match(ws, row_b1_hdr: int, b1e: int, b2s: int) -> dict:
 
 def run_verify(audit_path: str, src_path: str,
                src_label: str, unit_scale: float, log,
-               progress=None) -> str:
+               progress=None, status=None) -> str:
     """
     메인 검증 함수.
     unit_scale: 1.0(천원 그대로) or 0.001(원→천원 변환)
@@ -181,7 +181,10 @@ def run_verify(audit_path: str, src_path: str,
     if unit_scale != 1.0:
         log("단위 변환 : ÷1,000 (원 → 천원)")
 
+    if status: status(f"소스 파일 로드 중...  ({os.path.basename(src_path)})")
     wb_src   = openpyxl.load_workbook(src_path,   read_only=True, data_only=True)
+
+    if status: status(f"감사조서 로드 중...  ({os.path.basename(audit_path)})")
     wb_audit = openpyxl.load_workbook(audit_path, data_only=True)
 
     src_map    = {_norm_sheet(s): s for s in wb_src.sheetnames}
@@ -299,6 +302,7 @@ class Worker(QThread):
     done_sig     = pyqtSignal(str)
     err_sig      = pyqtSignal(str)
     progress_sig = pyqtSignal(str, int, int)  # sheet, current, total
+    status_sig   = pyqtSignal(str)            # 단계별 상태 문자열
 
     def __init__(self, audit, src, label, scale):
         super().__init__()
@@ -309,7 +313,8 @@ class Worker(QThread):
         try:
             out = run_verify(self.audit, self.src, self.label, self.scale,
                              lambda m: self.log_sig.emit(m),
-                             lambda s, i, t: self.progress_sig.emit(s, i, t))
+                             lambda s, i, t: self.progress_sig.emit(s, i, t),
+                             lambda s: self.status_sig.emit(s))
             self.done_sig.emit(out)
         except Exception as e:
             import traceback
@@ -459,6 +464,7 @@ class NoteVerifier(QMainWindow):
 
         self._worker = Worker(audit, src, label, scale)
         self._worker.log_sig.connect(lambda m: self._log_ln(m))
+        self._worker.status_sig.connect(self._status_lbl.setText)
         self._worker.progress_sig.connect(self._on_progress)
         self._worker.done_sig.connect(self._done)
         self._worker.err_sig.connect(self._err)
