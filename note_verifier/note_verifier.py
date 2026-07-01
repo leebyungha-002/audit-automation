@@ -185,7 +185,7 @@ def run_verify(audit_path: str, src_path: str,
     wb_src   = openpyxl.load_workbook(src_path,   read_only=True, data_only=True)
 
     if status: status(f"감사조서 로드 중...  ({os.path.basename(audit_path)})")
-    wb_audit = openpyxl.load_workbook(audit_path, data_only=True)
+    wb_audit = openpyxl.load_workbook(audit_path, data_only=True, keep_links=False)
 
     src_map    = {_norm_sheet(s): s for s in wb_src.sheetnames}
     note_list  = _note_sheets(wb_audit)
