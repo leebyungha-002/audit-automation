@@ -37,9 +37,9 @@ except Exception:
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QRadioButton,
-    QButtonGroup, QGroupBox, QFrame,
+    QButtonGroup, QGroupBox, QFrame, QProgressBar,
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QFont, QColor, QTextCursor
 
 # ── 색상 상수 ────────────────────────────────────────────────────────
@@ -169,7 +169,8 @@ def _b2_hdr_match(ws, row_b1_hdr: int, b1e: int, b2s: int) -> dict:
 
 
 def run_verify(audit_path: str, src_path: str,
-               src_label: str, unit_scale: float, log) -> str:
+               src_label: str, unit_scale: float, log,
+               progress=None) -> str:
     """
     메인 검증 함수.
     unit_scale: 1.0(천원 그대로) or 0.001(원→천원 변환)
@@ -189,7 +190,10 @@ def run_verify(audit_path: str, src_path: str,
 
     summary = []
 
-    for sname in note_list:
+    total = len(note_list)
+    for idx, sname in enumerate(note_list, 1):
+        if progress:
+            progress(sname, idx, total)
         ws  = wb_audit[sname]
         key = _norm_sheet(sname)
 
@@ -291,9 +295,10 @@ def run_verify(audit_path: str, src_path: str,
 # ════════════════════════════════════════════════════════════════════
 
 class Worker(QThread):
-    log_sig  = pyqtSignal(str)
-    done_sig = pyqtSignal(str)
-    err_sig  = pyqtSignal(str)
+    log_sig      = pyqtSignal(str)
+    done_sig     = pyqtSignal(str)
+    err_sig      = pyqtSignal(str)
+    progress_sig = pyqtSignal(str, int, int)  # sheet, current, total
 
     def __init__(self, audit, src, label, scale):
         super().__init__()
@@ -302,8 +307,9 @@ class Worker(QThread):
 
     def run(self):
         try:
-            out = run_verify(self.audit, self.src, self.label,
-                             self.scale, lambda m: self.log_sig.emit(m))
+            out = run_verify(self.audit, self.src, self.label, self.scale,
+                             lambda m: self.log_sig.emit(m),
+                             lambda s, i, t: self.progress_sig.emit(s, i, t))
             self.done_sig.emit(out)
         except Exception as e:
             import traceback
@@ -376,6 +382,23 @@ class NoteVerifier(QMainWindow):
         self._btn_run.clicked.connect(self._run)
         vb.addWidget(self._btn_run)
 
+        # 진행 상태 영역
+        self._status_lbl = QLabel("")
+        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_lbl.setFont(QFont("맑은 고딕", 9))
+        self._status_lbl.setStyleSheet("color:#6B7280;")
+        self._status_lbl.hide()
+        vb.addWidget(self._status_lbl)
+
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(True)
+        self._progress.setMinimumHeight(18)
+        self._progress.setStyleSheet(
+            "QProgressBar{border:1px solid #D1D5DB;border-radius:4px;text-align:center;}"
+            "QProgressBar::chunk{background:#2563EB;border-radius:3px;}")
+        self._progress.hide()
+        vb.addWidget(self._progress)
+
         # 로그
         grp2 = QGroupBox("실행 로그")
         gv2  = QVBoxLayout(grp2)
@@ -428,19 +451,37 @@ class NoteVerifier(QMainWindow):
         self._log.clear()
         self._log_ln(f"▶ {datetime.now().strftime('%H:%M:%S')} 검증 시작", "#60A5FA")
         self._btn_run.setEnabled(False)
+        self._progress.setValue(0)
+        self._progress.setRange(0, 0)  # 마퀴(indeterminate) 모드
+        self._progress.show()
+        self._status_lbl.setText("파일 읽는 중...")
+        self._status_lbl.show()
 
         self._worker = Worker(audit, src, label, scale)
         self._worker.log_sig.connect(lambda m: self._log_ln(m))
+        self._worker.progress_sig.connect(self._on_progress)
         self._worker.done_sig.connect(self._done)
         self._worker.err_sig.connect(self._err)
         self._worker.start()
 
+    def _on_progress(self, sheet: str, cur: int, total: int):
+        self._progress.setRange(0, total)
+        self._progress.setValue(cur)
+        self._status_lbl.setText(f"처리 중: 주석 {sheet}  ({cur} / {total})")
+
     def _done(self, out: str):
         self._log_ln(f"\n완료: {out}", "#4ADE80")
+        self._progress.setRange(0, 1)
+        self._progress.setValue(1)
+        self._status_lbl.setText("✔  검증 완료")
+        self._status_lbl.setStyleSheet("color:#16A34A; font-weight:bold;")
         self._btn_run.setEnabled(True)
 
     def _err(self, msg: str):
         self._log_ln(f"\n오류:\n{msg}", "#F87171")
+        self._progress.hide()
+        self._status_lbl.setText("✘  오류 발생")
+        self._status_lbl.setStyleSheet("color:#DC2626; font-weight:bold;")
         self._btn_run.setEnabled(True)
 
 
