@@ -4,16 +4,16 @@
 note_verifier.py -- 감사주석 검증 도구 (PyQt6 GUI)
 
 [동작]
-  감사조서의 주석 시트(숫자 이름)에서
-    블록1(왼쪽) : 정산표/DSD 값 자동 채움
-    블록2(오른쪽): 감사인이 작성한 주석 값
-  두 블록을 비교하여 차이를 색상 표시 + 검증요약 시트 생성.
+  ① 시트 매칭 : 정산표/DSD와 감사조서의 순수-숫자 시트명이 일치하는 쌍 처리
+                (텍스트 시트명·'숫자-...' 형태는 부속시트로 제외)
+  ② 블록 감지 : 감사조서 시트에서 왼쪽 블록 / 빈열 간격 / 오른쪽 블록 자동 탐지
+  ③ 복사      : 정산표 시트 내용(라벨+값)을 감사조서 왼쪽 블록에 행 위치 기준으로 덮어씀
+  ④ 비교·색상 : 왼쪽 블록 숫자 vs 오른쪽 블록(감사인 작성) 숫자를 비교하여 색상 표시
 
 [색상 기준]
   연녹  : 일치 (차이 1천원 이하)
   연황  : 소차이 (1천원 초과 ~ 1백만원 이하)
   연적  : 큰차이 (1백만원 초과)
-  회색  : 소스에 해당 항목 없음
 """
 
 import os
@@ -33,19 +33,18 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QFont, QColor, QTextCursor
 
-# ── 색상 상수 (RGB 튜플, xlwings용) ──────────────────────────────────
-COLOR_OK   = (198, 239, 206)
-COLOR_DIFF = (255, 235, 156)
-COLOR_BIG  = (255, 199, 206)
-COLOR_MISS = (217, 217, 217)
-COLOR_HDR  = (189, 215, 238)
+# ── 색상 상수 (RGB 튜플) ──────────────────────────────────────────────
+COLOR_OK   = (198, 239, 206)   # 연녹  : 일치
+COLOR_DIFF = (255, 235, 156)   # 연황  : 소차이
+COLOR_BIG  = (255, 199, 206)   # 연적  : 큰차이
+COLOR_HDR  = (189, 215, 238)   # 파랑  : 요약 헤더
 
 THRESH_SMALL = 1        # 1천원 이하 → 일치
 THRESH_BIG   = 1_000   # 1백만원(천원 단위) 초과 → 큰 차이
 
 
 # ════════════════════════════════════════════════════════════════════
-# SheetData — xlwings used_range를 openpyxl 호환 인터페이스로 감쌈
+# SheetData — xlwings used_range 결과를 cell(r,c) 인터페이스로 감쌈
 # ════════════════════════════════════════════════════════════════════
 
 class _Cell:
@@ -75,7 +74,7 @@ class SheetData:
 
 
 def _read_xw_sheet(xw_sheet) -> SheetData:
-    """xlwings 시트 → SheetData (한 번의 배치 읽기)."""
+    """xlwings 시트 전체를 한 번의 배치 읽기로 SheetData에 담는다."""
     vals = xw_sheet.used_range.value
     if vals is None:
         return SheetData([])
@@ -87,119 +86,50 @@ def _read_xw_sheet(xw_sheet) -> SheetData:
 
 
 # ════════════════════════════════════════════════════════════════════
-# 핵심 로직 헬퍼
+# 헬퍼 함수
 # ════════════════════════════════════════════════════════════════════
-
-def _norm(s) -> str:
-    """공백·괄호·점 제거 + 소문자."""
-    return re.sub(r'[\s\(\)\[\]\.,·\-]', '', str(s or '')).lower()
-
-
-def _norm_sheet(name: str) -> str:
-    """'주석5', '5번', '5' → '5'."""
-    s = re.sub(r'주석|note|no\.?|번|\s', '', name, flags=re.IGNORECASE)
-    return re.sub(r'[^\d]', '', s)
-
 
 def _is_num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _is_note_sheet(name: str) -> bool:
+    """순수 숫자 시트명만 True. 텍스트·'숫자-기호' 형태는 False."""
+    return bool(re.fullmatch(r'\s*\d+\s*', name))
+
+
 def _note_sheets(names: list) -> list:
-    """'주석>>>>' 뒤의 시트들, 없으면 숫자로 시작하는 시트들."""
-    for i, s in enumerate(names):
-        if re.search(r'주석.*>{2,}', s):
-            return names[i + 1:]
-    return [s for s in names if re.match(r'^\d', s.strip())]
+    """감사주석 비교 대상 시트 목록 (순수 숫자명만)."""
+    return [s for s in names if _is_note_sheet(s)]
 
 
-def _hdr_row(ws: SheetData, max_r=12) -> int:
-    """텍스트 셀 3개 이상인 첫 행 (헤더행)."""
-    for r in range(1, max_r + 1):
-        cnt = sum(
-            1 for c in range(1, min(ws.max_column or 1, 30) + 1)
-            if isinstance(ws.cell(r, c).value, str)
-            and ws.cell(r, c).value.strip()
-            and ws.cell(r, c).value.strip() not in ('True', 'False')
-        )
-        if cnt >= 3:
-            return r
-    return 1
+def _find_blocks(ws: SheetData):
+    """
+    감사조서 시트에서 왼쪽 블록 끝 열(b1e)과 오른쪽 블록 시작 열(b2s)을 탐지.
+    연속으로 2개 이상 빈 열이 있는 부분을 간격으로 판단.
+    반환: (b1e, b2s) 또는 (None, None)
+    """
+    mc = ws.max_column
+    mr = min(ws.max_row, 20)   # 상단 20행만 검사
 
+    def col_is_empty(c):
+        return all(ws.cell(r, c).value is None for r in range(1, mr + 1))
 
-def _b1_end(ws: SheetData, hdr: int) -> int:
-    """블록1 마지막 열: 연속 빈 열 2개 직전."""
-    rows = list(ws.iter_rows(
-        min_row=hdr + 1,
-        max_row=min(hdr + 8, ws.max_row or 1),
-        values_only=True,
-    ))
-    mc = ws.max_column or 1
+    # 두 개 연속 빈 열 탐색 → 왼쪽 블록 끝
     for c in range(2, mc):
-        c0 = [r[c - 1] if c - 1 < len(r) else None for r in rows]
-        c1 = [r[c]     if c     < len(r) else None for r in rows]
-        if all(v is None for v in c0) and all(v is None for v in c1):
-            return c - 1
-    return mc
-
-
-def _b2_start(ws: SheetData, b1e: int, hdr: int) -> int:
-    """블록2 시작 열: 블록1 끝 이후 첫 비어있지 않은 열."""
-    for c in range(b1e + 1, (ws.max_column or 1) + 1):
-        for r in range(hdr, min(hdr + 5, ws.max_row or 1) + 1):
-            if ws.cell(r, c).value is not None:
-                return c
-    return -1
-
-
-def _src_data(ws_src: SheetData) -> dict:
-    """{norm_label: [val_col2, val_col3, ...]} 소스 시트 데이터."""
-    hdr = _hdr_row(ws_src)
-    out = {}
-    for r in range(hdr + 1, (ws_src.max_row or 0) + 1):
-        lbl = ws_src.cell(r, 1).value
-        if not lbl or not str(lbl).strip():
-            continue
-        vals = [
-            ws_src.cell(r, c).value
-            if _is_num(ws_src.cell(r, c).value) else None
-            for c in range(2, (ws_src.max_column or 1) + 1)
-        ]
-        if any(v is not None for v in vals):
-            out[_norm(lbl)] = vals
-    return out
-
-
-def _b2_hdr_match(ws: SheetData, row_b1_hdr: int, b1e: int, b2s: int) -> dict:
-    """블록1 헤더와 블록2 헤더를 이름으로 매핑 {b1_col: b2_col}."""
-    b1_hdrs = {}
-    for c in range(2, b1e + 1):
-        v = ws.cell(row_b1_hdr, c).value
-        if isinstance(v, str) and v.strip():
-            b1_hdrs[c] = _norm(v)
-
-    b2_hdrs = {}
-    for c in range(b2s, (ws.max_column or 1) + 1):
-        v = ws.cell(row_b1_hdr, c).value
-        if isinstance(v, str) and v.strip():
-            b2_hdrs[c] = _norm(v)
-
-    mapping = {}
-    for b1c, b1h in b1_hdrs.items():
-        for b2c, b2h in b2_hdrs.items():
-            if b1h and b1h == b2h:
-                mapping[b1c] = b2c
-                break
-        if b1c not in mapping:
-            for b2c, b2h in b2_hdrs.items():
-                if b1h and (b1h in b2h or b2h in b1h):
-                    mapping[b1c] = b2c
-                    break
-    return mapping
+        if col_is_empty(c) and col_is_empty(c + 1):
+            b1e = c - 1
+            # 빈 열 구간 이후 첫 비어있지 않은 열 → 오른쪽 블록 시작
+            for b2s in range(c + 1, mc + 2):
+                if b2s > mc:
+                    return None, None
+                if not col_is_empty(b2s):
+                    return b1e, b2s
+    return None, None
 
 
 # ════════════════════════════════════════════════════════════════════
-# 메인 검증 함수 (xlwings 기반)
+# 메인 검증 함수
 # ════════════════════════════════════════════════════════════════════
 
 def run_verify(audit_path: str, src_path: str,
@@ -227,100 +157,122 @@ def run_verify(audit_path: str, src_path: str,
 
         src_names   = [s.name for s in xw_src.sheets]
         audit_names = [s.name for s in xw_audit.sheets]
-        src_map     = {_norm_sheet(s): s for s in src_names}
-        note_list   = _note_sheets(audit_names)
+
+        # 순수 숫자 시트만 대상
+        note_list = _note_sheets(audit_names)
+        # 소스 시트 맵: 정규화된 숫자 → 실제 시트명
+        src_map = {s.strip(): s for s in src_names if _is_note_sheet(s)}
+
         log(f"주석 시트 : {len(note_list)}개\n{'─'*48}")
 
-        summary     = []
-        all_changes = []   # (sname, row, col, value_or_None, color_rgb)
+        summary      = []
+        write_ops    = []   # (sname, r, c, value)   — 왼쪽 블록 복사
+        color_ops    = []   # (sname, r, c, color)   — 비교 색상
 
         total = len(note_list)
         for idx, sname in enumerate(note_list, 1):
             if progress: progress(sname, idx, total)
             if status:   status(f"분석 중: 주석 {sname}  ({idx}/{total})")
 
-            src_sname = src_map.get(_norm_sheet(sname))
+            src_sname = src_map.get(sname.strip())
             if not src_sname:
                 log(f"  [{sname:>4}] 소스 시트 없음 — 건너뜀")
                 continue
 
-            ws     = _read_xw_sheet(xw_audit.sheets[sname])
-            ws_src = _read_xw_sheet(xw_src.sheets[src_sname])
+            ws_src   = _read_xw_sheet(xw_src.sheets[src_sname])
+            ws_audit = _read_xw_sheet(xw_audit.sheets[sname])
 
-            hdr = _hdr_row(ws)
-            b1e = _b1_end(ws, hdr)
-            b2s = _b2_start(ws, b1e, hdr)
-
-            if b2s < 0:
-                log(f"  [{sname:>4}] 블록2 미발견 — 건너뜀")
+            # 감사조서 시트에서 왼쪽/오른쪽 블록 경계 탐지
+            b1e, b2s = _find_blocks(ws_audit)
+            if b1e is None:
+                log(f"  [{sname:>4}] 블록 구분 열 미발견 — 건너뜀")
                 continue
 
-            col_map  = _b2_hdr_match(ws, hdr, b1e, b2s)
-            rows_src = _src_data(ws_src)
-            filled = ok = diff_s = diff_b = miss = 0
+            # 복사할 열 수: 소스 열과 왼쪽 블록 열 중 작은 쪽
+            copy_cols = min(ws_src.max_column, b1e)
+            copy_rows = ws_src.max_row
+            # 오른쪽 블록 폭 = 왼쪽 블록과 동일하다고 가정
+            right_width = b1e
 
-            for r in range(hdr + 1, ws.max_row + 1):
-                lbl_v = ws.cell(r, 1).value
-                if not lbl_v or not str(lbl_v).strip():
-                    continue
-                norm_lbl = _norm(lbl_v)
-                src_row  = rows_src.get(norm_lbl)
+            filled = ok = diff_s = diff_b = 0
 
-                for ci, b1c in enumerate(range(2, b1e + 1)):
-                    src_v    = src_row[ci - 1] if src_row and ci - 1 < len(src_row) else None
-                    cell_val = ws.cell(r, b1c).value
-                    b2c      = col_map.get(b1c)
-                    b2_raw   = ws.cell(r, b2c).value if b2c else None
+            for r in range(1, copy_rows + 1):
+                for c in range(1, copy_cols + 1):
+                    src_v = ws_src.cell(r, c).value
 
-                    # 블록2 단위 자동 감지: 5백만 초과 → 원 단위로 판단
-                    if _is_num(b2_raw) and b2_raw > 5_000_000:
-                        audit_v = round(b2_raw / 1000)
-                    elif _is_num(b2_raw):
-                        audit_v = b2_raw
-                    else:
-                        audit_v = None
+                    # ── 왼쪽 블록에 덮어쓰기 (라벨 포함) ──────────────
+                    write_ops.append((sname, r, c, src_v))
 
-                    # bool·문자열 셀은 덮어쓰지 않음
-                    if isinstance(cell_val, (bool, str)):
+                    # ── 숫자인 경우에만 오른쪽 블록과 비교 ────────────
+                    if not _is_num(src_v):
                         continue
 
-                    if src_v is not None:
-                        fill_v = round(src_v * unit_scale)
-                        filled += 1
+                    fill_v = round(src_v * unit_scale)
 
-                        if audit_v is not None:
-                            diff = abs(fill_v - audit_v)
-                            if diff <= THRESH_SMALL:
-                                color = COLOR_OK;   ok     += 1
-                            elif diff <= THRESH_BIG:
-                                color = COLOR_DIFF; diff_s += 1
-                            else:
-                                color = COLOR_BIG;  diff_b += 1
-                                summary.append((sname, str(lbl_v).strip(),
-                                                fill_v, audit_v, fill_v - audit_v))
-                        else:
-                            color = COLOR_OK
+                    # 대응하는 오른쪽 블록 열: b2s + (c - 1)
+                    rc = b2s + (c - 1)
+                    if rc > ws_audit.max_column:
+                        continue
 
-                        all_changes.append((sname, r, b1c, fill_v, color))
+                    audit_raw = ws_audit.cell(r, rc).value
+
+                    # 오른쪽 블록 단위 자동 감지 (5백만 초과 → 원 단위)
+                    if _is_num(audit_raw) and audit_raw > 5_000_000:
+                        audit_v = round(audit_raw / 1000)
+                    elif _is_num(audit_raw):
+                        audit_v = audit_raw
                     else:
-                        if src_row is not None:
-                            all_changes.append((sname, r, b1c, None, COLOR_MISS))
-                            miss += 1
+                        continue   # 오른쪽 블록에 숫자 없음
 
-            log(f"  [{sname:>4}] 채움 {filled:3}건  ✓{ok}  소차이 {diff_s}  큰차이 {diff_b}  미매칭 {miss}")
+                    diff = abs(fill_v - audit_v)
+                    if diff <= THRESH_SMALL:
+                        color = COLOR_OK;   ok     += 1
+                    elif diff <= THRESH_BIG:
+                        color = COLOR_DIFF; diff_s += 1
+                    else:
+                        color = COLOR_BIG;  diff_b += 1
+                        # 라벨: 같은 행 1열에서 가져옴
+                        lbl = ws_src.cell(r, 1).value or f"R{r}"
+                        summary.append((sname, str(lbl).strip(),
+                                        fill_v, audit_v, fill_v - audit_v))
+
+                    color_ops.append((sname, r, c, color))
+                    filled += 1
+
+            log(f"  [{sname:>4}] 채움 {filled:3}건  ✓{ok}  소차이 {diff_s}  큰차이 {diff_b}")
 
         xw_src.close()
 
-        # ── 값·색상 적용 ─────────────────────────────────────────────
-        if status: status("값·색상 적용 중...")
+        # ── 왼쪽 블록 값 일괄 기록 ──────────────────────────────────
+        if status: status("왼쪽 블록 복사 중...")
         sheets_cache = {}
-        for sname, r, c, val, color in all_changes:
-            if sname not in sheets_cache:
-                sheets_cache[sname] = xw_audit.sheets[sname]
-            cell = sheets_cache[sname].cells(r, c)
-            if val is not None:
-                cell.value = val
-            cell.color = color
+
+        def _get_sheet(name):
+            if name not in sheets_cache:
+                sheets_cache[name] = xw_audit.sheets[name]
+            return sheets_cache[name]
+
+        # 시트별로 묶어서 범위 단위 배치 쓰기
+        from itertools import groupby
+        for sname, ops in groupby(write_ops, key=lambda x: x[0]):
+            ops = list(ops)
+            if not ops:
+                continue
+            rows = sorted({o[1] for o in ops})
+            cols = sorted({o[2] for o in ops})
+            r_min, r_max = rows[0], rows[-1]
+            c_min, c_max = cols[0], cols[-1]
+            grid = [[None] * (c_max - c_min + 1) for _ in range(r_max - r_min + 1)]
+            for _, r, c, v in ops:
+                grid[r - r_min][c - c_min] = v
+            _get_sheet(sname).range(
+                (r_min, c_min), (r_max, c_max)
+            ).value = grid
+
+        # ── 색상 적용 ────────────────────────────────────────────────
+        if status: status("색상 적용 중...")
+        for sname, r, c, color in color_ops:
+            _get_sheet(sname).cells(r, c).color = color
 
         # ── 검증요약 시트 ────────────────────────────────────────────
         log(f"\n{'─'*48}")
