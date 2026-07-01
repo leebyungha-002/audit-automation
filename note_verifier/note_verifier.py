@@ -26,6 +26,14 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import openpyxl
 from openpyxl.styles import PatternFill, Font
+
+# openpyxl 피벗 캐시 버그 우회: formula=None 허용
+try:
+    from openpyxl.pivot.cache import CalculatedItem
+    from openpyxl.descriptors.base import String
+    CalculatedItem.formula = String(allow_none=True)
+except Exception:
+    pass
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QRadioButton,
