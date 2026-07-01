@@ -110,22 +110,42 @@ def _find_blocks(ws: SheetData):
     반환: (b1e, b2s) 또는 (None, None)
     """
     mc = ws.max_column
-    mr = min(ws.max_row, 20)   # 상단 20행만 검사
+    mr = min(ws.max_row, 20)
 
     def col_is_empty(c):
         return all(ws.cell(r, c).value is None for r in range(1, mr + 1))
 
-    # 두 개 연속 빈 열 탐색 → 왼쪽 블록 끝
     for c in range(2, mc):
         if col_is_empty(c) and col_is_empty(c + 1):
             b1e = c - 1
-            # 빈 열 구간 이후 첫 비어있지 않은 열 → 오른쪽 블록 시작
             for b2s in range(c + 1, mc + 2):
                 if b2s > mc:
                     return None, None
                 if not col_is_empty(b2s):
                     return b1e, b2s
     return None, None
+
+
+def _find_tables(ws: SheetData, col_start=1, col_end=None) -> list:
+    """
+    빈 행으로 구분된 표 구간 목록 반환: [(row_start, row_end), ...]
+    col_start~col_end 범위에 값이 있는 행을 '내용 있음'으로 판단.
+    """
+    col_end = col_end or ws.max_column
+    tables, in_table, t_start = [], False, None
+    for r in range(1, ws.max_row + 1):
+        filled = any(
+            ws.cell(r, c).value is not None
+            for c in range(col_start, col_end + 1)
+        )
+        if filled and not in_table:
+            in_table, t_start = True, r
+        elif not filled and in_table:
+            tables.append((t_start, r - 1))
+            in_table = False
+    if in_table:
+        tables.append((t_start, ws.max_row))
+    return tables
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -188,56 +208,62 @@ def run_verify(audit_path: str, src_path: str,
                 log(f"  [{sname:>4}] 블록 구분 열 미발견 — 건너뜀")
                 continue
 
-            # 복사할 열 수: 소스 열과 왼쪽 블록 열 중 작은 쪽
             copy_cols = min(ws_src.max_column, b1e)
-            copy_rows = ws_src.max_row
-            # 오른쪽 블록 폭 = 왼쪽 블록과 동일하다고 가정
-            right_width = b1e
+
+            # 오른쪽 블록 기준으로 감사조서 표 위치 탐지 (항상 내용 있음)
+            right_tables = _find_tables(ws_audit, col_start=b2s)
+            # 소스 시트 표 위치 탐지
+            src_tables   = _find_tables(ws_src)
+
+            if len(src_tables) != len(right_tables):
+                log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(right_tables)}개 — 순서대로 매칭")
 
             filled = ok = diff_s = diff_b = 0
 
-            for r in range(1, copy_rows + 1):
-                for c in range(1, copy_cols + 1):
-                    src_v = ws_src.cell(r, c).value
+            for (src_s, src_e), (aud_s, aud_e) in zip(src_tables, right_tables):
+                height = min(src_e - src_s + 1, aud_e - aud_s + 1)
 
-                    # ── 왼쪽 블록에 덮어쓰기 (라벨 포함) ──────────────
-                    write_ops.append((sname, r, c, src_v))
+                for i in range(height):
+                    src_r   = src_s + i
+                    audit_r = aud_s + i
 
-                    # ── 숫자인 경우에만 오른쪽 블록과 비교 ────────────
-                    if not _is_num(src_v):
-                        continue
+                    for c in range(1, copy_cols + 1):
+                        src_v = ws_src.cell(src_r, c).value
 
-                    fill_v = round(src_v * unit_scale)
+                        # ── 왼쪽 블록에 덮어쓰기 (라벨 포함) ──────────
+                        write_ops.append((sname, audit_r, c, src_v))
 
-                    # 대응하는 오른쪽 블록 열: b2s + (c - 1)
-                    rc = b2s + (c - 1)
-                    if rc > ws_audit.max_column:
-                        continue
+                        # ── 숫자인 경우에만 오른쪽 블록과 비교 ─────────
+                        if not _is_num(src_v):
+                            continue
 
-                    audit_raw = ws_audit.cell(r, rc).value
+                        fill_v = round(src_v * unit_scale)
+                        rc = b2s + (c - 1)
+                        if rc > ws_audit.max_column:
+                            continue
 
-                    # 오른쪽 블록 단위 자동 감지 (5백만 초과 → 원 단위)
-                    if _is_num(audit_raw) and audit_raw > 5_000_000:
-                        audit_v = round(audit_raw / 1000)
-                    elif _is_num(audit_raw):
-                        audit_v = audit_raw
-                    else:
-                        continue   # 오른쪽 블록에 숫자 없음
+                        audit_raw = ws_audit.cell(audit_r, rc).value
 
-                    diff = abs(fill_v - audit_v)
-                    if diff <= THRESH_SMALL:
-                        color = COLOR_OK;   ok     += 1
-                    elif diff <= THRESH_BIG:
-                        color = COLOR_DIFF; diff_s += 1
-                    else:
-                        color = COLOR_BIG;  diff_b += 1
-                        # 라벨: 같은 행 1열에서 가져옴
-                        lbl = ws_src.cell(r, 1).value or f"R{r}"
-                        summary.append((sname, str(lbl).strip(),
-                                        fill_v, audit_v, fill_v - audit_v))
+                        if _is_num(audit_raw) and audit_raw > 5_000_000:
+                            audit_v = round(audit_raw / 1000)
+                        elif _is_num(audit_raw):
+                            audit_v = audit_raw
+                        else:
+                            continue
 
-                    color_ops.append((sname, r, c, color))
-                    filled += 1
+                        diff = abs(fill_v - audit_v)
+                        if diff <= THRESH_SMALL:
+                            color = COLOR_OK;   ok     += 1
+                        elif diff <= THRESH_BIG:
+                            color = COLOR_DIFF; diff_s += 1
+                        else:
+                            color = COLOR_BIG;  diff_b += 1
+                            lbl = ws_src.cell(src_r, 1).value or f"R{src_r}"
+                            summary.append((sname, str(lbl).strip(),
+                                            fill_v, audit_v, fill_v - audit_v))
+
+                        color_ops.append((sname, audit_r, c, color))
+                        filled += 1
 
             log(f"  [{sname:>4}] 채움 {filled:3}건  ✓{ok}  소차이 {diff_s}  큰차이 {diff_b}")
 
