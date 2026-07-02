@@ -103,17 +103,17 @@ def _note_sheets(names: list) -> list:
     return [s for s in names if _is_note_sheet(s)]
 
 
-def _find_blocks(ws: SheetData):
+def _find_blocks_in_range(ws: SheetData, row_start: int, row_end: int):
     """
-    감사조서 시트에서 왼쪽 블록 끝 열(b1e)과 오른쪽 블록 시작 열(b2s)을 탐지.
-    연속으로 2개 이상 빈 열이 있는 부분을 간격으로 판단.
+    지정 행 범위(row_start~row_end) 안에서 왼쪽 블록 끝 열(b1e)과
+    오른쪽 블록 시작 열(b2s)을 탐지.
+    연속 2개 이상 빈 열을 간격으로 판단.
     반환: (b1e, b2s) 또는 (None, None)
     """
     mc = ws.max_column
-    mr = min(ws.max_row, 20)
 
     def col_is_empty(c):
-        return all(ws.cell(r, c).value is None for r in range(1, mr + 1))
+        return all(ws.cell(r, c).value is None for r in range(row_start, row_end + 1))
 
     for c in range(2, mc):
         if col_is_empty(c) and col_is_empty(c + 1):
@@ -202,26 +202,24 @@ def run_verify(audit_path: str, src_path: str,
             ws_src   = _read_xw_sheet(xw_src.sheets[src_sname])
             ws_audit = _read_xw_sheet(xw_audit.sheets[sname])
 
-            # 감사조서 시트에서 왼쪽/오른쪽 블록 경계 탐지
-            b1e, b2s = _find_blocks(ws_audit)
-            if b1e is None:
-                log(f"  [{sname:>4}] 블록 구분 열 미발견 — 건너뜀")
-                continue
-
-            copy_cols = min(ws_src.max_column, b1e)
-
-            # 오른쪽 블록 기준으로 감사조서 표 위치 탐지 (항상 내용 있음)
-            right_tables = _find_tables(ws_audit, col_start=b2s)
-            # 소스 시트 표 위치 탐지
+            # 감사조서·소스 표 위치 탐지 (전체 열 기준 빈 행으로 구분)
+            audit_tables = _find_tables(ws_audit)
             src_tables   = _find_tables(ws_src)
 
-            if len(src_tables) != len(right_tables):
-                log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(right_tables)}개 — 순서대로 매칭")
+            if len(src_tables) != len(audit_tables):
+                log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(audit_tables)}개 — 순서대로 매칭")
 
             filled = ok = diff_s = diff_b = 0
 
-            for (src_s, src_e), (aud_s, aud_e) in zip(src_tables, right_tables):
-                height = min(src_e - src_s + 1, aud_e - aud_s + 1)
+            for (src_s, src_e), (aud_s, aud_e) in zip(src_tables, audit_tables):
+                # 이 표의 행 범위 안에서 블록 경계 탐지 (표마다 다른 열 너비 대응)
+                b1e, b2s = _find_blocks_in_range(ws_audit, aud_s, aud_e)
+                if b1e is None:
+                    log(f"  [{sname:>4}] 표({aud_s}~{aud_e}행) 블록 구분 미발견 — 건너뜀")
+                    continue
+
+                copy_cols = min(ws_src.max_column, b1e)
+                height    = min(src_e - src_s + 1, aud_e - aud_s + 1)
 
                 for i in range(height):
                     src_r   = src_s + i
