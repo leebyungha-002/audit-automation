@@ -202,8 +202,8 @@ def run_verify(audit_path: str, src_path: str,
             ws_src   = _read_xw_sheet(xw_src.sheets[src_sname])
             ws_audit = _read_xw_sheet(xw_audit.sheets[sname])
 
-            # 감사조서·소스 표 위치 탐지 (전체 열 기준 빈 행으로 구분)
-            audit_tables = _find_tables(ws_audit)
+            # 감사조서 표 위치 탐지 (왼쪽 4열만 스캔 → 오른쪽 계산내역 무시)
+            audit_tables = _find_tables(ws_audit, col_end=4)
             src_tables   = _find_tables(ws_src)
 
             if len(src_tables) != len(audit_tables):
