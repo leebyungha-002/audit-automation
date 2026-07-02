@@ -244,12 +244,9 @@ def run_verify(audit_path: str, src_path: str,
 
                         audit_raw = ws_audit.cell(audit_r, rc).value
 
-                        if _is_num(audit_raw) and audit_raw > 5_000_000:
-                            audit_v = round(audit_raw / 1000)
-                        elif _is_num(audit_raw):
-                            audit_v = audit_raw
-                        else:
+                        if not _is_num(audit_raw):
                             continue
+                        audit_v = audit_raw  # 감사조서 오른쪽 블록은 항상 천원 단위
 
                         diff = abs(fill_v - audit_v)
                         if diff <= THRESH_SMALL:
