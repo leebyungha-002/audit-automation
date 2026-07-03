@@ -221,13 +221,15 @@ def run_verify(audit_path: str, src_path: str,
             filled = ok = diff_s = diff_b = 0
 
             for (src_s, src_e), (aud_s, aud_e) in zip(src_tables, audit_tables):
-                # 3단계: 표별 행 범위 안에서 정밀 블록 경계 탐지 (표마다 다른 열 너비 대응)
-                b1e, b2s = _find_blocks_in_range(ws_audit, aud_s, aud_e)
-                if b1e is None:
-                    log(f"  [{sname:>4}] 표({aud_s}~{aud_e}행) 블록 구분 미발견 — 건너뜀")
-                    continue
+                # 3단계: 표별 행 범위 안에서 b2s 정밀 탐지
+                #        (왼쪽 블록이 비어있어도 b2s는 정확히 잡힘)
+                _, b2s = _find_blocks_in_range(ws_audit, aud_s, aud_e)
+                if b2s is None:
+                    b2s = prelim_b2s  # 탐지 실패 시 예비값 사용
 
-                copy_cols = min(ws_src.max_column, b1e)
+                # 복사 열 수: 소스 열 수와 (b2s - 3)의 최솟값
+                # b2s - 3 = b2s - 빈열2개 - 색깔열1개 → 왼쪽 블록 최대 열
+                copy_cols = min(ws_src.max_column, b2s - 3)
                 height    = min(src_e - src_s + 1, aud_e - aud_s + 1)
 
                 for i in range(height):
