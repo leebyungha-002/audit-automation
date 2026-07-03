@@ -202,8 +202,17 @@ def run_verify(audit_path: str, src_path: str,
             ws_src   = _read_xw_sheet(xw_src.sheets[src_sname])
             ws_audit = _read_xw_sheet(xw_audit.sheets[sname])
 
-            # 감사조서 표 위치 탐지 (왼쪽 4열만 스캔 → 오른쪽 계산내역 무시)
-            audit_tables = _find_tables(ws_audit, col_end=4)
+            # 1단계: 시트 상단 15행으로 b2s(천원단위 표 시작 열) 먼저 파악
+            prelim_b1e, prelim_b2s = _find_blocks_in_range(
+                ws_audit, 1, min(15, ws_audit.max_row))
+            if prelim_b2s is None:
+                log(f"  [{sname:>4}] 블록 구분 열 미발견 — 건너뜀")
+                continue
+
+            # 2단계: 천원단위 블록 열 기준으로 감사조서 표 위치 탐지
+            #        (왼쪽 빈 영역·오른쪽 계산내역 모두 무시)
+            scan_end = min(prelim_b2s + 6, ws_audit.max_column)
+            audit_tables = _find_tables(ws_audit, col_start=prelim_b2s, col_end=scan_end)
             src_tables   = _find_tables(ws_src)
 
             if len(src_tables) != len(audit_tables):
@@ -212,7 +221,7 @@ def run_verify(audit_path: str, src_path: str,
             filled = ok = diff_s = diff_b = 0
 
             for (src_s, src_e), (aud_s, aud_e) in zip(src_tables, audit_tables):
-                # 이 표의 행 범위 안에서 블록 경계 탐지 (표마다 다른 열 너비 대응)
+                # 3단계: 표별 행 범위 안에서 정밀 블록 경계 탐지 (표마다 다른 열 너비 대응)
                 b1e, b2s = _find_blocks_in_range(ws_audit, aud_s, aud_e)
                 if b1e is None:
                     log(f"  [{sname:>4}] 표({aud_s}~{aud_e}행) 블록 구분 미발견 — 건너뜀")
