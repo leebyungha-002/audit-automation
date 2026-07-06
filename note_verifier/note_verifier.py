@@ -161,6 +161,56 @@ def _find_tables(ws: SheetData, col_start=1, col_end=None, min_cols=1) -> list:
     return tables
 
 
+def _has_border(xw_sheet, row_start: int, row_end: int,
+                col_start: int, col_end: int) -> bool:
+    """
+    지정 범위 안에 Excel 셀 테두리가 하나라도 있으면 True.
+    border_id: 7=left 8=top 9=bottom 10=right 11=inside_v 12=inside_h
+    xlLineStyleNone = -4142
+    """
+    col_scan = min(col_end, col_start + 10)
+    try:
+        rng = xw_sheet.range((row_start, col_start), (row_end, col_scan))
+        for bid in (9, 12, 8, 10, 11, 7):
+            if rng.api.Borders(bid).LineStyle != -4142:
+                return True
+        return False
+    except Exception:
+        return True
+
+
+def _filter_src_tables(xw_sheet, ws: SheetData, tables: list) -> list:
+    """
+    소스 표 후보에서 실제 데이터 표가 아닌 제목·설명 블록을 제거.
+    전략:
+      1) border 적응형: 시트 내 표에 border가 하나라도 있으면 border 없는 표를 제거.
+      2) border 없는 파일(border=0개): 숫자 셀이 1개 이상 있는 표만 통과.
+    이 두 단계로 순수 텍스트 제목 행을 제거하고 실제 데이터 표만 남긴다.
+    """
+    if not tables:
+        return tables
+
+    # border 확인
+    border_flags = [_has_border(xw_sheet, t[0], t[1], 1, ws.max_column) for t in tables]
+    any_border = any(border_flags)
+
+    if any_border:
+        # border가 존재하는 파일: border 없는 블록 제거
+        return [t for t, b in zip(tables, border_flags) if b]
+    else:
+        # border 없는 파일: 숫자 셀이 1개 이상 있는 표만 통과
+        result = []
+        for (ts, te) in tables:
+            has_num = any(
+                _is_num(ws.cell(r, c).value)
+                for r in range(ts, te + 1)
+                for c in range(1, ws.max_column + 1)
+            )
+            if has_num:
+                result.append((ts, te))
+        return result
+
+
 # ════════════════════════════════════════════════════════════════════
 # 메인 검증 함수
 # ════════════════════════════════════════════════════════════════════
@@ -227,6 +277,8 @@ def run_verify(audit_path: str, src_path: str,
             scan_end = min(prelim_b2s + 6, ws_audit.max_column)
             audit_tables = _find_tables(ws_audit, col_start=prelim_b2s, col_end=scan_end)
             src_tables   = _find_tables(ws_src, min_cols=2)
+            src_tables   = _filter_src_tables(
+                xw_src.sheets[src_sname], ws_src, src_tables)
 
             if len(src_tables) != len(audit_tables):
                 log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(audit_tables)}개 — 순서대로 매칭")
