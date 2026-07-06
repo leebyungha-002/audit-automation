@@ -126,10 +126,12 @@ def _find_blocks_in_range(ws: SheetData, row_start: int, row_end: int):
     return None, None
 
 
-def _find_tables(ws: SheetData, col_start=1, col_end=None) -> list:
+def _find_tables(ws: SheetData, col_start=1, col_end=None, min_cols=1) -> list:
     """
     빈 행으로 구분된 표 구간 목록 반환: [(row_start, row_end), ...]
     col_start~col_end 범위에 값이 있는 행을 '내용 있음'으로 판단.
+    min_cols: 표로 인정하려면 최소 이 개수의 열에 값이 있어야 함.
+              소스 탐지 시 2를 지정하면 열1만 있는 제목 행을 표에서 제외.
     """
     col_end = col_end or ws.max_column
     tables, in_table, t_start = [], False, None
@@ -145,6 +147,17 @@ def _find_tables(ws: SheetData, col_start=1, col_end=None) -> list:
             in_table = False
     if in_table:
         tables.append((t_start, ws.max_row))
+    if min_cols > 1:
+        filtered = []
+        for (ts, te) in tables:
+            cols_with_data = set()
+            for r in range(ts, te + 1):
+                for c in range(col_start, col_end + 1):
+                    if ws.cell(r, c).value is not None:
+                        cols_with_data.add(c)
+            if len(cols_with_data) >= min_cols:
+                filtered.append((ts, te))
+        return filtered
     return tables
 
 
@@ -213,7 +226,7 @@ def run_verify(audit_path: str, src_path: str,
             #        (왼쪽 빈 영역·오른쪽 계산내역 모두 무시)
             scan_end = min(prelim_b2s + 6, ws_audit.max_column)
             audit_tables = _find_tables(ws_audit, col_start=prelim_b2s, col_end=scan_end)
-            src_tables   = _find_tables(ws_src)
+            src_tables   = _find_tables(ws_src, min_cols=2)
 
             if len(src_tables) != len(audit_tables):
                 log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(audit_tables)}개 — 순서대로 매칭")
