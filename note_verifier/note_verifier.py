@@ -179,6 +179,23 @@ def _has_border(xw_sheet, row_start: int, row_end: int,
         return True
 
 
+def _trim_table_start(ws: SheetData, ts: int, te: int,
+                      min_cols: int = 2,
+                      col_start: int = 1, col_end: int = None) -> int:
+    """
+    블록(ts~te) 내에서 처음으로 min_cols개 이상의 열에 값이 있는 행 번호를 반환.
+    선두의 단일열 설명·단위 행(예: '<당기말>', '(단위:천원)')을 건너뛰어
+    실제 표 헤더가 시작되는 행을 찾는다.
+    """
+    col_end = col_end or ws.max_column
+    for r in range(ts, te + 1):
+        count = sum(1 for c in range(col_start, col_end + 1)
+                    if ws.cell(r, c).value is not None)
+        if count >= min_cols:
+            return r
+    return ts
+
+
 def _filter_src_tables(xw_sheet, ws: SheetData, tables: list) -> list:
     """
     소스 표 후보에서 실제 데이터 표가 아닌 제목·설명 블록을 제거.
@@ -276,9 +293,20 @@ def run_verify(audit_path: str, src_path: str,
             #        (왼쪽 빈 영역·오른쪽 계산내역 모두 무시)
             scan_end = min(prelim_b2s + 6, ws_audit.max_column)
             audit_tables = _find_tables(ws_audit, col_start=prelim_b2s, col_end=scan_end)
+            # 감사조서 표 선두의 단위·설명 행(단일열) 제거: 오른쪽 블록 2열 이상인 첫 행부터
+            audit_tables = [(_trim_table_start(ws_audit, ts, te,
+                                               min_cols=2,
+                                               col_start=prelim_b2s,
+                                               col_end=scan_end), te)
+                            for ts, te in audit_tables]
+
             src_tables   = _find_tables(ws_src, min_cols=2)
             src_tables   = _filter_src_tables(
                 xw_src.sheets[src_sname], ws_src, src_tables)
+            # 소스 표 선두의 단위·설명 행 제거: 전체 열에서 3열 이상인 첫 행부터
+            # (min_cols=3: '(단위:천원)'이 2열에 있어도 skip)
+            src_tables   = [(_trim_table_start(ws_src, ts, te, min_cols=3), te)
+                            for ts, te in src_tables]
 
             if len(src_tables) != len(audit_tables):
                 log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(audit_tables)}개 — 순서대로 매칭")
@@ -303,6 +331,10 @@ def run_verify(audit_path: str, src_path: str,
 
                     for c in range(1, copy_cols + 1):
                         src_v = ws_src.cell(src_r, c).value
+
+                        # bool 값은 복사 안 함 (TRUE/FALSE가 감사조서에 쓰이는 것 방지)
+                        if isinstance(src_v, bool):
+                            src_v = None
 
                         # ── 왼쪽 블록에 덮어쓰기 (라벨 포함) ──────────
                         write_ops.append((sname, audit_r, c, src_v))

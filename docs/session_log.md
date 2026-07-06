@@ -133,3 +133,26 @@
 4. sejoong / kyungnam mapping_list 작성 → data_injector 연동
 
 ---
+
+## 2026-07-06
+
+**완료 작업**:
+- note_verifier 표 인식 개선 (2가지 버그 수정)
+  1. 표 선두 단위·설명 행 제거: `_trim_table_start()` 함수 추가
+     - 소스(정산표): min_cols=3 — `"(1) 보고기간..."`, `"<당기말>"` 등 skip → 헤더 행부터 시작
+     - 감사조서: min_cols=2, 오른쪽 블록 열 기준 — `"(단위:천원)"` 단일열 행 skip
+     - 결과: src_s/aud_s가 헤더 행 기준으로 매칭 → 1행 오프셋 오류 해결
+  2. bool 값 복사 방지: 정산표 TRUE/FALSE 셀 → None으로 변환 (감사조서에 TRUE/FALSE 쓰이는 것 방지)
+
+**변경 파일**:
+- `note_verifier/note_verifier.py`: `_trim_table_start()` 추가, `run_verify()` trim 적용, bool 필터
+
+**미해결 이슈**:
+- 실제 파일로 결과 확인 미완료 (런처앱 실행 전 세션 종료)
+
+**다음 할 일**:
+1. 런처앱 실행 → 주석 검증(sejoong) 실행 → 결과 확인
+2. 표 복사 오프셋·내용 정확성 확인 후 필요 시 추가 보정
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
+
+---
