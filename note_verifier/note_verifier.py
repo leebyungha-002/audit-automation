@@ -196,6 +196,28 @@ def _trim_table_start(ws: SheetData, ts: int, te: int,
     return ts
 
 
+def _match_left(lefts: list, rights: list) -> list:
+    """
+    오른쪽 블록 표(rights)에 대응하는 왼쪽 블록 표(lefts)를 행 시작 위치 근접도로 1:1 매칭.
+    매칭 실패 시 오른쪽 표 범위를 그대로 반환(fallback).
+    """
+    used, result = set(), []
+    for rs, re in rights:
+        best_i, best_d = None, float('inf')
+        for i, (ls, le) in enumerate(lefts):
+            if i in used:
+                continue
+            d = abs(ls - rs)
+            if d < best_d:
+                best_d, best_i = d, i
+        if best_i is not None and best_d <= 10:
+            used.add(best_i)
+            result.append(lefts[best_i])
+        else:
+            result.append((rs, re))
+    return result
+
+
 def _filter_src_tables(xw_sheet, ws: SheetData, tables: list) -> list:
     """
     소스 표 후보에서 실제 데이터 표가 아닌 제목·설명 블록을 제거.
@@ -289,57 +311,61 @@ def run_verify(audit_path: str, src_path: str,
                 log(f"  [{sname:>4}] 블록 구분 열 미발견 — 건너뜀")
                 continue
 
-            # 2단계: 천원단위 블록 열 기준으로 감사조서 표 위치 탐지
-            #        (왼쪽 빈 영역·오른쪽 계산내역 모두 무시)
+            # 2단계: 오른쪽 블록 기준 감사조서 표 위치 탐지 (비교 위치)
             scan_end = min(prelim_b2s + 6, ws_audit.max_column)
             audit_tables = _find_tables(ws_audit, col_start=prelim_b2s, col_end=scan_end)
-            # 감사조서 표 선두의 단위·설명 행(단일열) 제거: 오른쪽 블록 2열 이상인 첫 행부터
             audit_tables = [(_trim_table_start(ws_audit, ts, te,
                                                min_cols=2,
                                                col_start=prelim_b2s,
                                                col_end=scan_end), te)
                             for ts, te in audit_tables]
 
-            src_tables   = _find_tables(ws_src, min_cols=2)
-            src_tables   = _filter_src_tables(
+            # 3단계: 왼쪽 블록 표 탐지 (쓰기 위치)
+            # 오른쪽 블록은 <당기말>/<전기말> 라벨 행이 앞에 있어 1행 늦게 시작하므로
+            # 왼쪽 블록을 별도로 탐지해 쓰기 위치(write_r)와 비교 위치(right_r)를 분리한다.
+            left_col_end = min(prelim_b2s - 3, ws_audit.max_column)
+            left_raw     = _find_tables(ws_audit, col_start=1,
+                                        col_end=left_col_end, min_cols=2)
+            left_trimmed = [(_trim_table_start(ws_audit, ts, te, min_cols=2,
+                                               col_start=1, col_end=left_col_end), te)
+                            for ts, te in left_raw]
+            paired_left  = _match_left(left_trimmed, audit_tables)
+
+            src_tables = _find_tables(ws_src, min_cols=2)
+            src_tables = _filter_src_tables(
                 xw_src.sheets[src_sname], ws_src, src_tables)
-            # 소스 표 선두의 단위·설명 행 제거: 전체 열에서 3열 이상인 첫 행부터
-            # (min_cols=3: '(단위:천원)'이 2열에 있어도 skip)
-            src_tables   = [(_trim_table_start(ws_src, ts, te, min_cols=3), te)
-                            for ts, te in src_tables]
+            src_tables = [(_trim_table_start(ws_src, ts, te, min_cols=3), te)
+                          for ts, te in src_tables]
 
             if len(src_tables) != len(audit_tables):
                 log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(audit_tables)}개 — 순서대로 매칭")
 
             filled = ok = diff_s = diff_b = 0
 
-            for (src_s, src_e), (aud_s, aud_e) in zip(src_tables, audit_tables):
-                # 3단계: 표별 행 범위 안에서 b2s 정밀 탐지
-                #        (왼쪽 블록이 비어있어도 b2s는 정확히 잡힘)
+            for (src_s, src_e), (aud_s, aud_e), (left_s, left_e) in zip(
+                    src_tables, audit_tables, paired_left):
+                # 표별 b2s 정밀 탐지
                 _, b2s = _find_blocks_in_range(ws_audit, aud_s, aud_e)
                 if b2s is None:
-                    b2s = prelim_b2s  # 탐지 실패 시 예비값 사용
+                    b2s = prelim_b2s
 
-                # 복사 열 수: 소스 열 수와 (b2s - 3)의 최솟값
-                # b2s - 3 = b2s - 빈열2개 - 색깔열1개 → 왼쪽 블록 최대 열
                 copy_cols = min(ws_src.max_column, b2s - 3)
-                height    = min(src_e - src_s + 1, aud_e - aud_s + 1)
+                height    = min(src_e  - src_s  + 1,
+                                aud_e  - aud_s  + 1,
+                                left_e - left_s + 1)
 
                 for i in range(height):
-                    src_r   = src_s + i
-                    audit_r = aud_s + i
+                    src_r   = src_s  + i
+                    write_r = left_s + i   # 왼쪽 블록 쓰기 위치
+                    right_r = aud_s  + i   # 오른쪽 블록 비교 위치
 
                     for c in range(1, copy_cols + 1):
                         src_v = ws_src.cell(src_r, c).value
-
-                        # bool 값은 복사 안 함 (TRUE/FALSE가 감사조서에 쓰이는 것 방지)
                         if isinstance(src_v, bool):
                             src_v = None
 
-                        # ── 왼쪽 블록에 덮어쓰기 (라벨 포함) ──────────
-                        write_ops.append((sname, audit_r, c, src_v))
+                        write_ops.append((sname, write_r, c, src_v))
 
-                        # ── 숫자인 경우에만 오른쪽 블록과 비교 ─────────
                         if not _is_num(src_v):
                             continue
 
@@ -348,11 +374,10 @@ def run_verify(audit_path: str, src_path: str,
                         if rc > ws_audit.max_column:
                             continue
 
-                        audit_raw = ws_audit.cell(audit_r, rc).value
-
+                        audit_raw = ws_audit.cell(right_r, rc).value
                         if not _is_num(audit_raw):
                             continue
-                        audit_v = audit_raw  # 감사조서 오른쪽 블록은 항상 천원 단위
+                        audit_v = audit_raw
 
                         diff = abs(fill_v - audit_v)
                         if diff <= THRESH_SMALL:
@@ -365,7 +390,7 @@ def run_verify(audit_path: str, src_path: str,
                             summary.append((sname, str(lbl).strip(),
                                             fill_v, audit_v, fill_v - audit_v))
 
-                        color_ops.append((sname, audit_r, c, color))
+                        color_ops.append((sname, write_r, c, color))
                         filled += 1
 
             log(f"  [{sname:>4}] 채움 {filled:3}건  ✓{ok}  소차이 {diff_s}  큰차이 {diff_b}")
