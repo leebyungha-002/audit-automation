@@ -218,6 +218,17 @@ def _trim_table_start(ws: SheetData, ts: int, te: int,
     return ts
 
 
+def _first_numeric_row(ws: SheetData, row_start: int, row_end: int,
+                       col_start: int, col_end: int) -> int:
+    """지정 범위에서 숫자 셀이 처음 나타나는 행 반환. 없으면 row_start 반환."""
+    col_end = min(col_end, ws.max_column)
+    for r in range(row_start, row_end + 1):
+        for c in range(col_start, col_end + 1):
+            if _is_num(ws.cell(r, c).value):
+                return r
+    return row_start
+
+
 def _match_left(lefts: list, rights: list) -> list:
     """
     오른쪽 블록 표(rights)에 대응하는 왼쪽 블록 표(lefts)를 행 시작 위치 근접도로 1:1 매칭.
@@ -415,14 +426,21 @@ def run_verify(audit_path: str, src_path: str,
                     b2s = prelim_b2s
 
                 copy_cols = min(ws_src.max_column, b2s - 3)
-                height    = min(src_e  - src_s  + 1,
-                                aud_e  - aud_s  + 1,
-                                left_e - left_s + 1)
 
-                for i in range(height):
-                    src_r   = src_s  + i
-                    write_r = left_s + i   # 왼쪽 블록 쓰기 위치
-                    right_r = aud_s  + i   # 오른쪽 블록 비교 위치
+                # 첫 숫자 행 기준 정렬: 헤더 행 수 차이로 인한 오프셋 제거
+                src_num_s = _first_numeric_row(
+                    ws_src, src_s, src_e, 1, ws_src.max_column)
+                aud_num_s = _first_numeric_row(
+                    ws_audit, aud_s, aud_e, b2s,
+                    min(b2s + 10, ws_audit.max_column))
+                data_height = min(src_e - src_num_s + 1, aud_e - aud_num_s + 1)
+
+                log(f"  [{sname:>4}]   → src_num={src_num_s} aud_num={aud_num_s} h={data_height}")
+
+                for i in range(data_height):
+                    src_r   = src_num_s + i
+                    right_r = aud_num_s + i   # 오른쪽 블록 비교 위치
+                    write_r = right_r          # 왼쪽 블록: 감사조서 동일 행에 쓰기
 
                     for c in range(1, copy_cols + 1):
                         src_v = ws_src.cell(src_r, c).value
