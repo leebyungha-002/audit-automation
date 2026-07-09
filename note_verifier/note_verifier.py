@@ -276,11 +276,29 @@ def _filter_src_tables(xw_sheet, ws: SheetData, tables: list) -> list:
 # 메인 검증 함수
 # ════════════════════════════════════════════════════════════════════
 
+def _detect_unit(xw_sheet, ws: SheetData) -> float:
+    """
+    소스 시트 숫자 중간값이 10,000,000 초과이면 원 단위(→ 0.001 반환),
+    그 이하면 천원 단위(→ 1.0 반환).
+    """
+    nums = []
+    for r in range(1, min(ws.max_row + 1, 200)):
+        for c in range(1, min(ws.max_column + 1, 30)):
+            v = ws.cell(r, c).value
+            if _is_num(v) and v > 0:
+                nums.append(v)
+    if not nums:
+        return 1.0
+    nums.sort()
+    median = nums[len(nums) // 2]
+    return 0.001 if median > 10_000_000 else 1.0
+
+
 def run_verify(audit_path: str, src_path: str,
                src_label: str, unit_scale: float, log,
                progress=None, status=None) -> str:
     """
-    unit_scale: 1.0(천원 그대로) or 0.001(원→천원 변환)
+    unit_scale: 1.0(천원 그대로) or 0.001(원→천원 변환) or None(자동 감지)
     반환: 저장된 파일 경로
     """
     log(f"감사조서  : {os.path.basename(audit_path)}")
@@ -295,6 +313,18 @@ def run_verify(audit_path: str, src_path: str,
     try:
         if status: status(f"소스 파일 로드 중...  ({os.path.basename(src_path)})")
         xw_src = app.books.open(src_path)
+
+        # 단위 자동 감지 (unit_scale == 1.0 이어도 덮어씀)
+        if status: status("소스 단위 자동 감지 중...")
+        _first_num_sheet = next(
+            (s for s in xw_src.sheets if _is_note_sheet(s.name)), None)
+        if _first_num_sheet is not None:
+            _sample = _read_xw_sheet(_first_num_sheet)
+            auto_scale = _detect_unit(_first_num_sheet, _sample)
+            if auto_scale != unit_scale:
+                unit_scale = auto_scale
+                label_unit = "원 → 천원 (자동 감지)" if unit_scale == 0.001 else "천원 그대로 (자동 감지)"
+                log(f"단위 자동 감지 : {label_unit}")
 
         if status: status(f"감사조서 로드 중...  ({os.path.basename(audit_path)})")
         xw_audit = app.books.open(audit_path)
@@ -330,6 +360,10 @@ def run_verify(audit_path: str, src_path: str,
             prelim_b1e, prelim_b2s = _find_blocks_in_range(
                 ws_audit, 1, min(15, ws_audit.max_row))
             if prelim_b2s is None:
+                # 폴백: 전체 행 스캔
+                prelim_b1e, prelim_b2s = _find_blocks_in_range(
+                    ws_audit, 1, ws_audit.max_row)
+            if prelim_b2s is None:
                 log(f"  [{sname:>4}] 블록 구분 열 미발견 — 건너뜀")
                 continue
 
@@ -340,6 +374,15 @@ def run_verify(audit_path: str, src_path: str,
                                                      col_start=prelim_b2s,
                                                      col_end=scan_end), te)
                             for ts, te in audit_tables]
+            # 숫자 없는 1~2행 스퍼리어스 표 제거 (총괄표 링크 등)
+            audit_tables = [
+                (ts, te) for ts, te in audit_tables
+                if te - ts + 1 > 2 or any(
+                    _is_num(ws_audit.cell(r, c).value)
+                    for r in range(ts, te + 1)
+                    for c in range(prelim_b2s, scan_end + 1)
+                )
+            ]
 
             # 3단계: 왼쪽 블록 표 탐지 (쓰기 위치)
             # 오른쪽 블록은 <당기말>/<전기말> 라벨 행이 앞에 있어 1행 늦게 시작하므로
