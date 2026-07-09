@@ -287,11 +287,45 @@ def _filter_src_tables(xw_sheet, ws: SheetData, tables: list) -> list:
 # 메인 검증 함수
 # ════════════════════════════════════════════════════════════════════
 
+def _count_trailing_commas(fmt: str) -> int:
+    """Excel 서식문자열 첫 섹션 끝의 쉼표 수 반환 (쉼표 1개 = 표시값 ÷1,000)."""
+    if not fmt:
+        return 0
+    first = fmt.split(';')[0].rstrip()
+    count = 0
+    for ch in reversed(first):
+        if ch == ',':
+            count += 1
+        else:
+            break
+    return count
+
+
 def _detect_unit(xw_sheet, ws: SheetData) -> float:
     """
-    소스 시트 숫자 중간값이 10,000,000 초과이면 원 단위(→ 0.001 반환),
-    그 이하면 천원 단위(→ 1.0 반환).
+    소스 시트 단위 자동 감지.
+    1) 값 열(c≥2) 첫 금액 셀의 NumberFormat 끝 쉼표 확인:
+       끝 쉼표 있음 → #,###, 계열 서식 → 실제 원단위 저장 → 0.001 반환.
+    2) 폴백: 숫자 중간값 > 10,000,000 이면 원단위 → 0.001 반환.
     """
+    # 1) 서식 기반 감지 (xlwings COM 호출 1회)
+    try:
+        found_fmt = False
+        for r in range(1, min(ws.max_row + 1, 150)):
+            if found_fmt:
+                break
+            for c in range(2, min(ws.max_column + 1, 20)):
+                v = ws.cell(r, c).value
+                if _is_num(v) and abs(v) > 1_000:
+                    fmt = xw_sheet.range((r, c)).number_format or ''
+                    if _count_trailing_commas(fmt) >= 1:
+                        return 0.001   # 원단위 저장 / 천원 표시 서식
+                    found_fmt = True   # 서식 확인됐으나 끝 쉼표 없음 → 폴백
+                    break
+    except Exception:
+        pass
+
+    # 2) 중간값 기반 폴백
     nums = []
     for r in range(1, min(ws.max_row + 1, 200)):
         for c in range(1, min(ws.max_column + 1, 30)):
