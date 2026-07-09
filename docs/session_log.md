@@ -175,3 +175,28 @@
 3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
 
 ---
+
+## 2026-07-09 (2차)
+
+**완료 작업**:
+- note_verifier — 첫 숫자 행 기준 정렬로 row 오프셋 오류 수정
+  - `_first_numeric_row()` 헬퍼 추가: 지정 범위에서 첫 숫자 셀 행 반환
+  - 비교 루프 변경: `src_r = src_s + i`, `right_r = aud_s + i` → `src_r = src_num_s + i`, `right_r = aud_num_s + i`
+  - `write_r = right_r` (감사조서 시트 동일 행에 왼쪽 블록 쓰기)
+  - 진단 로그: `src_num={} aud_num={} h={}` 출력으로 정렬 결과 확인 가능
+  - 근본 원인: aud_s=헤더 행, src_num_s=첫 데이터 행으로 오프셋 불일치 → 모든 비교 어긋남
+
+**변경 파일**:
+- `note_verifier/note_verifier.py`: `_first_numeric_row()` 추가, 비교 루프 수정
+
+**미해결 이슈**:
+- 실제 파일 테스트 미완료
+- 시트 1,2,3: `감사표:[]` (스퍼리어스 필터로 제거됨) — 테스트 후 재확인
+- 시트 8,19,27: 블록 구분 열 미발견 — 단일 블록 시트 가능성
+
+**다음 할 일**:
+1. 런처앱 실행 → 주석 검증(sejoong) 실행 → 소차이/큰차이 분포 재확인
+2. 잔여 이슈(시트 1-3 감사표 빈 배열, 시트 8/19/27 블록 미발견) 로그 확인 후 추가 수정
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
+
+---
