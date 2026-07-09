@@ -179,6 +179,28 @@ def _has_border(xw_sheet, row_start: int, row_end: int,
         return True
 
 
+def _trim_right_table_start(ws: SheetData, ts: int, te: int,
+                            col_start: int, col_end: int) -> int:
+    """
+    오른쪽 블록 표 선두에서 <당기말>/<전기말> 형식의 꺾쇠 라벨 행만 건너뜁니다.
+    금융자산, 구분 등 일반 헤더 행은 그대로 유지합니다.
+    """
+    angle_re = re.compile(r'^\s*<[^>]+>\s*$')
+    col_end = min(col_end, ws.max_column)
+    for r in range(ts, te + 1):
+        non_none = [ws.cell(r, c).value
+                    for c in range(col_start, col_end + 1)
+                    if ws.cell(r, c).value is not None]
+        if not non_none:
+            continue
+        if (len(non_none) == 1
+                and isinstance(non_none[0], str)
+                and angle_re.match(str(non_none[0]))):
+            continue
+        return r
+    return ts
+
+
 def _trim_table_start(ws: SheetData, ts: int, te: int,
                       min_cols: int = 2,
                       col_start: int = 1, col_end: int = None) -> int:
@@ -314,10 +336,9 @@ def run_verify(audit_path: str, src_path: str,
             # 2단계: 오른쪽 블록 기준 감사조서 표 위치 탐지 (비교 위치)
             scan_end = min(prelim_b2s + 6, ws_audit.max_column)
             audit_tables = _find_tables(ws_audit, col_start=prelim_b2s, col_end=scan_end)
-            audit_tables = [(_trim_table_start(ws_audit, ts, te,
-                                               min_cols=2,
-                                               col_start=prelim_b2s,
-                                               col_end=scan_end), te)
+            audit_tables = [(_trim_right_table_start(ws_audit, ts, te,
+                                                     col_start=prelim_b2s,
+                                                     col_end=scan_end), te)
                             for ts, te in audit_tables]
 
             # 3단계: 왼쪽 블록 표 탐지 (쓰기 위치)
@@ -337,6 +358,7 @@ def run_verify(audit_path: str, src_path: str,
             src_tables = [(_trim_table_start(ws_src, ts, te, min_cols=3), te)
                           for ts, te in src_tables]
 
+            log(f"  [{sname:>4}] 소스표:{src_tables} | 감사표:{audit_tables} | 좌측표:{left_trimmed}")
             if len(src_tables) != len(audit_tables):
                 log(f"  [{sname:>4}] 경고: 소스 표 {len(src_tables)}개 ≠ 감사조서 표 {len(audit_tables)}개 — 순서대로 매칭")
 
