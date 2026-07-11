@@ -481,12 +481,13 @@ def run_verify(audit_path: str, src_path: str,
                         if isinstance(src_v, bool):
                             src_v = None
 
-                        write_ops.append((sname, write_r, c, src_v))
+                        write_v = round(src_v * unit_scale) if _is_num(src_v) else src_v
+                        write_ops.append((sname, write_r, c, write_v))
 
                         if not _is_num(src_v):
                             continue
 
-                        fill_v = round(src_v * unit_scale)
+                        fill_v = write_v  # unit_scale 이미 적용됨
                         rc = b2s + (c - 1)
                         if rc > ws_audit.max_column:
                             continue
