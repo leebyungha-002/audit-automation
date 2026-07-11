@@ -301,41 +301,40 @@ def _count_trailing_commas(fmt: str) -> int:
     return count
 
 
-def _detect_unit(xw_sheet, ws: SheetData) -> float:
+def _detect_unit_all(xw_book) -> float:
     """
-    소스 시트 단위 자동 감지.
-    1) 값 열(c≥2) 첫 금액 셀의 NumberFormat 끝 쉼표 확인:
-       끝 쉼표 있음 → #,###, 계열 서식 → 실제 원단위 저장 → 0.001 반환.
-    2) 폴백: 숫자 중간값 > 10,000,000 이면 원단위 → 0.001 반환.
+    소스 파일의 모든 주석 시트를 스캔하여 원/천원 단위 자동 감지.
+    1) 값 > 1,000,000,000 (10억) 이 하나라도 있으면 즉시 원단위 → 0.001 반환.
+    2) NumberFormat 끝 쉼표가 있으면 즉시 원단위 → 0.001 반환.
+    3) 폴백: 수집한 양수 숫자 중간값 > 10,000,000 이면 원단위 → 0.001 반환.
     """
-    # 1) 서식 기반 감지 (xlwings COM 호출 1회)
-    try:
-        found_fmt = False
-        for r in range(1, min(ws.max_row + 1, 150)):
-            if found_fmt:
-                break
-            for c in range(2, min(ws.max_column + 1, 20)):
-                v = ws.cell(r, c).value
-                if _is_num(v) and abs(v) > 1_000:
-                    fmt = xw_sheet.range((r, c)).number_format or ''
-                    if _count_trailing_commas(fmt) >= 1:
-                        return 0.001   # 원단위 저장 / 천원 표시 서식
-                    found_fmt = True   # 서식 확인됐으나 끝 쉼표 없음 → 폴백
-                    break
-    except Exception:
-        pass
-
-    # 2) 중간값 기반 폴백
-    nums = []
-    for r in range(1, min(ws.max_row + 1, 200)):
-        for c in range(1, min(ws.max_column + 1, 30)):
-            v = ws.cell(r, c).value
-            if _is_num(v) and v > 0:
-                nums.append(v)
-    if not nums:
+    all_nums = []
+    for xw_s in xw_book.sheets:
+        if not _is_note_sheet(xw_s.name):
+            continue
+        ws_s = _read_xw_sheet(xw_s)
+        checked_fmt = False
+        for r in range(1, min(ws_s.max_row + 1, 200)):
+            for c in range(2, min(ws_s.max_column + 1, 20)):
+                v = ws_s.cell(r, c).value
+                if not _is_num(v):
+                    continue
+                if abs(v) > 1_000_000_000:   # 10억 초과 → 무조건 원단위
+                    return 0.001
+                if not checked_fmt and abs(v) > 1_000:
+                    try:
+                        fmt = xw_s.range((r, c)).number_format or ''
+                        if _count_trailing_commas(fmt) >= 1:
+                            return 0.001
+                    except Exception:
+                        pass
+                    checked_fmt = True
+                if v > 0:
+                    all_nums.append(v)
+    if not all_nums:
         return 1.0
-    nums.sort()
-    median = nums[len(nums) // 2]
+    all_nums.sort()
+    median = all_nums[len(all_nums) // 2]
     return 0.001 if median > 10_000_000 else 1.0
 
 
@@ -359,17 +358,11 @@ def run_verify(audit_path: str, src_path: str,
         if status: status(f"소스 파일 로드 중...  ({os.path.basename(src_path)})")
         xw_src = app.books.open(src_path)
 
-        # 단위 자동 감지 (unit_scale == 1.0 이어도 덮어씀)
+        # 단위 자동 감지: 모든 주석 시트 스캔 (첫 시트만 보면 빈 시트에서 오감지 발생)
         if status: status("소스 단위 자동 감지 중...")
-        _first_num_sheet = next(
-            (s for s in xw_src.sheets if _is_note_sheet(s.name)), None)
-        if _first_num_sheet is not None:
-            _sample = _read_xw_sheet(_first_num_sheet)
-            auto_scale = _detect_unit(_first_num_sheet, _sample)
-            if auto_scale != unit_scale:
-                unit_scale = auto_scale
-                label_unit = "원 → 천원 (자동 감지)" if unit_scale == 0.001 else "천원 그대로 (자동 감지)"
-                log(f"단위 자동 감지 : {label_unit}")
+        auto_scale = _detect_unit_all(xw_src)
+        unit_scale = auto_scale
+        log(f"단위 자동 감지 : {'원 → 천원 (÷1,000)' if unit_scale == 0.001 else '천원 그대로'}")
 
         if status: status(f"감사조서 로드 중...  ({os.path.basename(audit_path)})")
         xw_audit = app.books.open(audit_path)
