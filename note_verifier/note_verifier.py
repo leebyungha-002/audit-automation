@@ -452,7 +452,11 @@ def run_verify(audit_path: str, src_path: str,
                 if b2s is None:
                     b2s = prelim_b2s
 
-                copy_cols = min(ws_src.max_column, b2s - 3)
+                src_b1e, _ = _find_blocks_in_range(ws_src, src_s, src_e)
+                if src_b1e is not None:
+                    copy_cols = min(src_b1e, b2s - 3)
+                else:
+                    copy_cols = min(ws_src.max_column, b2s - 3)
 
                 # 첫 숫자 행 기준 정렬: 헤더 행 수 차이로 인한 오프셋 제거
                 src_num_s = _first_numeric_row(
