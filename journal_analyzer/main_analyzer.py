@@ -1030,7 +1030,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     for p in params_list:
         acct = _nv(p.get('계정명', p.get('계정과목', '')))
         gubun = _nv(p.get('구분', ''))
-        if acct and gubun in ('차변', '대변'):
+        if acct and gubun in ('차변', '대변', '자산', '부채'):
             targets.append((acct, gubun))
 
     if not targets:
@@ -1048,7 +1048,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
                                 drow = tdf.iloc[j]
                                 a = str(drow.iloc[0]).strip() if pd.notna(drow.iloc[0]) else ''
                                 g = str(drow.iloc[1]).strip() if len(drow) > 1 and pd.notna(drow.iloc[1]) else ''
-                                if a and a not in ('nan', '') and g in ('차변', '대변'):
+                                if a and a not in ('nan', '') and g in ('차변', '대변', '자산', '부채'):
                                     targets.append((a, g))
                             break
                     break
@@ -1101,7 +1101,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     all_results = {}
 
     for acct_name, gubun in targets:
-        is_asset = (gubun == '차변')
+        is_asset = gubun in ('차변', '자산')
 
         prev_sheet = _find_prev_sheet(acct_name)
         prev_balances = _load_prev_balances(prev_sheet) if prev_sheet else {}
