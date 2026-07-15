@@ -1367,6 +1367,60 @@ def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
 
 
 
+# ── 23. 계정별 상세거래내역 ──────────────────────────────────────────────────
+
+def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> dict:
+    """23. 계정별 상세거래내역: 계정과목별 건별 전표 내역 추출 (차변/대변/전체 선택)."""
+    targets = []
+    for p in params_list:
+        acct = _nv(p.get('계정과목', p.get('계정명', '')))
+        col_f = _nv(p.get('금액 유형', p.get('금액유형', p.get('차대구분', ''))),
+                    blank_vals=('nan', 'none', ''))
+        if acct:
+            targets.append((acct, col_f))
+
+    if not targets:
+        return {'계정별상세내역': pd.DataFrame({'안내': ['파라미터에 계정과목이 없습니다.']})}
+
+    all_results = {}
+    for acct_name, col_f in targets:
+        mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
+        sub = df[mask].copy()
+
+        if sub.empty:
+            continue
+
+        # 차변/대변 필터
+        col_f_norm = col_f.replace(' ', '')
+        if col_f_norm in ('차변', '차변만'):
+            sub = sub[sub[COL_DEBIT] > 0]
+        elif col_f_norm in ('대변', '대변만'):
+            sub = sub[sub[COL_CREDIT] > 0]
+        # '차변대변모두' 또는 공백이면 전체 유지
+
+        if sub.empty:
+            continue
+
+        # 날짜순 정렬
+        if COL_DATE in sub.columns:
+            sub = sub.sort_values(COL_DATE)
+
+        # 계정명 기준 시트명 생성 (중복 시 _2, _3 …)
+        base = _safe_sheet(f'상세_{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct_name)[:18]}')
+        sheet_name = base
+        suffix = 2
+        while sheet_name in all_results:
+            sheet_name = f'{base[:28]}_{suffix}'
+            suffix += 1
+
+        all_results[sheet_name] = sub.reset_index(drop=True)
+
+    if not all_results:
+        return {'계정별상세내역': pd.DataFrame({'안내': ['해당 계정의 전표 내역이 없습니다.']})}
+
+    return all_results
+
+
 # =============================================================================
 # 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
@@ -1392,6 +1446,7 @@ ANALYSIS_REGISTRY: dict = {
     20: ('잔액증감분석',    analyze_balance_movement),
     21: ('총계정원장',      analyze_general_ledger),
     22: ('은행조회서완전성', analyze_bank_confirmation),
+    23: ('계정별상세내역',  analyze_account_transaction_detail),
 }
 
 
