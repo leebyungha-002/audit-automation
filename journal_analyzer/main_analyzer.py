@@ -1263,7 +1263,7 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
         result = pd.concat([result, pd.DataFrame([total])], ignore_index=True)
 
         prefix = f'{gubun}_' if gubun else ''
-        sname  = _safe_sheet(f'{prefix}{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct)[:22]}')
+        sname  = _safe_sheet(f'총계정원장_{prefix}{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct)[:18]}')
         out[sname] = result
 
     return out or {'총계정원장': pd.DataFrame({'결과': ['분석 대상 없음']})}
@@ -1405,8 +1405,12 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
         if COL_DATE in sub.columns:
             sub = sub.sort_values(COL_DATE)
 
-        # 계정명 기준 시트명 생성 (중복 시 _2, _3 …)
-        base = _safe_sheet(f'상세_{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct_name)[:18]}')
+        # 시트명: 상세거래_계정명_차변/대변/차변대변모두
+        col_f_label = '차변' if col_f_norm in ('차변', '차변만') \
+                      else '대변' if col_f_norm in ('대변', '대변만') \
+                      else '차변대변모두'
+        acct_short = re.sub(r'[^가-힣a-zA-Z0-9]', '', acct_name)[:12]
+        base = _safe_sheet(f'상세거래_{acct_short}_{col_f_label}')
         sheet_name = base
         suffix = 2
         while sheet_name in all_results:
