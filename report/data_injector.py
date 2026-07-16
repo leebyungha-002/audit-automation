@@ -28,6 +28,12 @@ except ImportError:
     _PILLOW_OK = False
     print('[경고] Pillow 미설치 — ws._images 처리 불가. pip install Pillow')
 
+try:
+    import xlwings as xw
+    _XLWINGS_OK = True
+except ImportError:
+    _XLWINGS_OK = False
+
 # Windows 콘솔 한글·특수문자 출력 보장
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
@@ -880,7 +886,7 @@ def main():
                 tgt_path = tgt_path_cache[tgt_kw]
             if tgt_path not in tgt_book_cache:
                 try:
-                    tgt_book_cache[tgt_path] = load_workbook(tgt_path, keep_links=False)
+                    tgt_book_cache[tgt_path] = load_workbook(tgt_path)
                 except Exception as e:
                     msg = f'대상 파일 오픈 실패: {e}'
                     print(f'    [오류] {msg}')
@@ -998,13 +1004,31 @@ def main():
 
     # ── 5. 결과 저장 ─────────────────────────────────────────────────────────
     print('\n─── 저장 ───')
+    saved_paths = []
     for tgt_path, wb in tgt_book_cache.items():
         out_path = updated_path(tgt_path)
         try:
             wb.save(out_path)
             print(f'  저장 완료: {os.path.relpath(out_path, company_dir)}')
+            saved_paths.append(out_path)
         except Exception as e:
             print(f'  [오류] 저장 실패 ({os.path.basename(tgt_path)}): {e}')
+
+    # ── 5-1. xlwings 재저장 (Named Range·Drawing 손상 복구) ──────────────────
+    if _XLWINGS_OK and saved_paths:
+        print('\n─── xlwings 재저장 (XML 정합성 복구) ───')
+        xl_app = xw.App(visible=False, add_book=False)
+        try:
+            for out_path in saved_paths:
+                try:
+                    wb_xw = xl_app.books.open(out_path)
+                    wb_xw.save()
+                    wb_xw.close()
+                    print(f'  재저장 완료: {os.path.basename(out_path)}')
+                except Exception as e:
+                    print(f'  [경고] xlwings 재저장 실패 ({os.path.basename(out_path)}): {e}')
+        finally:
+            xl_app.quit()
 
     # ── 6. win32com 후처리 (EMF/WMF 이미지) ─────────────────────────────────
     if win32com_pending:
