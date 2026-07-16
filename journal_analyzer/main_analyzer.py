@@ -640,12 +640,27 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
                      or '차변')
         if direction not in ('차변','대변'): direction = '차변'
         if not acct: continue
+
+        # 그룹기준열: 파라미터에서 읽고, 없으면 COL_JOURNAL_ID 사용
+        group_col_name = _nv(p.get('그룹기준열', ''), blank_vals=('nan', 'none', ''))
+        if group_col_name:
+            matched_col = next((c for c in df.columns
+                                if c.strip() == group_col_name
+                                or group_col_name in c), None)
+            if matched_col is None:
+                print(f'    [경고] 그룹기준열 "{group_col_name}" 컬럼 없음 → 전표번호로 대체')
+                group_col = COL_JOURNAL_ID
+            else:
+                group_col = matched_col
+        else:
+            group_col = COL_JOURNAL_ID
+
         tcol  = COL_DEBIT if direction == '차변' else COL_CREDIT
         mask  = _account_match_flexible(df[COL_ACCOUNT], acct) & (df[tcol] > 0)
         target = df[mask]
         if target.empty: continue
-        jids    = target[COL_JOURNAL_ID].unique()
-        related = df[df[COL_JOURNAL_ID].isin(jids)].copy()
+        jids    = target[group_col].unique()
+        related = df[df[group_col].isin(jids)].copy()
         # 지정 방향의 반대 측(상대계정) 금액만 집계
         counter_col = COL_CREDIT if direction == '차변' else COL_DEBIT
         sum_label   = '대변합계' if direction == '차변' else '차변합계'
