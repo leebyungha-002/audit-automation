@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 journal_analyzer/main_analyzer.py  v3
@@ -1443,6 +1443,59 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
     return all_results
 
 
+
+
+# -- 24. 리스완전성검토
+_LEASE_FILTER_MOD = None
+
+def _load_lease_filter():
+    global _LEASE_FILTER_MOD
+    if _LEASE_FILTER_MOD is not None:
+        return _LEASE_FILTER_MOD
+    try:
+        import importlib.util as _ilu
+        lf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'lease_analyzer', 'lease_filter.py')
+        spec = _ilu.spec_from_file_location('lease_filter', lf_path)
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _LEASE_FILTER_MOD = mod
+        return mod
+    except Exception as e:
+        print(f'    [경고] lease_filter 로드 실패: {e}')
+        return None
+
+
+_DEFAULT_LEASE_ACCOUNTS = ['임차료', '지급수수료', '차량유지비', '건물관리비', '렌탈']
+
+
+def analyze_lease_completeness(df, params_list):
+    """24. 리스완전성검토: K-IFRS 1116 리스 인식 대상 거래 완전성 검토."""
+    lf = _load_lease_filter()
+    if lf is None:
+        return {'리스후보목록': pd.DataFrame({'안내': ['lease_filter 모듈 로드 실패']})}
+    target_accounts = [_nv(p.get('계정과목', '')) for p in params_list
+                       if _nv(p.get('계정과목', ''))]
+    if not target_accounts:
+        target_accounts = _DEFAULT_LEASE_ACCOUNTS
+    mask = pd.Series(False, index=df.index)
+    for acct in target_accounts:
+        mask |= _account_match_flexible(df[COL_ACCOUNT], acct)
+    sub = df[mask].copy()
+    if sub.empty:
+        return {'리스후보목록': pd.DataFrame({'안내': ['해당 계정의 데이터가 없습니다.']})}
+    col_map = {}
+    if COL_ACCOUNT != '계정과목': col_map[COL_ACCOUNT] = '계정과목'
+    if COL_CLIENT  != '거래처'  : col_map[COL_CLIENT]  = '거래처'
+    if COL_DESC    != '적요'    : col_map[COL_DESC]    = '적요'
+    if COL_DEBIT   != '차변'    : col_map[COL_DEBIT]   = '차변'
+    if col_map:
+        sub = sub.rename(columns=col_map)
+    sub = lf.preprocess(sub)
+    result_df = lf.aggregate(sub)
+    return {'리스후보목록': result_df}
+
+
 # =============================================================================
 # 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
@@ -1469,7 +1522,11 @@ ANALYSIS_REGISTRY: dict = {
     21: ('총계정원장',      analyze_general_ledger),
     22: ('은행조회서완전성', analyze_bank_confirmation),
     23: ('계정별상세내역',  analyze_account_transaction_detail),
+    24: ('리스완전성',       analyze_lease_completeness),
 }
+
+# 결과를 메인 파일이 아닌 별도 파일로 저장하는 task 번호 집합
+_SEPARATE_FILE_TASKS = {24}
 
 
 # =============================================================================
@@ -1555,6 +1612,54 @@ def load_settings(task_list_path: str) -> dict:
         return settings
     except Exception:
         return {}
+
+
+
+def _save_lease_completeness_file(results: dict, output_dir: str, company_name: str) -> str:
+    """리스완전성검토 결과를 별도 색상 서식 Excel 파일로 저장."""
+    from openpyxl.styles import PatternFill, Font, Alignment
+    from openpyxl.utils import get_column_letter
+    out_path = os.path.join(output_dir, f'리스완전성_{company_name}.xlsx')
+    os.makedirs(output_dir, exist_ok=True)
+    _FILL = {
+        'O': PatternFill('solid', fgColor='C6EFCE'),
+        'X': PatternFill('solid', fgColor='FFCCCC'),
+        '?': PatternFill('solid', fgColor='FFEB9C'),
+    }
+    _FONT = {
+        'O': Font(bold=True,  color='276221'),
+        'X': Font(bold=False, color='9C0006'),
+        '?': Font(bold=False, color='7D4E00'),
+    }
+    col_labels = {'연간_총발생액': '연간 총 발생액', '거래_발생건수': '거래 발생건수', '대표_적요': '대표 적요'}
+    col_widths  = {'거래처': 28, '계정과목': 18, '연간 총 발생액': 16,
+                   '거래 발생건수': 12, '대표 적요': 45,
+                   '리스인식여부(O/X)': 14, '면제검토': 10, '판단근거': 30, '비고': 20}
+    with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
+        for sheet_name, df in results.items():
+            df_out = df.rename(columns=col_labels)
+            df_out.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+            ws = writer.sheets[sheet_name[:31]]
+            hdr_fill = PatternFill('solid', fgColor='D9E1F2')
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+                cell.fill = hdr_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            for ci, cn in enumerate(df_out.columns, start=1):
+                ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(cn, 15)
+            if '리스인식여부(O/X)' in df_out.columns:
+                jc = df_out.columns.get_loc('리스인식여부(O/X)') + 1
+                for row_cells in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                    val = str(row_cells[jc-1].value or '').strip()
+                    if val in _FILL:
+                        for cell in row_cells: cell.fill = _FILL[val]
+                        row_cells[jc-1].font = _FONT[val]
+            if '연간 총 발생액' in df_out.columns:
+                ac = df_out.columns.get_loc('연간 총 발생액') + 1
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=ac, max_col=ac):
+                    for cell in row: cell.number_format = '#,##0'
+    print(f'  [리스완전성] 별도 저장: {os.path.relpath(out_path)}')
+    return out_path
 
 
 def save_results(results: dict, output_dir: str, company_name: str,
@@ -1670,12 +1775,16 @@ def main():
         print(f'  [{task_no:>3}] {task_name} [{분석대상} {len(task_df):,}행]', flush=True)
         try:
             result = func(task_df, params_list)
-            if isinstance(result, dict):
+            if task_no in _SEPARATE_FILE_TASKS:
+                _save_lease_completeness_file(result, paths['output'], company_name)
+                print(f'       → 별도 파일 저장')
+            elif isinstance(result, dict):
                 for sname, sub_df in result.items():
                     all_results[sname] = sub_df
+                print(f'       → 시트 {len(result)}개 생성')
             elif isinstance(result, pd.DataFrame):
                 all_results[_safe_sheet(task_name)] = result
-            print(f'       → 시트 {len(result) if isinstance(result, dict) else 1}개 생성')
+                print(f'       → 시트 1개 생성')
         except Exception as e:
             import traceback
             print(f'       ⚠️ 오류: {e}')
