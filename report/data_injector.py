@@ -51,7 +51,7 @@ def _keyword_matches(keyword, normalized_fname):
     """
     text    = '_' + normalized_fname + '_'
     pattern = '_' + re.escape(keyword) + '_'
-    return bool(re.search(pattern, text))
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 # ─── 파일 탐색 ────────────────────────────────────────────────────────────────
