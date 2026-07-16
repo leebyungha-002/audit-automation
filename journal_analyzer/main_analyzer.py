@@ -160,6 +160,9 @@ def _account_match_flexible(acct_series, acct_str):
         return pd.Series(False, index=acct_series.index)
     norm_series = acct_series.fillna('').astype(str).apply(_normalize_account_for_match)
     norm_user   = _normalize_account_for_match(acct_str)
+    # 정확 일치를 먼저 시도 — "건물" 검색 시 "건물관리비" 오매칭 방지
+    mask = norm_series == norm_user
+    if mask.any(): return mask
     mask = norm_series.str.startswith(norm_user)
     if mask.any(): return mask
     mask = norm_series.str.contains(re.escape(norm_user), na=False, regex=True, case=False)
