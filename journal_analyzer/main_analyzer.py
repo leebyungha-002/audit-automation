@@ -1658,6 +1658,39 @@ def _save_lease_completeness_file(results: dict, output_dir: str, company_name: 
                 ac = df_out.columns.get_loc('연간 총 발생액') + 1
                 for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=ac, max_col=ac):
                     for cell in row: cell.number_format = '#,##0'
+    # -- 판정기준 시트 추가
+    _criteria_rows = [
+        {'순서': 0, '기준': '적요 - 비리스 키워드',      '판정': 'X', '예시': '유류/주유/보험료/컨설팅/용역비/구독료 등 (임차료 계정 제외)'},
+        {'순서': 1, '기준': '계정과목 - 임차료 포함',     '판정': 'O', '예시': '임차료 계정이면 무조건 리스 인식'},
+        {'순서': 2, '기준': '적요 - 리스 키워드',         '판정': 'O', '예시': '임차/임대/사무실/창고/공장/호실/렌트카/렌터카 등'},
+        {'순서': 3, '기준': '거래처 - 렌탈/리스 업체',    '판정': 'O', '예시': 'SK매직/코웨이/청호나이스/롯데렌터카/AJ렌터카 등'},
+        {'순서': 4, '기준': '차량유지비 + 적요 렌트/렌탈','판정': 'O', '예시': '차량유지비 계정이면서 적요에 렌트/렌탈 포함'},
+        {'순서': 5, '기준': '수수료 계정 (키워드 없음)',   '판정': 'X', '예시': '지급수수료 등 - 리스 키워드 미발견'},
+        {'순서': 6, '기준': '위 어디에도 해당 없음',       '판정': '?', '예시': '추가 검토 필요'},
+    ]
+    _criteria_df = pd.DataFrame(_criteria_rows)
+    _pf2 = {"O": PatternFill("solid", fgColor="C6EFCE"),
+            "X": PatternFill("solid", fgColor="FFCCCC"),
+            "?": PatternFill("solid", fgColor="FFEB9C")}
+    with pd.ExcelWriter(out_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as _w2:
+        _criteria_df.to_excel(_w2, index=False, sheet_name="판정기준")
+        _wsc = _w2.sheets["판정기준"]
+        _hf2 = PatternFill("solid", fgColor="D9E1F2")
+        for _cell in _wsc[1]:
+            _cell.font = Font(bold=True); _cell.fill = _hf2
+            _cell.alignment = Alignment(horizontal="center", vertical="center")
+        _jc2 = _criteria_df.columns.get_loc("판정") + 1
+        for _row in _wsc.iter_rows(min_row=2, max_row=_wsc.max_row):
+            _v = str(_row[_jc2-1].value or "").strip()
+            if _v in _pf2:
+                for _c in _row: _c.fill = _pf2[_v]
+        _cw2 = {"순서": 8, "기준": 30, "판정": 8, "예시": 65}
+        for _ci2, _cn2 in enumerate(_criteria_df.columns, 1):
+            _wsc.column_dimensions[get_column_letter(_ci2)].width = _cw2.get(_cn2, 15)
+        _nr = _wsc.max_row + 2
+        _wsc.cell(_nr, 1).value = "※ 참고"
+        _wsc.cell(_nr, 1).font = Font(bold=True)
+        _wsc.cell(_nr, 2).value = "판정은 거래처+계정과목+적요 패턴 집계 후 대표 적요(상위 2건) 기준으로 자동 판정합니다."
     print(f'  [리스완전성] 별도 저장: {os.path.relpath(out_path)}')
     return out_path
 
