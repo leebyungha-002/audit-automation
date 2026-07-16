@@ -880,7 +880,7 @@ def main():
                 tgt_path = tgt_path_cache[tgt_kw]
             if tgt_path not in tgt_book_cache:
                 try:
-                    tgt_book_cache[tgt_path] = load_workbook(tgt_path)
+                    tgt_book_cache[tgt_path] = load_workbook(tgt_path, keep_links=False)
                 except Exception as e:
                     msg = f'대상 파일 오픈 실패: {e}'
                     print(f'    [오류] {msg}')
@@ -951,7 +951,7 @@ def main():
         # ── 대상 워크북 로드 (캐시) ───────────────────────────────────────
         if tgt_path not in tgt_book_cache:
             try:
-                tgt_book_cache[tgt_path] = load_workbook(tgt_path)
+                tgt_book_cache[tgt_path] = load_workbook(tgt_path, keep_links=False)
             except Exception as e:
                 msg = f'대상 파일 오픈 실패: {e}'
                 print(f'    [오류] {msg}')
