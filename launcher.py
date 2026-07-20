@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 11# -*- coding: utf-8 -*-
 """
 감사 자동화 런처 — 도구 선택 및 실행 GUI
@@ -63,11 +63,27 @@ def detect_lease_companies() -> list[str]:
     _pat = re.compile(r'^lease_(.+)_information_', re.IGNORECASE)
     companies = set()
     for f in in_dir.iterdir():
-        if f.is_file() and f.suffix.lower() == '.xlsx':
+        if f.is_file() and f.suffix.lower() == '.xlsx' and not f.name.startswith('~$'):
             m = _pat.match(f.name)
             if m:
                 companies.add(m.group(1))
     return sorted(companies)
+
+
+def detect_lease_input_files() -> list[tuple[str, str]]:
+    """lease_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
+    in_dir = ROOT / 'lease_analyzer' / 'input_data'
+    if not in_dir.exists():
+        return []
+    _pat = re.compile(r'^lease_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
+    files = []
+    for f in sorted(in_dir.iterdir()):
+        if f.is_file() and f.suffix.lower() == '.xlsx' and not f.name.startswith('~$'):
+            m = _pat.match(f.name)
+            if m:
+                company, year = m.group(1), m.group(2)
+                files.append((f'{company}  [{year}]', f.name))
+    return files
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 도구 정의
@@ -116,7 +132,7 @@ TOOLS = [
         "desc": "⚠ 실행 전 lease_analyzer/input_data/ 폴더에 lease_{회사명}_information_{연도}.xlsx 파일을 먼저 업로드하세요.\nK-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
         "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_schedule.py")],
         "cwd": str(ROOT / "lease_analyzer"),
-        "company": "lease",
+        "company": "lease_file",
         "extra": None,
     },
     {
@@ -200,6 +216,7 @@ class Launcher(QMainWindow):
         self._journal_companies = detect_journal_companies()
         self._interest_companies = detect_interest_companies()
         self._lease_companies = detect_lease_companies()
+        self._lease_input_files: list[tuple[str, str]] = detect_lease_input_files()
 
         self._build_ui()
         self._tool_list.setCurrentRow(0)
@@ -359,6 +376,10 @@ class Launcher(QMainWindow):
         elif t["company"] == "lease":
             self._company_row.setVisible(True)
             self._company_combo.addItems(self._lease_companies)
+        elif t["company"] == "lease_file":
+            self._company_row.setVisible(True)
+            self._lease_input_files = detect_lease_input_files()
+            self._company_combo.addItems([d for d, _ in self._lease_input_files])
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -390,6 +411,13 @@ class Launcher(QMainWindow):
             selected = self._company_combo.currentText()
             if not selected.startswith("(없음"):
                 cmd += ["--company", selected]
+        elif t["company"] == "lease_file":
+            file_idx = self._company_combo.currentIndex()
+            if file_idx < 0 or not self._lease_input_files:
+                self._log_line("⚠  처리할 파일을 선택하세요.", "#FBBF24")
+                return
+            _, fname = self._lease_input_files[file_idx]
+            cmd += ["--file", fname]
 
         # 시트 분리 모드 인자 추가
         if t["extra"] == "sheet_mode":

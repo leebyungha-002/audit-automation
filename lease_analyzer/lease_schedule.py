@@ -691,9 +691,12 @@ def main():
     import argparse
     _parser = argparse.ArgumentParser(add_help=False)
     _parser.add_argument('company', nargs='?', default=None, help='처리할 회사명 (생략 시 전체)')
+    _parser.add_argument('--file', default=None, help='처리할 특정 파일명 (input_data/ 기준)')
     _args, _ = _parser.parse_known_args()
 
-    if _args.company:
+    if _args.file:
+        _glob = os.path.join(INPUT_DIR, _args.file)
+    elif _args.company:
         _glob = os.path.join(INPUT_DIR, f'lease_{_args.company}_information_*.xlsx')
     else:
         _glob = os.path.join(INPUT_DIR, 'lease_*_information_*.xlsx')
