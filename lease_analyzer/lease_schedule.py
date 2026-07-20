@@ -158,7 +158,9 @@ def build_schedule(c: dict) -> tuple:
     dep_bal = deposit_pv   # 보증금 당월 기초PV
 
     for mi in range(1, n_months + 1):
-        dt       = start + relativedelta(months=mi - 1)
+        # 기말(후급): 각 기간의 끝(= 개시일로부터 mi개월 후)으로 레이블
+        # 기초(선급): 각 기간의 시작(= 개시일로부터 mi-1개월 후)으로 레이블
+        dt       = start + relativedelta(months=mi if when == 0 else mi - 1)
         ym       = dt.strftime('%Y-%m')
         is_pay   = mi in pay_months
         is_last  = mi == n_months
