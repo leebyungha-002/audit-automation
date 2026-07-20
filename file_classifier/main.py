@@ -558,7 +558,7 @@ class ManualMoverTab(QWidget):
 class AuditClassifierApp(QMainWindow):
     """감사 조서 자동 분류기 메인 윈도우 (탭 구조)."""
 
-    def __init__(self, company=None):
+    def __init__(self, company=None, base=None):
         super().__init__()
         self._company = company
         self.keyword_map = {}
@@ -570,7 +570,10 @@ class AuditClassifierApp(QMainWindow):
         if company:
             import os as _os
             _project_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-            _company_dir = _os.path.join(_project_root, company)
+            if base:
+                _company_dir = _os.path.join(_project_root, base, company)
+            else:
+                _company_dir = _os.path.join(_project_root, company)
             if _os.path.isdir(_company_dir) and hasattr(self, 'tab_auto'):
                 self.tab_auto.target_folder = _company_dir
                 self.tab_auto.target_lbl.setText(_company_dir)
@@ -668,10 +671,11 @@ def main():
     import argparse
     _parser = argparse.ArgumentParser(add_help=False)
     _parser.add_argument('--company', default=None, help='회사 폴더명 (대상 폴더 자동 설정)')
+    _parser.add_argument('--base', default=None, help='회사 폴더의 상위 기준 디렉터리 (예: journal_analyzer)')
     _args, _ = _parser.parse_known_args()
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    win = AuditClassifierApp(company=_args.company)
+    win = AuditClassifierApp(company=_args.company, base=_args.base)
     win.show()
     sys.exit(app.exec())
 

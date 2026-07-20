@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+11# -*- coding: utf-8 -*-
 """
 감사 자동화 런처 — 도구 선택 및 실행 GUI
 """
@@ -150,9 +150,9 @@ TOOLS = [
         "category": "파일 분류",
         "name": "감사조서 파일 분류 (file_classifier)",
         "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI",
-        "cmd": ["python", str(ROOT / "file_classifier" / "main.py")],
+        "cmd": ["python", str(ROOT / "file_classifier" / "main.py"), "--base", "journal_analyzer"],
         "cwd": str(ROOT / "file_classifier"),
-        "company": "js",
+        "company": "journal",
         "extra": "company_flag",
     },
     {
