@@ -116,8 +116,9 @@ def resolve_sheet(sheetnames, keyword):
 # ─── 셀 좌표 / 범위 파싱 ─────────────────────────────────────────────────────
 
 def _parse_cell(cell_ref):
-    """'A7' → (row=7, col=1)  /  대소문자 무관."""
-    m = re.match(r'^([A-Za-z]+)(\d+)$', cell_ref.strip())
+    """'A7' → (row=7, col=1)  /  대소문자 무관. 범위(A1:I400) 입력 시 시작 셀만 사용."""
+    cell_ref = cell_ref.strip().split(':')[0]  # 범위 형식이면 시작 셀만 취함
+    m = re.match(r'^([A-Za-z]+)(\d+)$', cell_ref)
     if not m:
         raise ValueError(f"잘못된 셀 좌표: {cell_ref}")
     return int(m.group(2)), column_index_from_string(m.group(1).upper())
