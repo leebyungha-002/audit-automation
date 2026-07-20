@@ -558,6 +558,85 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
     ws.freeze_panes = f'B{mhdr_row + 1}'
 
 
+def _write_subtotal_rows(ws, summary_df: pd.DataFrame, data_end_row: int):
+    """판관비 소계 / 제조원가 소계 / 합계 행을 summary 시트에 추가"""
+    if '원가구분' not in summary_df.columns:
+        return
+
+    cols     = list(summary_df.columns)
+    n_cols   = len(cols)
+    CTR      = Alignment(horizontal='center', vertical='center')
+    RGT      = Alignment(horizontal='right',  vertical='center')
+
+    # 숫자 합산 대상 컬럼 (텍스트·날짜·비율 제외)
+    SKIP_COLS = {'리스계약번호', '원가구분', '리스개시일', '리스종료일',
+                 '리스기간(월)', '지급주기', '지급시점', '할인율(연)'}
+    sum_cols = [c for c in cols if c not in SKIP_COLS]
+
+    cost_types = ['판관비', '제조원가']
+    groups = {ct: summary_df[summary_df['원가구분'] == ct] for ct in cost_types}
+    # 등록된 원가구분 외 값도 처리
+    other_types = [v for v in summary_df['원가구분'].unique() if v not in cost_types]
+    for ot in other_types:
+        groups[ot] = summary_df[summary_df['원가구분'] == ot]
+        cost_types.append(ot)
+
+    cur = data_end_row + 2   # 데이터 끝 + 빈 행 1개
+
+    _SUB_FILLS = {
+        '판관비':   PatternFill('solid', fgColor='DDEEFF'),
+        '제조원가': PatternFill('solid', fgColor='E8F5E9'),
+    }
+    _DEFAULT_FILL = PatternFill('solid', fgColor='FFF3CD')
+
+    label_ci = cols.index('리스계약번호') + 1
+
+    for ct in cost_types:
+        grp = groups[ct]
+        if grp.empty:
+            continue
+        fill = _SUB_FILLS.get(ct, _DEFAULT_FILL)
+        font = Font(bold=True)
+
+        for ci, col in enumerate(cols, 1):
+            cell = ws.cell(row=cur, column=ci)
+            cell.fill   = fill
+            cell.font   = font
+            cell.border = _BORDER
+            if ci == label_ci:
+                cell.value = f'{ct} 소계'
+                cell.alignment = CTR
+            elif col in sum_cols:
+                v = grp[col].sum(min_count=1)
+                if pd.notna(v):
+                    cell.value = round(float(v))
+                    cell.number_format = MONEY_FMT
+                cell.alignment = RGT
+            else:
+                cell.alignment = CTR
+        cur += 1
+
+    # ── 합 계 행
+    _TOTAL_FILL = PatternFill('solid', fgColor='1F497D')
+    _TOTAL_FONT = Font(bold=True, color='FFFFFF')
+    for ci, col in enumerate(cols, 1):
+        cell = ws.cell(row=cur, column=ci)
+        cell.fill   = _TOTAL_FILL
+        cell.font   = _TOTAL_FONT
+        cell.border = _BORDER
+        if ci == label_ci:
+            cell.value = '합  계'
+            cell.alignment = CTR
+        elif col in sum_cols:
+            v = summary_df[col].sum(min_count=1)
+            if pd.notna(v):
+                cell.value = round(float(v))
+                cell.number_format = MONEY_FMT
+            cell.alignment = RGT
+        else:
+            cell.alignment = CTR
+
+
 def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -567,7 +646,7 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
         summary_df.to_excel(writer, sheet_name='계약별 요약', index=False)
         ws1 = writer.sheets['계약별 요약']
         _set_header(ws1)
-        _money_cols(ws1, summary_df, exclude=('리스계약번호', '리스개시일', '리스종료일',
+        _money_cols(ws1, summary_df, exclude=('리스계약번호', '원가구분', '리스개시일', '리스종료일',
                                                '리스기간(월)', '지급주기', '지급시점', '할인율(연)'))
         rate_ci = summary_df.columns.get_loc('할인율(연)') + 1 if '할인율(연)' in summary_df.columns else None
         if rate_ci:
@@ -575,8 +654,20 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
                                        min_col=rate_ci, max_col=rate_ci):
                 for c in cell:
                     c.number_format = RATE_FMT
+
+        # 원가구분 열 가운데 정렬
+        if '원가구분' in summary_df.columns:
+            ct_ci = summary_df.columns.get_loc('원가구분') + 1
+            for cell in ws1.iter_rows(min_row=2, max_row=ws1.max_row,
+                                       min_col=ct_ci, max_col=ct_ci):
+                for c in cell:
+                    c.alignment = Alignment(horizontal='center', vertical='center')
+
+        data_end_row = 1 + len(summary_df)   # 헤더(1) + 데이터 행 수
+        _write_subtotal_rows(ws1, summary_df, data_end_row)
+
         s_widths = {
-            '리스계약번호': 18, '리스개시일': 12, '리스종료일': 12,
+            '리스계약번호': 18, '원가구분': 12, '리스개시일': 12, '리스종료일': 12,
             '리스기간(월)': 10, '정기리스료': 14, '지급주기': 8, '지급시점': 8, '할인율(연)': 10,
             '최초 리스부채': 16, '사용권자산(최초)': 16,
             '지급보증금': 14, '보증금PV': 14, '보증금할인차금': 14,
@@ -677,6 +768,8 @@ def main():
             if annual_r > 1:
                 annual_r /= 100
 
+            cost_type = str(_col(row_d, '원가구분') or '판관비').strip()
+
             # 계약 정보 dict (계약별 시트 상단 표시용)
             info = {
                 'desc':              str(_col(row_d, '상세정보(호수/차량번호)', '상세정보', '상세') or '').strip(),
@@ -698,6 +791,7 @@ def main():
 
             summary_row = {
                 '리스계약번호':          cid,
+                '원가구분':             cost_type,
                 '리스개시일':           pd.Timestamp(row['리스개시일']).date(),
                 '리스종료일':           pd.Timestamp(row['리스종료일']).date(),
                 '리스기간(월)':         int(_safe_float(_col(row_d, '최종 산정리스기간(월수)'))),
