@@ -201,6 +201,9 @@ def _normalize_date_journal_columns(df):
 
 def _normalize_debit_credit_columns(df):
     df.columns = [str(c).strip() for c in df.columns]
+    # 중복 컬럼명이 있으면 df[col]이 DataFrame을 반환해 오류 → 중복 제거
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated(keep='first')]
     debit_cols = [c for c in df.columns if '차변' in c]
     if debit_cols:
         for c in debit_cols: df[c] = _to_numeric_amount(df[c])
