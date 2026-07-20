@@ -1496,6 +1496,8 @@ def analyze_lease_completeness(df, params_list):
     if COL_DESC    != '적요'    : col_map[COL_DESC]    = '적요'
     if COL_DEBIT   != '차변'    : col_map[COL_DEBIT]   = '차변'
     if col_map:
+        # 거래처(코드)처럼 rename 대상과 같은 이름의 컬럼이 이미 있으면 제거 후 rename
+        sub = sub.drop(columns=[v for v in col_map.values() if v in sub.columns], errors='ignore')
         sub = sub.rename(columns=col_map)
     sub = lf.preprocess(sub)
     result_df = lf.aggregate(sub)
