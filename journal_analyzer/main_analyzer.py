@@ -226,7 +226,10 @@ def _normalize_debit_credit_columns(df):
 
 def _preprocess_df(df):
     df = df.copy()
-    df.columns = df.columns.str.strip()
+    df.columns = [str(c).strip() for c in df.columns]
+    # 공백 제거 후 중복 컬럼 발생 시(예: CSV+xlsx concat) 첫 번째 열만 유지
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated(keep='first')]
     df = _normalize_date_journal_columns(df)
     df = _normalize_debit_credit_columns(df)
     if COL_DATE in df.columns:
