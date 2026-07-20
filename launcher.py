@@ -350,14 +350,25 @@ class Launcher(QMainWindow):
         log_layout = QVBoxLayout(log_group)
         self._log = QTextEdit()
         self._log.setReadOnly(True)
+        self._log.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse |
+            Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self._log.setFont(QFont("Consolas", 9))
         self._log.setStyleSheet("background:#1E1E1E; color:#D4D4D4;")
         log_layout.addWidget(self._log)
 
+        log_btn_row = QHBoxLayout()
+        log_btn_row.addStretch()
+        btn_copy_log = QPushButton("로그 복사")
+        btn_copy_log.setMaximumWidth(100)
+        btn_copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self._log.toPlainText()))
         btn_clear = QPushButton("로그 지우기")
         btn_clear.setMaximumWidth(100)
         btn_clear.clicked.connect(self._log.clear)
-        log_layout.addWidget(btn_clear, alignment=Qt.AlignmentFlag.AlignRight)
+        log_btn_row.addWidget(btn_copy_log)
+        log_btn_row.addWidget(btn_clear)
+        log_layout.addLayout(log_btn_row)
         root_layout.addWidget(log_group, stretch=1)
 
     # ── 도구 선택 시 패널 업데이트 ──────────────────────────────────────────
