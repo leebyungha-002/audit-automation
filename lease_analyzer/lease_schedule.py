@@ -95,7 +95,17 @@ def _col(row: dict, *candidates) -> object:
 
 # ── 스케줄 생성 ───────────────────────────────────────────────────────────────
 
-def build_schedule(c: dict) -> tuple:
+def _fiscal_year(ym: str, fiscal_month: int) -> str:
+    """결산월 기준 회계연도 문자열 반환.
+    결산월=12 → 캘린더 연도 그대로.
+    결산월=6  → 7월 이후는 다음 연도로 귀속 (예: 2023-07 → '2024')."""
+    if fiscal_month == 12:
+        return ym[:4]
+    year, month = int(ym[:4]), int(ym[5:7])
+    return str(year + 1) if month > fiscal_month else str(year)
+
+
+def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
     """
     단일 계약의 월별 상각 스케줄 생성.
     Returns (schedule_df, initial_liability, initial_rou, deposit, deposit_pv, deposit_discount)
@@ -220,9 +230,10 @@ def build_schedule(c: dict) -> tuple:
 
     df = pd.DataFrame(rows)
 
-    # ── 12월 말 유동성 대체 계산
-    # 당해 12월 잔액 - 다음 해 12월 잔액 = 내년도 원금상환 예정액(유동성 대체액)
-    dec_idx = df[df['연월'].str.endswith('-12')].index.tolist()
+    # ── 결산월 말 유동성 대체 계산
+    # 당기말 잔액 - 차기말 잔액 = 차기 원금상환 예정액(유동성 대체액)
+    fm_str  = f'-{fiscal_month:02d}'
+    dec_idx = df[df['연월'].str.endswith(fm_str)].index.tolist()
     for k, idx in enumerate(dec_idx):
         cur_bal  = df.loc[idx, '기말부채잔액']
         next_bal = df.loc[dec_idx[k + 1], '기말부채잔액'] if k + 1 < len(dec_idx) else 0.0
@@ -234,11 +245,13 @@ def build_schedule(c: dict) -> tuple:
 
 # ── 연간 집계 ─────────────────────────────────────────────────────────────────
 
-def _annual_summary(sched: pd.DataFrame) -> pd.DataFrame:
+def _annual_summary(sched: pd.DataFrame, fiscal_month: int = 12) -> pd.DataFrame:
     """월별 스케줄 → 연간 집계 (리스부채 + 사용권자산)"""
+    fm_str = f'-{fiscal_month:02d}'
+    fy_col = sched['연월'].apply(lambda ym: _fiscal_year(ym, fiscal_month))
     rows = []
-    for yr, grp in sched.groupby(sched['연월'].str[:4], sort=True):
-        dec = grp[grp['연월'].str.endswith('-12')]
+    for yr, grp in sched.groupby(fy_col, sort=True):
+        dec = grp[grp['연월'].str.endswith(fm_str)]
 
         def _dec(col):
             if dec.empty or col not in dec.columns:
@@ -262,7 +275,7 @@ def _annual_summary(sched: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _deposit_annual_summary(sched: pd.DataFrame, deposit: float) -> pd.DataFrame:
+def _deposit_annual_summary(sched: pd.DataFrame, deposit: float, fiscal_month: int = 12) -> pd.DataFrame:
     """월별 보증금 상각 → 연간 집계 (현재가치할인차금 상각표)"""
     if '보증금_기초PV' not in sched.columns:
         return pd.DataFrame()
@@ -270,8 +283,9 @@ def _deposit_annual_summary(sched: pd.DataFrame, deposit: float) -> pd.DataFrame
     if dep.empty:
         return pd.DataFrame()
 
+    fy_col = dep['연월'].apply(lambda ym: _fiscal_year(ym, fiscal_month))
     rows = []
-    for yr, grp in dep.groupby(dep['연월'].str[:4], sort=True):
+    for yr, grp in dep.groupby(fy_col, sort=True):
         beg_pv = float(grp.iloc[0]['보증금_기초PV'])
         end_pv = float(grp.iloc[-1]['보증금_기말PV'])
         yr_int = float(grp['보증금_이자수익'].sum())
@@ -327,7 +341,7 @@ def _col_width(ws, widths: dict, default=14):
         ws.column_dimensions[get_column_letter(ci)].width = widths.get(hdr, default)
 
 
-def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched: pd.DataFrame):
+def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched: pd.DataFrame, fiscal_month: int = 12):
     """단일 계약 시트: 계약정보 → 리스부채 연간요약 → 사용권자산 연간요약 → 월별상세"""
 
     CTR = Alignment(horizontal='center', vertical='center')
@@ -460,7 +474,7 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
 
     # ── 4. 보증금 현재가치할인차금 연간 상각표 ───────────────────────────────────
     if has_deposit:
-        dep_annual = _deposit_annual_summary(sched, deposit)
+        dep_annual = _deposit_annual_summary(sched, deposit, fiscal_month)
         if not dep_annual.empty:
             D_HDRS = ['연도', '기초보증금PV', '기초현가할인차금', '당기이자수익', '기말보증금PV', '기말현가할인차금']
             D_DATA = D_HDRS[1:]
@@ -526,9 +540,10 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
             cell.alignment = CTR
     cur += 1
 
+    fm_str = f'-{fiscal_month:02d}'
     for _, mr in sched.iterrows():
         ym     = str(mr.get('연월', ''))
-        is_dec = ym.endswith('-12')
+        is_dec = ym.endswith(fm_str)
         for ci, col in enumerate(all_cols, 1):
             cell = _bc(cur, ci)
             val  = mr.get(col)
@@ -639,7 +654,7 @@ def _write_subtotal_rows(ws, summary_df: pd.DataFrame, data_end_row: int):
             cell.alignment = CTR
 
 
-def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
+def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fiscal_month: int = 12):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -682,7 +697,7 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
             raw   = f"{c['cid']}_{desc}" if desc else f"계약_{c['cid']}"
             sname = re.sub(r'[\[\]*?:/\\]', '', raw)[:31]
             ws    = writer.book.create_sheet(title=sname)
-            _write_contract_sheet(ws, c['cid'], c['info'], c['annual'], c['sched'])
+            _write_contract_sheet(ws, c['cid'], c['info'], c['annual'], c['sched'], fiscal_month)
 
     print(f'  → {os.path.basename(output_path)} 저장 완료')
 
@@ -694,7 +709,10 @@ def main():
     _parser = argparse.ArgumentParser(add_help=False)
     _parser.add_argument('company', nargs='?', default=None, help='처리할 회사명 (생략 시 전체)')
     _parser.add_argument('--file', default=None, help='처리할 특정 파일명 (input_data/ 기준)')
+    _parser.add_argument('--fiscal-month', type=int, default=12,
+                         help='결산월 (12=12월 결산, 6=6월 결산, 기본값 12)')
     _args, _ = _parser.parse_known_args()
+    fiscal_month = _args.fiscal_month
 
     if _args.file:
         _glob = os.path.join(INPUT_DIR, _args.file)
@@ -743,16 +761,16 @@ def main():
             row_d = row.to_dict()
             print(f'  ▷ {cid}', end='  ')
             try:
-                sched, init_liab, init_rou, deposit, deposit_pv, deposit_discount = build_schedule(row_d)
+                sched, init_liab, init_rou, deposit, deposit_pv, deposit_discount = build_schedule(row_d, fiscal_month)
             except Exception as e:
                 print(f'[오류] {e}')
                 continue
 
-            annual = _annual_summary(sched)
+            annual = _annual_summary(sched, fiscal_month)
 
-            # 당해연도 집계 (summary_df 컬럼용)
-            yr_rows   = sched[sched['연월'].str.startswith(year)]
-            dec_row   = sched[sched['연월'] == f'{year}-12']
+            # 당기(회계연도) 집계 (summary_df 컬럼용)
+            yr_rows   = sched[sched['연월'].apply(lambda ym: _fiscal_year(ym, fiscal_month)) == year]
+            dec_row   = sched[sched['연월'] == f'{year}-{fiscal_month:02d}']
             has_dec   = not dec_row.empty
 
             yr_int    = yr_rows['이자비용'].sum()
@@ -827,7 +845,7 @@ def main():
 
         summary_df  = pd.DataFrame(summary_rows)
         output_path = os.path.join(OUTPUT_DIR, f'lease_schedule_{company}_{year}.xlsx')
-        save_results(summary_df, contracts, output_path)
+        save_results(summary_df, contracts, output_path, fiscal_month)
 
         # 회사별 results/ 폴더에도 복사
         company_results = os.path.join(PROJECT_DIR, company, 'results')

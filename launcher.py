@@ -301,6 +301,18 @@ class Launcher(QMainWindow):
         mode_layout.addStretch()
         right_layout.addWidget(self._mode_row)
 
+        # 결산월 선택 (리스 스케줄 전용)
+        self._fy_row = QWidget()
+        fy_layout = QHBoxLayout(self._fy_row)
+        fy_layout.setContentsMargins(0, 0, 0, 0)
+        fy_layout.addWidget(QLabel("결산월:"))
+        self._fy_combo = QComboBox()
+        self._fy_combo.setFont(QFont("맑은 고딕", 10))
+        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (7월~6월)"])
+        fy_layout.addWidget(self._fy_combo)
+        fy_layout.addStretch()
+        right_layout.addWidget(self._fy_row)
+
         right_layout.addStretch()
 
         # 실행 / 중지 버튼
@@ -387,6 +399,9 @@ class Launcher(QMainWindow):
         # 모드 선택 (sheet_splitter 전용)
         self._mode_row.setVisible(t["extra"] == "sheet_mode")
 
+        # 결산월 선택 (리스 스케줄 전용)
+        self._fy_row.setVisible(t["company"] == "lease_file")
+
     # ── 실행 ─────────────────────────────────────────────────────────────────
 
     def _run(self):
@@ -418,6 +433,8 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._lease_input_files[file_idx]
             cmd += ["--file", fname]
+            fy_month = 6 if self._fy_combo.currentIndex() == 1 else 12
+            cmd += ["--fiscal-month", str(fy_month)]
 
         # 시트 분리 모드 인자 추가
         if t["extra"] == "sheet_mode":
