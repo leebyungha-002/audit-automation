@@ -678,7 +678,7 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str):
         for c in contracts:
             desc  = str(c['info'].get('desc', '')).strip()
             raw   = f"{c['cid']}_{desc}" if desc else f"계약_{c['cid']}"
-            sname = raw[:31]
+            sname = re.sub(r'[\[\]*?:/\\]', '', raw)[:31]
             ws    = writer.book.create_sheet(title=sname)
             _write_contract_sheet(ws, c['cid'], c['info'], c['annual'], c['sched'])
 
