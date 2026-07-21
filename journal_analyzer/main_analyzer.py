@@ -177,6 +177,8 @@ def _to_numeric_amount(series):
     s = series.astype(str).str.strip()
     s = s.str.replace(',','',regex=False).str.replace(' ','',regex=False)
     s = s.str.replace(r'^#+$','0',regex=True)
+    # (금액) 형식 음수 → -금액 변환 (한국 ERP 음수 표기 방식)
+    s = s.str.replace(r'^\((\d+(?:\.\d+)?)\)$', r'-\1', regex=True)
     return pd.to_numeric(s, errors='coerce').fillna(0)
 
 def _normalize_date_journal_columns(df):
@@ -572,8 +574,8 @@ def analyze_employee_summary(df: pd.DataFrame, params_list: list) -> pd.DataFram
     rows = []
     for emp in sorted(df_emp[emp_col].astype(str).unique()):
         sub   = df_emp[df_emp[emp_col].astype(str) == emp]
-        d_sub = sub[sub[COL_DEBIT]  > 0] if COL_DEBIT  in sub.columns else pd.DataFrame()
-        c_sub = sub[sub[COL_CREDIT] > 0] if COL_CREDIT in sub.columns else pd.DataFrame()
+        d_sub = sub[sub[COL_DEBIT]  != 0] if COL_DEBIT  in sub.columns else pd.DataFrame()
+        c_sub = sub[sub[COL_CREDIT] != 0] if COL_CREDIT in sub.columns else pd.DataFrame()
         dagg  = {COL_DEBIT:'sum'}
         cagg  = {COL_CREDIT:'sum'}
         if jid: dagg[jid]='nunique'; cagg[jid]='nunique'
@@ -662,7 +664,7 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
             group_col = COL_JOURNAL_ID
 
         tcol  = COL_DEBIT if direction == '차변' else COL_CREDIT
-        mask  = _account_match_flexible(df[COL_ACCOUNT], acct) & (df[tcol] > 0)
+        mask  = _account_match_flexible(df[COL_ACCOUNT], acct) & (df[tcol] != 0)
         target = df[mask]
         if target.empty: continue
         jids    = target[group_col].unique()
@@ -671,7 +673,7 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         counter_col = COL_CREDIT if direction == '차변' else COL_DEBIT
         sum_label   = '대변합계' if direction == '차변' else '차변합계'
         cnt_label   = '대변건수' if direction == '차변' else '차변건수'
-        summary = (related[related[counter_col] > 0]
+        summary = (related[related[counter_col] != 0]
                    .groupby(COL_ACCOUNT)[[counter_col]]
                    .agg(['sum','count']).reset_index())
         summary.columns = ['상대계정명', sum_label, cnt_label]
@@ -710,9 +712,9 @@ def analyze_round_numbers(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
         amt_cols = [col_f] if col_f in ('차변','대변') and col_f in sub.columns \
                    else [c for c in ('차변','대변') if c in sub.columns]
         for col in amt_cols:
-            work = sub[sub[col] > 0].copy()
+            work = sub[sub[col] != 0].copy()
             work['라운드단위'] = work[col].apply(
-                lambda x: next((f'{u:,}원 배수' for u in sorted(units,reverse=True) if x%u==0), None))
+                lambda x: next((f'{u:,}원 배수' for u in sorted(units,reverse=True) if abs(x)%u==0), None))
             records.append(work[work['라운드단위'].notna()].assign(금액열=col))
     if not records: return pd.DataFrame({'결과':['라운드넘버 없음']})
     result  = pd.concat(records, ignore_index=True)
@@ -758,8 +760,8 @@ def analyze_asset_liability_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
     for a in assets: am |= df[COL_ACCOUNT].str.contains(a, na=False, regex=False)
     lm = pd.Series(False, index=df.index)
     for l in liabs:  lm |= df[COL_ACCOUNT].str.contains(l, na=False, regex=False)
-    adf = df[am & (df[COL_DEBIT]  > 0)]
-    ldf = df[lm & (df[COL_CREDIT] > 0)]
+    adf = df[am & (df[COL_DEBIT]  != 0)]
+    ldf = df[lm & (df[COL_CREDIT] != 0)]
     if adf.empty or ldf.empty: return pd.DataFrame({'결과':['교차 데이터 없음']})
     ga = adf.groupby(COL_CLIENT).agg({COL_DEBIT:'sum',  COL_ACCOUNT: lambda x: ','.join(set(x))}).reset_index()
     gl = ldf.groupby(COL_CLIENT).agg({COL_CREDIT:'sum', COL_ACCOUNT: lambda x: ','.join(set(x))}).reset_index()
@@ -781,8 +783,8 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
     for r in revs: rm |= df[COL_ACCOUNT].str.contains(r, na=False, regex=False)
     em = pd.Series(False, index=df.index)
     for e in exps: em |= df[COL_ACCOUNT].str.contains(e, na=False, regex=False)
-    rdf = df[rm & (df[COL_CREDIT] > 0)]
-    edf = df[em & (df[COL_DEBIT]  > 0)]
+    rdf = df[rm & (df[COL_CREDIT] != 0)]
+    edf = df[em & (df[COL_DEBIT]  != 0)]
     if rdf.empty or edf.empty: return pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})
     gr = rdf.groupby(COL_CLIENT).agg({COL_CREDIT:'sum', COL_ACCOUNT: lambda x: ','.join(set(x))}).reset_index()
     ge = edf.groupby(COL_CLIENT).agg({COL_DEBIT:'sum',  COL_ACCOUNT: lambda x: ','.join(set(x))}).reset_index()
@@ -816,7 +818,7 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
 
         debit_top = pd.DataFrame()
         if direction in ('차변', 'both'):
-            d_rows = filtered[filtered[COL_DEBIT] > 0]
+            d_rows = filtered[filtered[COL_DEBIT] != 0]
             if not d_rows.empty and COL_CLIENT in df.columns:
                 debit_top = (d_rows.groupby(grp_cols)[COL_DEBIT].agg(['count','sum'])
                                    .reset_index().sort_values('sum', ascending=False)
@@ -828,7 +830,7 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
 
         credit_top = pd.DataFrame()
         if direction in ('대변', 'both'):
-            c_rows = filtered[filtered[COL_CREDIT] > 0]
+            c_rows = filtered[filtered[COL_CREDIT] != 0]
             if not c_rows.empty and COL_CLIENT in df.columns:
                 credit_top = (c_rows.groupby(grp_cols)[COL_CREDIT].agg(['count','sum'])
                                     .reset_index().sort_values('sum', ascending=False)
@@ -917,8 +919,8 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
 
         filtered = df[mask_a & mask_c].copy()
         if filtered.empty: continue
-        if vtype == '차변': filtered = filtered[filtered[COL_DEBIT]  > 0]
-        elif vtype == '대변': filtered = filtered[filtered[COL_CREDIT] > 0]
+        if vtype == '차변': filtered = filtered[filtered[COL_DEBIT]  != 0]
+        elif vtype == '대변': filtered = filtered[filtered[COL_CREDIT] != 0]
         if filtered.empty: continue
 
         filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
@@ -1248,8 +1250,8 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
         subset['Month'] = subset['YM'].str[5:7].astype(int)
 
         years = sorted(subset['Year'].unique())
-        dr    = subset[subset[COL_DEBIT]  > 0]
-        cr    = subset[subset[COL_CREDIT] > 0]
+        dr    = subset[subset[COL_DEBIT]  != 0]
+        cr    = subset[subset[COL_CREDIT] != 0]
 
         if len(years) >= 2:
             da = dr.groupby(['Year', 'Month']).agg(
@@ -1417,9 +1419,9 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
         # 차변/대변 필터
         col_f_norm = col_f.replace(' ', '')
         if col_f_norm in ('차변', '차변만'):
-            sub = sub[sub[COL_DEBIT] > 0]
+            sub = sub[sub[COL_DEBIT] != 0]
         elif col_f_norm in ('대변', '대변만'):
-            sub = sub[sub[COL_CREDIT] > 0]
+            sub = sub[sub[COL_CREDIT] != 0]
         # '차변대변모두' 또는 공백이면 전체 유지
 
         if sub.empty:
