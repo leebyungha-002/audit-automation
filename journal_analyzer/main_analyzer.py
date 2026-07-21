@@ -1278,7 +1278,11 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
         else:
             da = dr.groupby('YM').agg(차변합계=(COL_DEBIT, 'sum'), 차변건수=(COL_DEBIT, 'count')).reset_index()
             ca = cr.groupby('YM').agg(대변합계=(COL_CREDIT, 'sum'), 대변건수=(COL_CREDIT, 'count')).reset_index()
-            result = pd.merge(da, ca, on='YM', how='outer').fillna(0).sort_values('YM')
+            merged = pd.merge(da, ca, on='YM', how='outer').fillna(0)
+            # 데이터 없는 월도 표시: 해당 연도 12개월 스켈레톤에 left join
+            year_val = years[0]
+            all_ym = pd.DataFrame({'YM': [f'{year_val}-{m:02d}' for m in range(1, 13)]})
+            result = pd.merge(all_ym, merged, on='YM', how='left').fillna(0)
             result['차변건수'] = result['차변건수'].astype(int)
             result['대변건수'] = result['대변건수'].astype(int)
             result = result.rename(columns={'YM': '월'})
