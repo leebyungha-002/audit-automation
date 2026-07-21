@@ -1224,21 +1224,13 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
 def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
     """계정별 월별 차변/대변 집계. 연도 2개 이상이면 연도 비교 형식(행=월, 열=연도)으로 출력.
     구분(자산/부채/매출액)은 시트명 접두어로 사용."""
-    # 계정명 정규화를 루프 밖에서 1회만 계산 (52회 반복 방지)
-    norm_col = df[COL_ACCOUNT].fillna('').astype(str).apply(_normalize_account_for_match)
-
     out = {}
     for p in params_list:
         acct  = _nv(p.get('계정과목', ''))
         gubun = _nv(p.get('구분', ''))
         if not acct: continue
 
-        norm_user = _normalize_account_for_match(acct)
-        mask = norm_col.str.startswith(norm_user)
-        if not mask.any():
-            mask = norm_col.str.contains(re.escape(norm_user), na=False, regex=True, case=False)
-        if not mask.any():
-            mask = norm_col.apply(lambda nv: norm_user in nv or nv in norm_user)
+        mask = _account_match_flexible(df[COL_ACCOUNT], acct)
 
         subset = df[mask].copy()
         if subset.empty:
