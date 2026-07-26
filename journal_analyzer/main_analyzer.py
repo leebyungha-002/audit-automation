@@ -1567,17 +1567,27 @@ def load_active_tasks(task_list_path: str) -> list:
                        and '번호' not in str(c) and '설명' not in str(c)), None)
     col_flag   = next((c for c in df.columns if '여부' in str(c)), None)
     col_period = next((c for c in df.columns if '대상' in str(c)), None)
+    col_month  = next((c for c in df.columns if '기준월' in str(c) or '종료월' in str(c)), None)
     if not all([col_no, col_nm, col_flag]):
         raise ValueError(f'분석번호/분석명/실행여부 컬럼 없음. 실제 컬럼: {df.columns.tolist()}')
+
+    def _parse_month(val):
+        s = str(val).strip().replace('월', '')
+        try:
+            m = int(float(s))
+            return m if 1 <= m <= 12 else None
+        except (ValueError, TypeError):
+            return None
 
     flag   = df[col_flag].astype(str).str.strip().str.upper()
     active = df[flag.isin(['Y','O'])].dropna(subset=[col_no])
     tasks  = [
         (int(row[col_no]), str(row[col_nm]).strip(),
-         str(row[col_period]).strip() if col_period and str(row[col_period]).strip() not in ('nan', '') else '당기')
+         str(row[col_period]).strip() if col_period and str(row[col_period]).strip() not in ('nan', '') else '당기',
+         _parse_month(row[col_month]) if col_month else None)
         for _, row in active.iterrows()
     ]
-    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" for n,nm,p in tasks]}')
+    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" + (f"(~{m}월)" if m else "") for n,nm,p,m in tasks]}')
     return tasks
 
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
@@ -1779,7 +1789,7 @@ def main():
     except (FileNotFoundError, ValueError) as e:
         print(f'[오류] {e}'); sys.exit(1)
     if args.task:
-        active_tasks = [(n, nm, p) for n, nm, p in active_tasks if n in args.task]
+        active_tasks = [(n, nm, p, m) for n, nm, p, m in active_tasks if n in args.task]
         print(f'  [필터] --task {args.task} → {len(active_tasks)}개 실행')
     if not active_tasks:
         print('실행할 분석이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
@@ -1800,7 +1810,7 @@ def main():
     # 3) 분석 순차 실행
     print('\n[분석 실행]')
     all_results: dict = {}
-    for task_no, task_name, 분석대상 in active_tasks:
+    for task_no, task_name, 분석대상, end_month in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
             continue
@@ -1811,7 +1821,11 @@ def main():
             task_df = df[df['구분'] == 분석대상].copy()
         else:
             task_df = df
-        print(f'  [{task_no:>3}] {task_name} [{분석대상} {len(task_df):,}행]', flush=True)
+        # 기준월 필터: task_list 분석목록 시트 '기준월' 열에 숫자(1~12) 기재 시 해당 월까지만 사용
+        if end_month and COL_DATE in task_df.columns:
+            task_df = task_df[task_df[COL_DATE].dt.month <= end_month].copy()
+        period_label = 분석대상 + (f' ~{end_month}월' if end_month else '')
+        print(f'  [{task_no:>3}] {task_name} [{period_label} {len(task_df):,}행]', flush=True)
         try:
             result = func(task_df, params_list)
             if task_no in _SEPARATE_FILE_TASKS:
