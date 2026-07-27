@@ -352,7 +352,7 @@ async function downloadAndAppendToSheet(page, downloadBtnSelector, sheetName, wo
 }
 
 // ─── 리스 완전성 자동 연동: lease_filter.py 실행 ─────────────────────────────
-function runLeaseFilter(companyName, noFilter = false) {
+function runLeaseFilter(companyName, noFilter = false, outputDir = null) {
     const leaseScript = path.join(__dirname, '..', 'lease_analyzer', 'lease_filter.py');
     if (!fs.existsSync(leaseScript)) {
         console.log(`[리스완전성] lease_filter.py 를 찾을 수 없습니다: ${leaseScript}`);
@@ -360,6 +360,10 @@ function runLeaseFilter(companyName, noFilter = false) {
     }
     const args = [leaseScript, '--company', companyName];
     if (noFilter) args.push('--no-filter');
+    if (outputDir) {
+        const outPath = path.join(outputDir, `리스완전성_${companyName}.xlsx`);
+        args.push('--output', outPath);
+    }
     console.log(`\n[리스완전성] lease_filter.py 자동 실행 (회사: ${companyName}${noFilter ? ', 키워드필터 생략' : ''})`);
     const result = spawnSync('python', args, {
         encoding: 'utf8',
@@ -631,16 +635,26 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
             emptySheet.getCell('A1').value = '검색 결과가 없습니다.';
             console.log(`[${taskName}] 검색 결과 없음 — '결과없음' 시트를 추가하여 파일을 저장합니다.`);
         }
-        for (let attempt = 1; attempt <= 5; attempt++) {
+        // 임시 파일에 먼저 쓴 뒤 rename — OneDrive EBUSY 회피
+        const tempGroupPath = groupFilePath + '.tmp';
+        await groupBook.xlsx.writeFile(tempGroupPath);
+        let groupSaved = false;
+        for (let attempt = 1; attempt <= 15; attempt++) {
             try {
-                await groupBook.xlsx.writeFile(groupFilePath);
+                if (fs.existsSync(groupFilePath)) fs.unlinkSync(groupFilePath);
+                fs.renameSync(tempGroupPath, groupFilePath);
                 console.log(`[${taskName}] 그룹 파일 저장 완료: ${path.basename(groupFilePath)}`);
+                groupSaved = true;
                 break;
             } catch (e) {
-                if (e.code === 'EBUSY' && attempt < 5) {
-                    console.log(`[${taskName}] 파일 잠금 감지, ${attempt}초 후 재시도...`);
-                    await new Promise(r => setTimeout(r, attempt * 1000));
-                } else { throw e; }
+                if ((e.code === 'EBUSY' || e.code === 'EPERM') && attempt < 15) {
+                    const wait = Math.min(attempt, 5);
+                    console.log(`[${taskName}] 파일 잠금 감지, ${wait}초 후 재시도... (${attempt}/15)`);
+                    await new Promise(r => setTimeout(r, wait * 1000));
+                } else {
+                    console.log(`[${taskName}][경고] 파일 저장 최종 실패 — 임시 파일 유지: ${path.basename(tempGroupPath)}`);
+                    break;
+                }
             }
         }
 
@@ -649,7 +663,7 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
         if (/리스/.test(taskName) && config.companyName) {
             const optionRaw = String(groupTasks[0]['분석옵션'] ?? groupTasks[0]['분석 옵션'] ?? '').trim();
             const noFilter  = /no.?filter|전건/i.test(optionRaw);
-            runLeaseFilter(config.companyName, noFilter);
+            runLeaseFilter(config.companyName, noFilter, resultsDir);
         }
 
         // 12. 은행조회서완전성 시나리오이면 bank_confirmation_filter.py 자동 연동
@@ -666,10 +680,16 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
     await page.waitForSelector(downloadBtnSelector, { state: 'visible', timeout: 30000 });
 
     console.log(`[${menuName}] 다운로드를 진행합니다.`);
-    const downloadPromise = page.waitForEvent('download');
+    const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
     await page.click(downloadBtnSelector);
-    const download = await downloadPromise;
-    const downloadPath = await download.path();
+    let download, downloadPath;
+    try {
+        download = await downloadPromise;
+        downloadPath = await download.path();
+    } catch (dlErr) {
+        console.log(`[${menuName}][경고] 다운로드 이벤트 타임아웃 — 데이터 없음으로 건너뜁니다. (${targetName})`);
+        return;
+    }
     console.log(`[${menuName}] 임시 다운로드 캡처 완료.`);
 
     // 마스터 파일 병합 대상
@@ -705,17 +725,22 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
         const safeTarget = targetName.replace(/[\\/?*[\]:]/g, '_');
         const finalName = safeTarget.startsWith(filePrefix) ? safeTarget : `${filePrefix}${safeTarget}`;
         const finalPath = path.join(rawDataDir, finalName.endsWith('.xlsx') ? finalName : `${finalName}.xlsx`);
-        // OneDrive 동기화로 인한 파일 잠금(EBUSY) 대비 재시도
+        // OneDrive EBUSY 회피: 기존 파일 삭제 후 copyFile
         let copied = false;
-        for (let attempt = 1; attempt <= 5; attempt++) {
+        for (let attempt = 1; attempt <= 15; attempt++) {
             try {
+                // 기존 파일이 잠겨 있으면 삭제 먼저 시도
+                if (fs.existsSync(finalPath)) {
+                    try { fs.unlinkSync(finalPath); } catch { /* 잠금 시 copyFileSync가 덮어쓰기 시도 */ }
+                }
                 fs.copyFileSync(downloadPath, finalPath);
                 copied = true;
                 break;
             } catch (e) {
-                if (e.code === 'EBUSY' && attempt < 5) {
-                    console.log(`[${menuName}] 파일 잠금 감지, ${attempt}초 후 재시도... (${attempt}/5)`);
-                    await new Promise(r => setTimeout(r, attempt * 1000));
+                if ((e.code === 'EBUSY' || e.code === 'EPERM') && attempt < 15) {
+                    const wait = Math.min(attempt, 5);
+                    console.log(`[${menuName}] 파일 잠금 감지, ${wait}초 후 재시도... (${attempt}/15)`);
+                    await new Promise(r => setTimeout(r, wait * 1000));
                 } else {
                     throw e;
                 }
@@ -971,13 +996,20 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             await page.waitForTimeout(1500);
             console.log(`  ✓ 계정 '${accountName}' 선택`);
 
-            // 2. 금액 유형 라디오 (차변만 / 대변만 / 차변+대변 모두)
+            // 2. 기준월 버튼 선택 (3월/6월/9월/12월)
+            const baseMonth = task['기준월'];
+            if (baseMonth) {
+                await clickRadioByLabel(page, `${baseMonth}월`, '기준월');
+                await page.waitForTimeout(1000);  // 기간 변경 후 재집계 대기
+            }
+
+            // 3. 금액 유형 라디오 (차변만 / 대변만 / 차변+대변 모두)
             if (amountType) {
                 await clickRadioByLabel(page, amountType, '금액 유형');
                 await page.waitForTimeout(1000);
             }
 
-            // 3. 비교표 다운로드
+            // 4. 비교표 다운로드
             const targetName = String(task['파일명'] ?? `전기비교_${accountName}`);
             await handleDownloadAndSave(page, 'button:has-text("비교표 다운로드")', targetName, rawDataDir, menuName, filePrefix);
 

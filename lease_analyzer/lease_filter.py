@@ -388,6 +388,8 @@ def parse_args() -> argparse.Namespace:
                    help='루트 하위 기준 폴더 (예: --base journal_analyzer)')
     p.add_argument('--no-filter', action='store_true',
                    help='키워드 필터링 생략 (계정과목이 이미 리스 특정 계정인 경우)')
+    p.add_argument('--output', '-o', metavar='FILE',
+                   help='출력 파일 전체 경로 (기본: output/{company}_리스완전성검토_후보목록.xlsx)')
     return p.parse_args()
 
 
@@ -407,10 +409,10 @@ def main() -> None:
     print('\n[1/3] 데이터 로드')
     if args.company:
         raw = load_from_result(args.company, base=args.base)
-        output_file = os.path.join(OUTPUT_DIR, f'{args.company}_리스완전성검토_후보목록.xlsx')
+        output_file = args.output if args.output else os.path.join(OUTPUT_DIR, f'{args.company}_리스완전성검토_후보목록.xlsx')
     else:
         raw = load_ledger()
-        output_file = os.path.join(OUTPUT_DIR, '리스완전성검토_후보목록.xlsx')
+        output_file = args.output if args.output else os.path.join(OUTPUT_DIR, '리스완전성검토_후보목록.xlsx')
     print(f'  전체 행 수: {len(raw):,}')
 
     # ── 2. 전처리 + 필터링
