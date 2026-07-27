@@ -62,15 +62,25 @@ function getMenuUiLabel(menuName, config) {
 }
 
 // ─── 전기(전년도) 계정별원장 파일 탐색 ──────────────────────────────────────────
-// raw_data 폴더에서 파일명에 '전기'가 명시적으로 포함된 xlsx 파일만 반환.
+// 우선순위: raw_data/previous/ → raw_data/ flat (하위 호환)
 function findPrevYearLedgerFile(rawDataDir) {
     if (!fs.existsSync(rawDataDir)) return null;
 
+    // 1순위: previous/ 서브폴더
+    const prevDir = path.join(rawDataDir, 'previous');
+    if (fs.existsSync(prevDir)) {
+        const found = fs.readdirSync(prevDir).find(f => {
+            const ext = path.extname(f).toLowerCase();
+            return (ext === '.xlsx' || ext === '.xls') && !f.startsWith('~$');
+        });
+        if (found) return path.join(prevDir, found);
+    }
+
+    // 2순위: flat raw_data/ (하위 호환 — 파일명에 '전기' 포함)
     const found = fs.readdirSync(rawDataDir).find(f => {
         const ext = path.extname(f).toLowerCase();
         return f.includes('전기') && (ext === '.xlsx' || ext === '.xls');
     });
-
     return found ? path.join(rawDataDir, found) : null;
 }
 
