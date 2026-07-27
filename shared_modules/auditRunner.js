@@ -1020,12 +1020,10 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
         const task = tasks[0] ?? {};
         await page.click('button:has-text("이중거래처 분석 시작")');
         console.log(`[${menuName}] 분석 중... (계정 수가 많아 시간이 소요될 수 있습니다)`);
-        // 분석 완료까지 networkidle 대기 (최대 3분)
-        await page.waitForLoadState('networkidle', { timeout: 180000 }).catch(() => {});
-        await page.waitForTimeout(1000);
+        // networkidle은 분석 완료 전에 해소될 수 있어 생략
+        // 다운로드 버튼이 나타날 때까지 직접 최대 10분 대기
         const fileName = String(task['파일명'] ?? base);
-        // 다운로드 버튼 대기도 120초로 설정
-        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix, 120000);
+        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix, 600000);
 
     } else if (['외상매출매입상계', '외상매출/매입 상계 거래처 분석'].includes(base)) {
         console.log(`\n--- [${menuName}] 처리 시작 ---`);
