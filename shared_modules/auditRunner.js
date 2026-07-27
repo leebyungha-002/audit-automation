@@ -796,7 +796,7 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
                 await page.keyboard.type(accountName, { delay: 50 });
                 await page.waitForTimeout(500);
                 await page.keyboard.press('Enter');
-                await page.waitForTimeout(800); // 계정 선택 후 금액기준열 콤보 렌더링 대기
+                await page.waitForTimeout(1500); // 계정 선택 후 금액기준열 UI 렌더링 대기
                 console.log(`  ✓ 계정과목 '${accountName}' 선택`);
             }
 
@@ -806,38 +806,61 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             ).trim();
             if (amountCol) {
                 let set = false;
-                // 계정 선택 후 콤보 상태 재평가
-                const comboCount = await combos.count().catch(() => 0);
 
                 // 전략 1: native <select> — 차변/대변/코드 옵션을 포함한 select를 탐색
+                // UI 옵션 텍스트가 "차 변"처럼 공백이 삽입될 수 있으므로 공백 무시 비교
                 try {
                     const selects = page.locator('select');
                     const selCount = await selects.count().catch(() => 0);
                     for (let si = 0; si < selCount && !set; si++) {
                         const opts = await selects.nth(si).locator('option').allTextContents().catch(() => []);
-                        if (opts.some(o => ['차변', '대변', '코드'].includes(o.trim()))) {
-                            await selects.nth(si).selectOption({ label: amountCol });
+                        const hasAmountOpts = opts.some(o => /차\s*변|대\s*변|코\s*드/.test(o));
+                        if (hasAmountOpts) {
+                            // 공백 제거 후 매칭하여 실제 옵션 레이블 확보
+                            const matchedLabel = opts.find(
+                                o => o.replace(/\s+/g, '') === amountCol.replace(/\s+/g, '')
+                            );
+                            try {
+                                await selects.nth(si).selectOption({
+                                    label: matchedLabel !== undefined ? matchedLabel.trim() : amountCol
+                                });
+                            } catch {
+                                await selects.nth(si).selectOption({ value: amountCol });
+                            }
                             set = true;
+                            console.log(`  ✓ 금액 기준열 '${amountCol}' 선택 (select, 레이블: '${matchedLabel ?? amountCol}')`);
                         }
                     }
-                    if (set) console.log(`  ✓ 금액 기준열 '${amountCol}' 선택`);
                 } catch { /* fallthrough */ }
 
-                // 전략 2: button[role="combobox"] 두 번째 항목 (커스텀 드롭다운)
-                if (!set && comboCount >= 2) {
-                    await combos.nth(1).click();
-                    await page.waitForTimeout(400);
-                    try {
-                        await page.locator(`[role="option"]:has-text("${amountCol}")`).first().click({ timeout: 3000 });
-                        set = true;
-                        console.log(`  ✓ 금액 기준열 '${amountCol}' 선택`);
-                    } catch {
-                        await page.keyboard.press('Escape');
+                // 전략 2: [role="combobox"] 두 번째 항목 (커스텀 드롭다운)
+                if (!set) {
+                    const allCombos = page.locator('[role="combobox"]');
+                    const comboCount = await allCombos.count().catch(() => 0);
+                    if (comboCount >= 2) {
+                        try {
+                            await allCombos.nth(1).click();
+                            await page.waitForTimeout(400);
+                            await page.locator(`[role="option"]:has-text("${amountCol}")`).first().click({ timeout: 3000 });
+                            set = true;
+                            console.log(`  ✓ 금액 기준열 '${amountCol}' 선택 (combobox)`);
+                        } catch {
+                            await page.keyboard.press('Escape');
+                            await page.waitForTimeout(300);
+                        }
                     }
-                    await page.waitForTimeout(400);
+                }
+
+                // 전략 3: 라디오/탭 버튼 (clickRadioByLabel 활용)
+                if (!set) {
+                    const before = await page.evaluate(() => document.body.innerHTML).catch(() => '');
+                    await clickRadioByLabel(page, amountCol, '금액 기준열');
+                    const after = await page.evaluate(() => document.body.innerHTML).catch(() => '');
+                    if (before !== after) set = true;
                 }
 
                 if (!set) console.log(`  [경고] 금액 기준열 '${amountCol}' 설정 실패 — 기본값(코드) 유지`);
+                await page.waitForTimeout(500);
             }
 
             // 3) 분석 시작 클릭 → AI 감사인 의견 생성 완료까지 대기
