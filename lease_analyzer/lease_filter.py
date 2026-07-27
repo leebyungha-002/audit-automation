@@ -184,6 +184,9 @@ def _normalize_result_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     """상세검색 결과 컬럼 → 표준 컬럼 정규화."""
     df = df.copy()
 
+    # 컬럼명 공백 정규화: '적   요   란' → '적요란', '차    변' → '차변' 등
+    df.columns = [re.sub(r'\s+', '', str(c)) for c in df.columns]
+
     # 날짜 → 일자
     if '날짜' in df.columns:
         df = df.rename(columns={'날짜': '일자'})
@@ -207,6 +210,7 @@ def _normalize_result_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
 
     # 전기이월 행 제거 (집계 왜곡 방지)
     if '적요' in df.columns:
+        df['적요'] = df['적요'].fillna('').astype(str)
         df = df[~df['적요'].str.contains('전기이월', na=False)]
 
     return df
