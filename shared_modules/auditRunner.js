@@ -675,12 +675,12 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
 }
 
 // ─── 다운로드 & 저장 헬퍼 ────────────────────────────────────────────────────
-async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawDataDir, menuName, filePrefix = '') {
+async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawDataDir, menuName, filePrefix = '', btnTimeout = 30000) {
     console.log(`[${menuName}] 결과 다운로드 버튼 대기 중...`);
-    await page.waitForSelector(downloadBtnSelector, { state: 'visible', timeout: 30000 });
+    await page.waitForSelector(downloadBtnSelector, { state: 'visible', timeout: btnTimeout });
 
     console.log(`[${menuName}] 다운로드를 진행합니다.`);
-    const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
+    const downloadPromise = page.waitForEvent('download', { timeout: btnTimeout });
     await page.click(downloadBtnSelector);
     let download, downloadPath;
     try {
@@ -964,9 +964,13 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
         console.log(`\n--- [${menuName}] 처리 시작 ---`);
         const task = tasks[0] ?? {};
         await page.click('button:has-text("이중거래처 분석 시작")');
+        console.log(`[${menuName}] 분석 중... (계정 수가 많아 시간이 소요될 수 있습니다)`);
+        // 분석 완료까지 networkidle 대기 (최대 3분)
+        await page.waitForLoadState('networkidle', { timeout: 180000 }).catch(() => {});
         await page.waitForTimeout(1000);
         const fileName = String(task['파일명'] ?? base);
-        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix);
+        // 다운로드 버튼 대기도 120초로 설정
+        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix, 120000);
 
     } else if (['외상매출매입상계', '외상매출/매입 상계 거래처 분석'].includes(base)) {
         console.log(`\n--- [${menuName}] 처리 시작 ---`);
