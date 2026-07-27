@@ -235,6 +235,40 @@
 
 ---
 
+## 2026-07-27
+
+**완료 작업**:
+- graphy JS 자동화 다수 버그 수정
+  1. **임대료수입 다운로드 타임아웃**: `waitForEvent('download')` 예외를 try/catch로 처리, 경고 출력 후 skip
+  2. **EBUSY 파일 잠금**: 그룹 파일 저장 시 temp→rename 15회 재시도 방식으로 OneDrive 잠금 대응
+  3. **전기비교 기준월 미선택**: task_list 기준월 컬럼(6월) 읽어 `clickRadioByLabel`로 자동 클릭
+  4. **벤포드 차트 소실**: `MASTER_MERGE_MENUS`에서 벤포드법칙분석 제외 → 계정별 개별 파일 저장
+  5. **이중거래처분석 타임아웃**: `networkidle` 대기 + `handleDownloadAndSave` timeout 120초로 증가
+  6. **총계정원장 이전 계정 재추출**: 계정 입력 후 `[role="option"]` count 확인, 0이면 skip
+  7. **런처 로그 저장**: "로그 저장" 버튼 추가 (`docs/logs/launcher_log_YYYYMMDD_HHMMSS.txt`)
+  8. **lease_filter 컬럼 공백**: `re.sub(r'\s+', '', ...)` 정규화 + `적요` astype(str) 수정
+  9. **lease_filter 첫 계정만 분석**: 회사 모드에서 키워드 필터 비활성화 → 전 시트 처리
+  10. **리스완전성 저장 경로**: `--output` 인수 추가 → `graphy/results/리스완전성_graphy.xlsx` 저장
+  11. **런처 시트 필터**: "시트 필터" 입력 필드 추가 → `--sheet` 옵션으로 일부 메뉴만 실행
+  12. **벤포드 금액기준열 코드로 됨(핵심)**:
+      - 원인: UI 옵션이 "차 변"(공백 포함)인데 regex가 "차변"만 체크 → select 탐색 실패
+      - 수정: `/차\s*변|대\s*변/.test(o)` 로 공백 무시 매칭 + 실제 레이블로 selectOption
+      - 보조 전략 3: `clickRadioByLabel` fallback 추가, 대기시간 800ms → 1500ms
+
+**변경 파일**:
+- `shared_modules/auditRunner.js`
+- `lease_analyzer/lease_filter.py`
+- `launcher.py`
+
+**미해결 이슈**: 없음
+
+**다음 할 일**:
+1. graphy 자동화 전체 재실행 (Excel 파일 닫고 실행) — 벤포드 기준열 + 전기비교 6월 기준 확인
+2. sejoong / kyungnam mapping_list 작성 → data_injector 연동
+3. 주석 검증(sejoong) 실행 → 소차이/큰차이 분포 재확인
+
+---
+
 ## 2026-07-11
 
 **완료 작업**:
