@@ -497,16 +497,36 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                     await page.keyboard.type(accountName, { delay: 50 });
                     await page.waitForTimeout(700);
 
-                    // 드롭다운 옵션 선택: 정확한 텍스트 일치 우선 → 첫 번째 옵션 클릭 → ArrowDown+Enter 폴백
+                    // 드롭다운 옵션 선택
+                    // 전략 1: text-is 정확 일치
+                    // 전략 2: 옵션 목록 순회 → 계정코드(숫자) 제거 후 정확 일치 탐색
+                    //         ("지급임차료" 입력 시 "지급임차료(제)"를 오선택하는 문제 방지)
+                    // 전략 3: 첫 번째 옵션 클릭 (폴백)
                     let acctSelected = false;
                     try {
                         const exactOpt = page.locator(`[role="option"]:text-is("${accountName}")`).first();
                         if (await exactOpt.isVisible({ timeout: 1500 })) {
                             await exactOpt.click();
                             acctSelected = true;
-                            console.log(`  계정과목: ${accountName} (정확히 일치하는 옵션 클릭)`);
+                            console.log(`  계정과목: ${accountName} (text-is 정확 일치)`);
                         }
                     } catch {}
+                    if (!acctSelected) {
+                        try {
+                            const allOpts = page.locator('[role="option"]');
+                            const optCount = await allOpts.count().catch(() => 0);
+                            for (let oi = 0; oi < optCount && !acctSelected; oi++) {
+                                const optText = (await allOpts.nth(oi).textContent().catch(() => '')).trim();
+                                // 선행 계정코드(숫자+공백) 제거 후 순수 계정명 비교
+                                const coreName = optText.replace(/^\d+\s*/, '').trim();
+                                if (coreName === accountName) {
+                                    await allOpts.nth(oi).click();
+                                    acctSelected = true;
+                                    console.log(`  계정과목: ${accountName} → 순회 정확 일치 클릭 ("${optText}")`);
+                                }
+                            }
+                        } catch {}
+                    }
                     if (!acctSelected) {
                         try {
                             const firstOpt = page.locator('[role="option"]').first();
