@@ -371,11 +371,28 @@ class Launcher(QMainWindow):
         log_btn_row.addStretch()
         btn_copy_log = QPushButton("로그 복사")
         btn_copy_log.setMaximumWidth(100)
-        btn_copy_log.clicked.connect(lambda: QApplication.clipboard().setText(self._log.toPlainText()))
+        def _copy_log():
+            try:
+                cb = QApplication.clipboard()
+                cb.setText(self._log.toPlainText())
+            except Exception:
+                pass
+        btn_copy_log.clicked.connect(_copy_log)
+        btn_save_log = QPushButton("로그 저장")
+        btn_save_log.setMaximumWidth(100)
+        def _save_log():
+            import datetime, os
+            log_dir = ROOT / "docs" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            fname = log_dir / f"launcher_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            fname.write_text(self._log.toPlainText(), encoding="utf-8")
+            self._log.append(f"[로그 저장 완료] {fname}")
+        btn_save_log.clicked.connect(_save_log)
         btn_clear = QPushButton("로그 지우기")
         btn_clear.setMaximumWidth(100)
         btn_clear.clicked.connect(self._log.clear)
         log_btn_row.addWidget(btn_copy_log)
+        log_btn_row.addWidget(btn_save_log)
         log_btn_row.addWidget(btn_clear)
         log_layout.addLayout(log_btn_row)
         root_layout.addWidget(log_group, stretch=1)
