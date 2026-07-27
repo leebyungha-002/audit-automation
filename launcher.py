@@ -298,6 +298,19 @@ class Launcher(QMainWindow):
         co_layout.addStretch()
         right_layout.addWidget(self._company_row)
 
+        # 시트 필터 (JS 자동화 전용: --sheet 옵션)
+        self._sheet_row = QWidget()
+        sheet_layout = QHBoxLayout(self._sheet_row)
+        sheet_layout.setContentsMargins(0, 0, 0, 0)
+        sheet_layout.addWidget(QLabel("시트 필터:"))
+        self._sheet_input = QLineEdit()
+        self._sheet_input.setFont(QFont("맑은 고딕", 10))
+        self._sheet_input.setPlaceholderText("예: 벤포드, 전기비교  (비워두면 전체 실행)")
+        self._sheet_input.setMinimumWidth(220)
+        sheet_layout.addWidget(self._sheet_input)
+        sheet_layout.addStretch()
+        right_layout.addWidget(self._sheet_row)
+
         # 시트 분리 모드
         self._mode_row = QWidget()
         mode_layout = QHBoxLayout(self._mode_row)
@@ -433,6 +446,11 @@ class Launcher(QMainWindow):
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
 
+        # 시트 필터 (JS 자동화 전용)
+        self._sheet_row.setVisible(t["company"] == "js")
+        if t["company"] == "js":
+            self._sheet_input.clear()
+
         # 모드 선택 (sheet_splitter 전용)
         self._mode_row.setVisible(t["extra"] == "sheet_mode")
 
@@ -472,6 +490,12 @@ class Launcher(QMainWindow):
             cmd += ["--file", fname]
             fy_month = 6 if self._fy_combo.currentIndex() == 1 else 12
             cmd += ["--fiscal-month", str(fy_month)]
+
+        # 시트 필터 인자 추가 (JS 자동화 전용)
+        if t["company"] == "js":
+            sheet_filter = self._sheet_input.text().strip()
+            if sheet_filter:
+                cmd += ["--sheet", sheet_filter]
 
         # 시트 분리 모드 인자 추가
         if t["extra"] == "sheet_mode":
