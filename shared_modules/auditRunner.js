@@ -694,7 +694,8 @@ async function handleDownloadAndSave(page, downloadBtnSelector, targetName, rawD
 
     // 마스터 파일 병합 대상
     const _baseMN = menuName.replace(/^host_?\d+_?/i, '');
-    const MASTER_MERGE_MENUS = ['상세 거래 검색', '총계정원장조회', '총계정원장', '벤포드법칙분석'];
+    // 벤포드는 차트 보존을 위해 마스터 병합 제외 → 계정별 개별 파일로 저장
+    const MASTER_MERGE_MENUS = ['상세 거래 검색', '총계정원장조회', '총계정원장'];
     if (MASTER_MERGE_MENUS.includes(_baseMN)) {
         const baseFileName = (_baseMN === '상세 거래 검색') ? '상세거래검색.xlsx'
             : (_baseMN === '벤포드법칙분석') ? '벤포드법칙분석.xlsx'
