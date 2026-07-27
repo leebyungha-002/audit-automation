@@ -5,10 +5,5 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 module.exports = {
     companyName: 'graphy',
 
-    // /analysis 업로드: 당기 계정별원장
-    uploadFileName: 'raw_data/당기_graphy_계정별원장_26년2Q.xlsx',
-
-    // /ai-analysis 업로드: 분개장(zone 0) / 계정별원장(zone 1)
-    aiJournalFileName: 'raw_data/당기_graphy_분개장_26년2Q.xlsx',
-    aiLedgerFileName:  'raw_data/당기_graphy_계정별원장_26년2Q.xlsx',
+    // 업로드 파일명: raw_data/current/ 폴더에서 자동 감지 (별도 지정 불필요)
 };

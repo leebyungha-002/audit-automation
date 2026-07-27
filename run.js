@@ -4,23 +4,37 @@ const fs   = require('fs');
 const ExcelJS = require('exceljs');
 
 // ─── raw_data 폴더에서 파일 자동 감지 ──────────────────────────────────────────
-// 당기 계정별원장: "원장" 포함 & "분개장"·"전기" 미포함
-// 분개장:         "분개장" 포함
+// 우선순위: raw_data/current/ → raw_data/ (flat, 하위 호환)
+// current/ : 당기 계정별원장, 분개장
+// previous/: 전기 계정별원장 (참조용)
 function autoDetectRawFiles(companyDir) {
     const rawDir = path.join(companyDir, 'raw_data');
     if (!fs.existsSync(rawDir)) return {};
 
-    const files = fs.readdirSync(rawDir).filter(f => {
-        const ext = path.extname(f).toLowerCase();
-        return (ext === '.xlsx' || ext === '.xls') && !f.startsWith('~$');
-    });
+    const xlsxFiles = (dir) => fs.existsSync(dir)
+        ? fs.readdirSync(dir).filter(f => {
+              const ext = path.extname(f).toLowerCase();
+              return (ext === '.xlsx' || ext === '.xls') && !f.startsWith('~$');
+          })
+        : [];
 
-    const ledger  = files.find(f => /원장/.test(f) && !/분개장/.test(f) && !/전기/.test(f));
-    const journal = files.find(f => /분개장/.test(f));
+    // current/ 서브폴더 우선, 없으면 flat raw_data/ (하위 호환)
+    const currentDir  = path.join(rawDir, 'current');
+    const previousDir = path.join(rawDir, 'previous');
+    const useSubdir   = fs.existsSync(currentDir);
+
+    const curFiles  = useSubdir ? xlsxFiles(currentDir) : xlsxFiles(rawDir);
+    const prevFiles = xlsxFiles(previousDir);
+    const prefix    = useSubdir ? 'raw_data/current' : 'raw_data';
+
+    const ledger     = curFiles.find(f => /원장/.test(f) && !/분개장/.test(f) && !/전기/.test(f));
+    const journal    = curFiles.find(f => /분개장/.test(f));
+    const prevLedger = prevFiles.find(f => /원장/.test(f) && !/분개장/.test(f));
 
     return {
-        ledger:  ledger  ? `raw_data/${ledger}`  : null,
-        journal: journal ? `raw_data/${journal}` : null,
+        ledger:     ledger     ? `${prefix}/${ledger}`             : null,
+        journal:    journal    ? `${prefix}/${journal}`            : null,
+        prevLedger: prevLedger ? `raw_data/previous/${prevLedger}` : null,
     };
 }
 
