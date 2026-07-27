@@ -662,8 +662,10 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
         //     task_list 시트 '분석옵션' 컬럼에 'no-filter' 또는 '전건' 입력 시 키워드 필터 생략
         if (/리스/.test(taskName) && config.companyName) {
             const optionRaw = String(groupTasks[0]['분석옵션'] ?? groupTasks[0]['분석 옵션'] ?? '').trim();
-            const noFilter  = /no.?filter|전건/i.test(optionRaw);
-            runLeaseFilter(config.companyName, noFilter, resultsDir);
+            // Playwright로 내려받은 계정은 이미 리스 후보 선별 완료 → 키워드 필터 불필요
+            // task_list에 '필터' 또는 'filter'라고 명시한 경우에만 키워드 필터 적용
+            const useFilter = /^필터$|^filter$/i.test(optionRaw);
+            runLeaseFilter(config.companyName, !useFilter, resultsDir);
         }
 
         // 12. 은행조회서완전성 시나리오이면 bank_confirmation_filter.py 자동 연동

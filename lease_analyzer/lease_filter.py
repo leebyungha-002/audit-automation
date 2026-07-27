@@ -423,9 +423,13 @@ def main() -> None:
     print('\n[2/3] 전처리 및 필터링')
     df = preprocess(raw)
 
-    if args.no_filter:
+    # --company 모드: 계정이 이미 리스 후보로 선별된 것이므로 키워드 필터 기본 생략
+    # --no-filter 명시 또는 company 모드이면 전건 포함 / input_data 직접 분석 시 키워드 필터 적용
+    skip_filter = args.no_filter or bool(args.company)
+    if skip_filter:
         filtered = df[df['차변'] > 0].copy()   # 차변 발생 건만
-        print(f'  키워드 필터 생략 (--no-filter) → 차변 발생 건: {len(filtered):,}행')
+        reason = '--no-filter' if args.no_filter else '회사 모드(계정 선별 완료)'
+        print(f'  키워드 필터 생략 ({reason}) → 차변 발생 건: {len(filtered):,}행')
     else:
         print(f'  적용 키워드: {LEASE_KEYWORDS}')
         filtered = filter_lease_rows(df)
