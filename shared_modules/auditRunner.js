@@ -5,6 +5,29 @@ const ExcelJS = require('exceljs');
 const { spawnSync } = require('child_process');
 const { initBrowser } = require('./index');
 
+// ─── Python 실행 파일 자동 탐지 (Anaconda PATH 미등록 환경 대응) ──────────────
+// Windows에서 Node.js 하위 프로세스의 PATH에 Anaconda가 없는 경우 9009 오류 방지
+function findPythonExe() {
+    const candidates = [];
+    if (process.env.CONDA_PYTHON_EXE) candidates.push(process.env.CONDA_PYTHON_EXE);
+    if (process.env.CONDA_PREFIX)      candidates.push(path.join(process.env.CONDA_PREFIX, 'python.exe'));
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (home) {
+        for (const d of ['anaconda3', 'Anaconda3', 'miniconda3', 'Miniconda3']) {
+            candidates.push(path.join(home, d, 'python.exe'));
+        }
+    }
+    candidates.push('python', 'py', 'python3');
+    for (const cmd of candidates) {
+        try {
+            const t = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5000 });
+            if (t.status === 0) return cmd;
+        } catch { /* 다음 시도 */ }
+    }
+    return 'python';
+}
+const PYTHON_EXE = findPythonExe();
+
 // ─── 엔드포인트 라우팅 ────────────────────────────────────────────────────────
 const DEFAULT_ENDPOINT_MAP = {
     '분개장':      '/ai-analysis',
@@ -365,7 +388,7 @@ function runLeaseFilter(companyName, noFilter = false, outputDir = null) {
         args.push('--output', outPath);
     }
     console.log(`\n[리스완전성] lease_filter.py 자동 실행 (회사: ${companyName}${noFilter ? ', 키워드필터 생략' : ''})`);
-    const result = spawnSync('python', args, {
+    const result = spawnSync(PYTHON_EXE, args, {
         encoding: 'utf8',
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
         timeout: 120000,
