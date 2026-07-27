@@ -919,6 +919,16 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
 
             await page.keyboard.type(accountName, { delay: 50 });
             await page.waitForTimeout(500);
+
+            // 드롭다운 옵션 확인 — 없으면 해당 계정이 원장에 없는 것
+            const dropdownOptions = page.locator('[role="option"]');
+            const optionCount = await dropdownOptions.count().catch(() => 0);
+            if (optionCount === 0) {
+                console.log(`[${menuName}][건너뜀] '${accountName}' — 계정 없음 (드롭다운 옵션 미발견)`);
+                await page.keyboard.press('Escape');
+                continue;
+            }
+
             await page.keyboard.press('Enter');
             await page.waitForTimeout(500);
 
