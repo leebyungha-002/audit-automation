@@ -2088,6 +2088,7 @@ async function runAudit(config, companyDir) {
 
                 // 카드를 못 찾으면 '뒤로가기' 또는 URL 재이동 후 재탐색
                 if (!menuHandle) {
+                    let wentBack = false;
                     try {
                         const backBtn = await page.waitForSelector(
                             'button:has-text("뒤로가기"), a:has-text("뒤로가기")',
@@ -2095,9 +2096,14 @@ async function runAudit(config, companyDir) {
                         );
                         console.log(`[안내] "${uiLabel}" 카드 미발견 → '뒤로가기' 클릭으로 메인 화면 복귀합니다.`);
                         await backBtn.click();
-                        await page.waitForLoadState('networkidle', { timeout: 15000 });
-                        await page.waitForTimeout(500);
+                        // networkidle 타임아웃이 catch로 전파되지 않도록 분리
+                        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                        await page.waitForTimeout(1000);
+                        wentBack = true;
                     } catch {
+                        // '뒤로가기' 버튼 자체를 못 찾은 경우에만 URL 재이동
+                    }
+                    if (!wentBack) {
                         console.log(`[안내] '뒤로가기' 버튼 미발견 → ${targetUrl}로 URL 재이동합니다.`);
                         await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
                         await page.waitForTimeout(1000);
