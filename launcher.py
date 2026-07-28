@@ -305,7 +305,7 @@ class Launcher(QMainWindow):
         sheet_layout.addWidget(QLabel("시트 필터:"))
         self._sheet_input = QLineEdit()
         self._sheet_input.setFont(QFont("맑은 고딕", 10))
-        self._sheet_input.setPlaceholderText("예: 벤포드, 전기비교  (비워두면 전체 실행)")
+        self._sheet_input.setPlaceholderText("예: 벤포드법칙  또는  벤포드법칙, 전기  (쉼표로 다중 지정 / 비워두면 전체 실행)")
         self._sheet_input.setMinimumWidth(220)
         sheet_layout.addWidget(self._sheet_input)
         sheet_layout.addStretch()

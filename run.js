@@ -50,10 +50,13 @@ async function main() {
     }
 
     const targetCompany = args[0];
-    // --sheet 옵션: 지정된 시트명만 실행 (부분 일치)
+    // --sheet 옵션: 지정된 키워드와 부분 일치하는 시트만 실행 (쉼표로 다중 지정 가능)
     const sheetFlagIdx = args.indexOf('--sheet');
-    const sheetFilter  = sheetFlagIdx !== -1 ? args[sheetFlagIdx + 1] : null;
-    if (sheetFilter) console.log(`[필터] 시트 필터 적용: "${sheetFilter}"`);
+    const sheetFilterRaw = sheetFlagIdx !== -1 ? args[sheetFlagIdx + 1] : null;
+    const sheetFilters = sheetFilterRaw
+        ? sheetFilterRaw.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+    if (sheetFilters.length) console.log(`[필터] 시트 필터 적용: ${sheetFilters.map(s => `"${s}"`).join(', ')}`);
 
     const companyDir = path.join(__dirname, targetCompany);
 
@@ -138,16 +141,16 @@ async function main() {
                 }
             });
 
-            // --sheet 필터 적용
-            const filteredMenus = sheetFilter
-                ? menus.filter(m => m.menuName.includes(sheetFilter))
+            // --sheet 필터 적용 (쉼표 구분 다중 키워드, 부분 일치)
+            const filteredMenus = sheetFilters.length
+                ? menus.filter(m => sheetFilters.some(kw => m.menuName.includes(kw)))
                 : menus;
-            if (sheetFilter && filteredMenus.length === 0) {
-                console.error(`[오류] --sheet "${sheetFilter}"와 일치하는 시트가 없습니다.`);
+            if (sheetFilters.length && filteredMenus.length === 0) {
+                console.error(`[오류] --sheet ${sheetFilters.map(s => `"${s}"`).join(', ')}와 일치하는 시트가 없습니다.`);
                 console.error(`사용 가능한 시트: ${menus.map(m => m.menuName).join(', ')}`);
                 process.exit(1);
             }
-            if (sheetFilter) {
+            if (sheetFilters.length) {
                 console.log(`[필터] ${filteredMenus.length}개 시트 실행: ${filteredMenus.map(m => m.menuName).join(', ')}`);
             }
             console.log(`[안내] 지시서 데이터 로드 완료: settings 항목 ${Object.keys(taskListData).length}개, 메뉴 ${filteredMenus.length}개`);
