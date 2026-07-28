@@ -2122,117 +2122,134 @@ async function runAudit(config, companyDir) {
             const endpoint = getMenuEndpoint(menuName, config);
             const targetUrl = `${baseUrl}${endpoint}`;
 
-            // 엔드포인트가 바뀔 때만 페이지 이동
-            if (currentEndpoint !== endpoint) {
-                console.log(`\n[라우팅] ${menuName} → ${targetUrl}`);
-                await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
-                currentEndpoint = endpoint;
-                analysisUploadDone = false;
-                aiSessionActive   = false; // 페이지 이동 시 분개장 세션 초기화
-                await page.waitForTimeout(1000);
-            }
-
-            if (endpoint === '/ai-analysis') {
-                // ── AI 분석: 세션 유지 시 업로드 생략, 완료 후 [초기화면으로] 복귀 ──
-                await handleAiAnalysisMenu(
-                    page, menu, config, companyDir, resultsDir, filePrefix,
-                    /* skipUpload = */ aiSessionActive
-                );
-
-                // 분석 완료 후 [초기화면으로] 버튼으로 대시보드 복귀 (세션 유지)
-                const returned = await returnToAiDashboard(page, menuName);
-                if (returned) {
-                    aiSessionActive = true;  // 다음 메뉴는 업로드 생략 가능
-                } else {
-                    aiSessionActive = false; // 세션 끊김 → 다음 메뉴에서 재업로드
+            try {
+                // 엔드포인트가 바뀔 때만 페이지 이동
+                if (currentEndpoint !== endpoint) {
+                    console.log(`\n[라우팅] ${menuName} → ${targetUrl}`);
+                    await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+                    currentEndpoint = endpoint;
+                    analysisUploadDone = false;
+                    aiSessionActive   = false; // 페이지 이동 시 분개장 세션 초기화
+                    await page.waitForTimeout(1000);
                 }
 
-            } else {
-                // /analysis 메뉴
-                // 1) 계정별원장 파일 업로드 (최초 1회)
-                if (!analysisUploadDone && config.uploadFileName) {
-                    await uploadGeneralLedgerIfNeeded(page, config, companyDir);
-                    analysisUploadDone = true;
-                }
+                if (endpoint === '/ai-analysis') {
+                    // ── AI 분석: 세션 유지 시 업로드 생략, 완료 후 [초기화면으로] 복귀 ──
+                    await handleAiAnalysisMenu(
+                        page, menu, config, companyDir, resultsDir, filePrefix,
+                        /* skipUpload = */ aiSessionActive
+                    );
 
-                // 2) 분석 메뉴 카드 클릭
-                // 시트명과 UI 카드 텍스트가 다를 수 있으므로 매핑 테이블 우선 조회
-                const uiLabel = getMenuUiLabel(menuName, config);
-                console.log(`\n=== [메뉴 진입] ${menuName}${uiLabel !== menuName ? ` → UI: "${uiLabel}"` : ''} ===`);
-
-                // 카드 셀렉터 전략: 정확한 텍스트 일치 우선 → 역할 기반 폴백
-                // div:has-text() 는 상위 컨테이너 전체를 매칭해 오클릭을 유발하므로 사용하지 않음.
-                const findMenuHandle = async () => {
-                    const strategies = [
-                        // 1순위: :text-is() — 요소 텍스트가 정확히 uiLabel인 것만
-                        () => page.locator(`:text-is("${uiLabel}")`).first(),
-                        // 2순위: getByText exact
-                        () => page.getByText(uiLabel, { exact: true }).first(),
-                        // 3순위: heading role 정확 일치
-                        () => page.getByRole('heading', { name: uiLabel, exact: true }).first(),
-                        // 4순위: h 태그 정규식 정확 일치
-                        () => page.locator('h2, h3, h4').filter({ hasText: new RegExp(`^${uiLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).first(),
-                        // 5순위: 역할 기반 (has-text 부분 일치 — 낮은 우선순위)
-                        () => page.locator(`button:has-text("${uiLabel}")`).first(),
-                        () => page.locator(`a:has-text("${uiLabel}")`).first(),
-                        () => page.locator(`[role="button"]:has-text("${uiLabel}")`).first(),
-                    ];
-                    for (const getFn of strategies) {
-                        try {
-                            const loc = getFn();
-                            if (await loc.count().catch(() => 0) > 0) return loc;
-                        } catch { /* 다음 전략 */ }
+                    // 분석 완료 후 [초기화면으로] 버튼으로 대시보드 복귀 (세션 유지)
+                    const returned = await returnToAiDashboard(page, menuName);
+                    if (returned) {
+                        aiSessionActive = true;  // 다음 메뉴는 업로드 생략 가능
+                    } else {
+                        aiSessionActive = false; // 세션 끊김 → 다음 메뉴에서 재업로드
                     }
-                    return null;
-                };
 
-                // 카드 클릭 실행
-                const clickMenuCard = async (loc) => {
-                    if (!loc) return;
-                    await loc.evaluate(n => {
-                        n.removeAttribute?.('target');
-                        n.closest?.('a')?.removeAttribute('target');
-                    }).catch(() => {});
-                    await loc.click();
-                    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-                    await page.waitForTimeout(1500);
-                };
+                } else {
+                    // /analysis 메뉴
+                    // 1) 계정별원장 파일 업로드 (최초 1회)
+                    if (!analysisUploadDone && config.uploadFileName) {
+                        await uploadGeneralLedgerIfNeeded(page, config, companyDir);
+                        analysisUploadDone = true;
+                    }
 
-                let menuHandle = await findMenuHandle();
+                    // 2) 분석 메뉴 카드 클릭
+                    // 시트명과 UI 카드 텍스트가 다를 수 있으므로 매핑 테이블 우선 조회
+                    const uiLabel = getMenuUiLabel(menuName, config);
+                    console.log(`\n=== [메뉴 진입] ${menuName}${uiLabel !== menuName ? ` → UI: "${uiLabel}"` : ''} ===`);
 
-                // 카드를 못 찾으면 '뒤로가기' 또는 URL 재이동 후 재탐색
-                if (!menuHandle) {
-                    let wentBack = false;
-                    try {
-                        const backBtn = await page.waitForSelector(
-                            'button:has-text("뒤로가기"), a:has-text("뒤로가기")',
-                            { state: 'visible', timeout: 5000 }
-                        );
-                        console.log(`[안내] "${uiLabel}" 카드 미발견 → '뒤로가기' 클릭으로 메인 화면 복귀합니다.`);
-                        await backBtn.click();
-                        // networkidle 타임아웃이 catch로 전파되지 않도록 분리
+                    // 카드 셀렉터 전략: 정확한 텍스트 일치 우선 → 역할 기반 폴백
+                    // div:has-text() 는 상위 컨테이너 전체를 매칭해 오클릭을 유발하므로 사용하지 않음.
+                    const findMenuHandle = async () => {
+                        const strategies = [
+                            // 1순위: :text-is() — 요소 텍스트가 정확히 uiLabel인 것만
+                            () => page.locator(`:text-is("${uiLabel}")`).first(),
+                            // 2순위: getByText exact
+                            () => page.getByText(uiLabel, { exact: true }).first(),
+                            // 3순위: heading role 정확 일치
+                            () => page.getByRole('heading', { name: uiLabel, exact: true }).first(),
+                            // 4순위: h 태그 정규식 정확 일치
+                            () => page.locator('h2, h3, h4').filter({ hasText: new RegExp(`^${uiLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).first(),
+                            // 5순위: 역할 기반 (has-text 부분 일치 — 낮은 우선순위)
+                            () => page.locator(`button:has-text("${uiLabel}")`).first(),
+                            () => page.locator(`a:has-text("${uiLabel}")`).first(),
+                            () => page.locator(`[role="button"]:has-text("${uiLabel}")`).first(),
+                        ];
+                        for (const getFn of strategies) {
+                            try {
+                                const loc = getFn();
+                                if (await loc.count().catch(() => 0) > 0) return loc;
+                            } catch { /* 다음 전략 */ }
+                        }
+                        return null;
+                    };
+
+                    // 카드 클릭 실행
+                    const clickMenuCard = async (loc) => {
+                        if (!loc) return;
+                        await loc.evaluate(n => {
+                            n.removeAttribute?.('target');
+                            n.closest?.('a')?.removeAttribute('target');
+                        }).catch(() => {});
+                        await loc.click();
                         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-                        await page.waitForTimeout(1000);
-                        wentBack = true;
-                    } catch {
-                        // '뒤로가기' 버튼 자체를 못 찾은 경우에만 URL 재이동
+                        await page.waitForTimeout(1500);
+                    };
+
+                    let menuHandle = await findMenuHandle();
+
+                    // 카드를 못 찾으면 '뒤로가기' 또는 URL 재이동 후 재탐색
+                    if (!menuHandle) {
+                        let wentBack = false;
+                        try {
+                            const backBtn = await page.waitForSelector(
+                                'button:has-text("뒤로가기"), a:has-text("뒤로가기")',
+                                { state: 'visible', timeout: 5000 }
+                            );
+                            console.log(`[안내] "${uiLabel}" 카드 미발견 → '뒤로가기' 클릭으로 메인 화면 복귀합니다.`);
+                            await backBtn.click();
+                            // networkidle 타임아웃이 catch로 전파되지 않도록 분리
+                            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                            await page.waitForTimeout(1000);
+                            wentBack = true;
+                        } catch {
+                            // '뒤로가기' 버튼 자체를 못 찾은 경우에만 URL 재이동
+                        }
+                        if (!wentBack) {
+                            console.log(`[안내] '뒤로가기' 버튼 미발견 → ${targetUrl}로 URL 재이동합니다.`);
+                            await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
+                            await page.waitForTimeout(1000);
+                        }
+                        menuHandle = await findMenuHandle();
                     }
-                    if (!wentBack) {
-                        console.log(`[안내] '뒤로가기' 버튼 미발견 → ${targetUrl}로 URL 재이동합니다.`);
-                        await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
-                        await page.waitForTimeout(1000);
+
+                    if (menuHandle) {
+                        await clickMenuCard(menuHandle);
+                    } else {
+                        console.log(`[경고] UI에서 "${uiLabel}" 카드/버튼을 찾지 못했습니다. 현재 화면에서 바로 처리합니다.`);
                     }
-                    menuHandle = await findMenuHandle();
+
+                    // 3) 계정별 데이터 추출
+                    await handleAnalysisMenu(page, menu, config, resultsDir, filePrefix);
                 }
 
-                if (menuHandle) {
-                    await clickMenuCard(menuHandle);
-                } else {
-                    console.log(`[경고] UI에서 "${uiLabel}" 카드/버튼을 찾지 못했습니다. 현재 화면에서 바로 처리합니다.`);
-                }
-
-                // 3) 계정별 데이터 추출
-                await handleAnalysisMenu(page, menu, config, resultsDir, filePrefix);
+            } catch (menuErr) {
+                // 메뉴 단위 오류: 로그·스크린샷 후 다음 메뉴로 계속
+                console.error(`\n[오류] [${menuName}] 처리 실패 — 다음 메뉴로 건너뜁니다.`);
+                console.error(`  사유: ${menuErr.message}`);
+                const safeName = menuName.replace(/[^\w가-힣]/g, '_');
+                try {
+                    const ssPath = path.join(companyDir, `error_${safeName}.png`);
+                    await page.screenshot({ path: ssPath, fullPage: true });
+                    console.log(`  스크린샷: ${ssPath}`);
+                } catch {}
+                // 페이지 상태 초기화 — 다음 메뉴가 올바른 URL로 재진입하도록
+                currentEndpoint    = null;
+                analysisUploadDone = false;
+                aiSessionActive    = false;
             }
         }
 
