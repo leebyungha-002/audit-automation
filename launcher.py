@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-11# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 감사 자동화 런처 — 도구 선택 및 실행 GUI
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QComboBox, QPushButton,
-    QTextEdit, QGroupBox, QSplitter, QFrame, QSizePolicy,
+    QTextEdit, QGroupBox, QSplitter, QFrame, QSizePolicy, QLineEdit,
 )
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
 from PyQt6.QtGui import QFont, QColor, QTextCursor
