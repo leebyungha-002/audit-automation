@@ -521,11 +521,15 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                     await page.waitForTimeout(700);
 
                     // 드롭다운 옵션 선택
+                    // UI 옵션 형식: "35_건물(20100)" — 앞 "숫자_" + 뒤 "(계정코드)" 제거 후 비교
                     // 전략 1: text-is 정확 일치 (코드 없는 순수 계정명 옵션에 유효)
-                    // 전략 2: 옵션 목록 순회 → "12345 계정명" / "[12345] 계정명" 양식 모두 처리
+                    // 전략 2: 옵션 목록 순회 → "숫자_계정명(코드)" / "[코드] 계정명" 양식 모두 처리
                     //         "지급임차료" 입력 시 "지급임차료(제)" 오선택 방지
                     // 전략 3: ArrowDown+Enter 폴백 (첫 번째 옵션 클릭은 오선택 위험으로 제거)
-                    const _stripCode = t => t.replace(/^\[?\d+\]?\s*/, '').trim();
+                    const _stripCode = t => t
+                        .replace(/^\[?\d+\]?[_\s]+/, '')  // 앞 "35_" / "[35] " / "35 " 제거
+                        .replace(/\(\d+\)$/, '')           // 뒤 "(20100)" 계정코드 제거
+                        .trim();
                     let acctSelected = false;
                     try {
                         const exactOpt = page.locator(`[role="option"]:text-is("${accountName}")`).first();
@@ -541,7 +545,7 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                             const optCount = await allOpts.count().catch(() => 0);
                             for (let oi = 0; oi < optCount && !acctSelected; oi++) {
                                 const optText = (await allOpts.nth(oi).textContent().catch(() => '')).trim();
-                                // "12345 계정명" 및 "[12345] 계정명" 형식 모두 처리
+                                // "35_건물(20100)" → "건물", "[10101] 지급임차료" → "지급임차료"
                                 const coreName = _stripCode(optText);
                                 if (coreName === accountName) {
                                     await allOpts.nth(oi).click();
