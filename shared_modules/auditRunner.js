@@ -1052,9 +1052,11 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
         console.log(`\n--- [${menuName}] 처리 시작 ---`);
         const task = tasks[0] ?? {};
         await page.click('button:has-text("상계 거래처 분석 시작")');
-        await page.waitForTimeout(1000);
+        console.log(`[${menuName}] 분석 중... (데이터 규모에 따라 시간이 소요될 수 있습니다)`);
+        // networkidle은 분석 완료 전에 해소될 수 있어 생략
+        // 다운로드 버튼이 나타날 때까지 직접 최대 10분 대기
         const fileName = String(task['파일명'] ?? base);
-        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix);
+        await handleDownloadAndSave(page, 'button:has-text("엑셀 다운로드")', fileName, rawDataDir, menuName, filePrefix, 600000);
 
     } else if (['전기비교', '전기 데이터 비교 분석'].includes(base)) {
         const comboboxSelector = config.selectors.accountCombobox || 'button[role="combobox"]';
