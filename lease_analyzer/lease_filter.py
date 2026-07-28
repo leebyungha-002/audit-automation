@@ -225,8 +225,12 @@ def load_from_result(company: str, base: str = None) -> pd.DataFrame:
     if not os.path.isdir(results_dir):
         raise FileNotFoundError(f"[오류] results 폴더가 없습니다: {results_dir}")
 
+    # Playwright 상세검색 추출 파일만 선택:
+    #   정상 저장: *리스거래완전성*.xlsx
+    #   OneDrive EBUSY로 .tmp 남은 경우: *리스거래완전성*.xlsx.tmp
+    # "리스완전성_{company}.xlsx" 형태의 분석 출력 요약 파일은 의도적으로 제외
     candidates = []
-    for pat in ['*리스*완전성*.xlsx', '*리스완전성*.xlsx', '*리스거래*.xlsx']:
+    for pat in ['*리스거래완전성*.xlsx', '*리스거래완전성*.xlsx.tmp']:
         candidates += glob.glob(os.path.join(results_dir, pat))
     candidates = sorted(set(f for f in candidates if not os.path.basename(f).startswith('~$')))
 
@@ -237,7 +241,7 @@ def load_from_result(company: str, base: str = None) -> pd.DataFrame:
             f"  Playwright 상세검색 시나리오를 먼저 실행해 주세요."
         )
 
-    target = candidates[-1]   # 가장 최신 파일
+    target = candidates[-1]   # 가장 최신 파일 (날짜 포함 파일명 → 정렬 시 최신이 마지막)
     print(f"  대상 파일: {os.path.basename(target)}")
 
     xl = pd.ExcelFile(target)
