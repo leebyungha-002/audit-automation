@@ -302,7 +302,7 @@ class Launcher(QMainWindow):
         self._sheet_row = QWidget()
         sheet_layout = QHBoxLayout(self._sheet_row)
         sheet_layout.setContentsMargins(0, 0, 0, 0)
-        sheet_layout.addWidget(QLabel("시트 필터:"))
+        sheet_layout.addWidget(QLabel("task_list 시트명(부분일치):"))
         self._sheet_input = QLineEdit()
         self._sheet_input.setFont(QFont("맑은 고딕", 10))
         self._sheet_input.setPlaceholderText("예: 벤포드법칙  또는  벤포드법칙, 전기  (쉼표로 다중 지정 / 비워두면 전체 실행)")
