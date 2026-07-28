@@ -521,10 +521,11 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                     await page.waitForTimeout(700);
 
                     // 드롭다운 옵션 선택
-                    // 전략 1: text-is 정확 일치
-                    // 전략 2: 옵션 목록 순회 → 계정코드(숫자) 제거 후 정확 일치 탐색
-                    //         ("지급임차료" 입력 시 "지급임차료(제)"를 오선택하는 문제 방지)
-                    // 전략 3: 첫 번째 옵션 클릭 (폴백)
+                    // 전략 1: text-is 정확 일치 (코드 없는 순수 계정명 옵션에 유효)
+                    // 전략 2: 옵션 목록 순회 → "12345 계정명" / "[12345] 계정명" 양식 모두 처리
+                    //         "지급임차료" 입력 시 "지급임차료(제)" 오선택 방지
+                    // 전략 3: ArrowDown+Enter 폴백 (첫 번째 옵션 클릭은 오선택 위험으로 제거)
+                    const _stripCode = t => t.replace(/^\[?\d+\]?\s*/, '').trim();
                     let acctSelected = false;
                     try {
                         const exactOpt = page.locator(`[role="option"]:text-is("${accountName}")`).first();
@@ -540,24 +541,13 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
                             const optCount = await allOpts.count().catch(() => 0);
                             for (let oi = 0; oi < optCount && !acctSelected; oi++) {
                                 const optText = (await allOpts.nth(oi).textContent().catch(() => '')).trim();
-                                // 선행 계정코드(숫자+공백) 제거 후 순수 계정명 비교
-                                const coreName = optText.replace(/^\d+\s*/, '').trim();
+                                // "12345 계정명" 및 "[12345] 계정명" 형식 모두 처리
+                                const coreName = _stripCode(optText);
                                 if (coreName === accountName) {
                                     await allOpts.nth(oi).click();
                                     acctSelected = true;
                                     console.log(`  계정과목: ${accountName} → 순회 정확 일치 클릭 ("${optText}")`);
                                 }
-                            }
-                        } catch {}
-                    }
-                    if (!acctSelected) {
-                        try {
-                            const firstOpt = page.locator('[role="option"]').first();
-                            if (await firstOpt.isVisible({ timeout: 1000 })) {
-                                const optText = await firstOpt.textContent().catch(() => '');
-                                await firstOpt.click();
-                                acctSelected = true;
-                                console.log(`  계정과목: ${accountName} → 첫 번째 옵션 클릭 ("${optText?.trim()}")`);
                             }
                         } catch {}
                     }
