@@ -1066,14 +1066,19 @@ async function handleAnalysisMenu(page, menu, config, rawDataDir, filePrefix) {
             await page.keyboard.type(accountName, { delay: 50 });
             await page.waitForTimeout(500);
             await page.keyboard.press('Enter');
-            await page.waitForTimeout(1500);
+            // 계정 선택 후 기준월 버튼이 실제로 나타날 때까지 대기
+            // (고정 1500ms 대신 waitForSelector 사용 — 데이터 많은 계정의 느린 렌더링 대응)
+            await page.waitForSelector(
+                'button:has-text("3월"), [role="radio"]:has-text("3월"), label:has-text("3월")',
+                { state: 'visible', timeout: 15000 }
+            ).catch(() => page.waitForTimeout(1500));
             console.log(`  ✓ 계정 '${accountName}' 선택`);
 
             // 2. 기준월 버튼 선택 (3월/6월/9월/12월)
             const baseMonth = task['기준월'];
             if (baseMonth) {
                 await clickRadioByLabel(page, `${baseMonth}월`, '기준월');
-                await page.waitForTimeout(1000);  // 기간 변경 후 재집계 대기
+                await page.waitForTimeout(1500);  // 기간 변경 후 재집계 대기 (기존 1000ms → 1500ms)
             }
 
             // 3. 금액 유형 라디오 (차변만 / 대변만 / 차변+대변 모두)
