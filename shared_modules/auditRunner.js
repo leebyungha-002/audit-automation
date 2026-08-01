@@ -475,6 +475,17 @@ async function handleDetailSearchScenario(page, menu, config, resultsDir, filePr
         // 상세 거래 검색 카드 UI 레이블 (뒤로가기 후 재진입에 사용)
         const cardUiLabel = getMenuUiLabel(menuName, config);
         const comboSel    = config.selectors.accountCombobox || 'button[role="combobox"]';
+        const resetSel    = config.selectors.resetButton || 'button:has-text("초기화")';
+
+        // 그룹 첫 번째 태스크 전 폼 초기화: 이전 메뉴에서 잔류한 계정과목·거래처 값 제거
+        try {
+            await page.waitForSelector(resetSel, { state: 'visible', timeout: 4000 });
+            await page.locator(resetSel).last().click();
+            await page.waitForTimeout(800);
+            console.log(`[${menuName}] 그룹 시작 전 폼 초기화 완료.`);
+        } catch {
+            // 폼이 이미 빈 상태이거나 초기화 버튼 없음 — 무시하고 계속
+        }
 
         for (let ti = 0; ti < groupTasks.length; ti++) {
             const task        = groupTasks[ti];
