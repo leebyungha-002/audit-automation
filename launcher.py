@@ -102,11 +102,11 @@ TOOLS = [
     {
         "category": "분개장분석_파이썬",
         "name": "분개장분석_파이썬 (journal_analyzer)",
-        "desc": "분개장 데이터를 19개 메뉴(벤포드·거래처비교·일자분석 등)로 분석",
+        "desc": "분개장 데이터를 분석번호 선택 실행 (벤포드·거래처비교·심층분석 등)\n비워두면 task_list에서 Y 표시된 전체 분석 실행",
         "cmd": ["python", str(ROOT / "journal_analyzer" / "main_analyzer.py")],
         "cwd": str(ROOT),
         "company": "journal",   # detect_journal_companies()
-        "extra": None,
+        "extra": "task_filter",
     },
     {
         "category": "Data_Injector",
@@ -311,6 +311,19 @@ class Launcher(QMainWindow):
         sheet_layout.addStretch()
         right_layout.addWidget(self._sheet_row)
 
+        # 분析번호 필터 (journal_analyzer 전용: --task 옵션)
+        self._task_row = QWidget()
+        task_layout = QHBoxLayout(self._task_row)
+        task_layout.setContentsMargins(0, 0, 0, 0)
+        task_layout.addWidget(QLabel("분析번호 선택:"))
+        self._task_input = QLineEdit()
+        self._task_input.setFont(QFont("맑은 고딕", 10))
+        self._task_input.setPlaceholderText("예: 14  또는  3 8 14 22  (공백 구분 / 비워두면 Y 전체 실행)")
+        self._task_input.setMinimumWidth(220)
+        task_layout.addWidget(self._task_input)
+        task_layout.addStretch()
+        right_layout.addWidget(self._task_row)
+
         # 시트 분리 모드
         self._mode_row = QWidget()
         mode_layout = QHBoxLayout(self._mode_row)
@@ -451,6 +464,11 @@ class Launcher(QMainWindow):
         if t["company"] == "js":
             self._sheet_input.clear()
 
+        # 분析번호 필터 (journal_analyzer 전용)
+        self._task_row.setVisible(t.get("extra") == "task_filter")
+        if t.get("extra") == "task_filter":
+            self._task_input.clear()
+
         # 모드 선택 (sheet_splitter 전용)
         self._mode_row.setVisible(t["extra"] == "sheet_mode")
 
@@ -496,6 +514,14 @@ class Launcher(QMainWindow):
             sheet_filter = self._sheet_input.text().strip()
             if sheet_filter:
                 cmd += ["--sheet", sheet_filter]
+
+        # 분析번호 필터 인자 추가 (journal_analyzer 전용)
+        if t.get("extra") == "task_filter":
+            task_text = self._task_input.text().strip()
+            if task_text:
+                task_nums = [s for s in task_text.replace(",", " ").split() if s.isdigit()]
+                if task_nums:
+                    cmd += ["--task"] + task_nums
 
         # 시트 분리 모드 인자 추가
         if t["extra"] == "sheet_mode":
