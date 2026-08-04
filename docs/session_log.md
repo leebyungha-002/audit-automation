@@ -292,3 +292,32 @@
 3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
 
 ---
+
+## 2026-08-04
+
+**완료 작업**:
+- journal_analyzer 심층분석 파라미터 인식 버그 수정
+  - 원인: 분析목록 분析명 "심층분析 (계정별 Top)" vs 시트명 "심층분析 (계정별 Top) " (trailing space 불일치)
+  - 수정: `load_analysis_params()`에 `stripped_map` 추가 -> 앞뒤 공백 normalize 후 매칭
+- journal_analyzer 은행조회서 완전성 파라미터 시트 추가
+  - sejoong, kyungnam 두 task_list에 "은행조회서 완전성" 시트 추가 (기본 9개 계정)
+  - 이후 task_list xlsx에서 직접 계정 추가/삭제 가능
+- 런처앱 journal_analyzer 분析번호 선택 필터 추가
+  - 분개장분析 도구 선택 시 "분析번호 선택" 입력란 표시
+  - 번호 입력(예: `14` 또는 `3 8 14 22`) -> `--task` 인수로 전달 -> 지정 번호만 실행
+  - 비워두면 task_list Y 항목 전체 실행 (기존 동작 유지)
+
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: `load_analysis_params()` 시트명 공백 처리
+- `journal_analyzer/kyungnam/task_list_kyungnam.xlsx`: 은행조회서 완전성 시트 추가
+- `journal_analyzer/sejoong/task_list_sejoong.xlsx`: 은행조회서 완전성 시트 추가
+- `launcher.py`: 분析번호 필터 입력란 추가 (`_task_row`, `--task` 전달)
+
+**미해결 이슈**: 없음
+
+**다음 할 일**:
+1. 런처앱 실행 -> 주석 검증(sejoong) 실행 -> 소차이/큰차이 분포 재확인
+2. 잔여 이슈(시트 1-3 감사표 빈 배열, 시트 8/19/27 블록 미발견) 로그 확인 후 추가 수정
+3. sejoong / kyungnam mapping_list 작성 -> data_injector 연동
+
+---
