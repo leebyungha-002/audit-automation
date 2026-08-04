@@ -256,9 +256,9 @@ def _preprocess_df(df):
                 if num_r.notna().sum() > len(ser_r) * 0.5:
                     df[col] = pd.to_datetime(num_r.fillna(0).astype('int64').astype(str), format='%Y%m%d', errors='coerce')
                 else:
-                    df[col] = pd.to_datetime(ser_r, errors='coerce')
+                    df[col] = pd.to_datetime(ser_r, errors='coerce', format='mixed')
             except Exception:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
+                df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
             break
     return df
 
