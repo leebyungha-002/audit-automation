@@ -1326,7 +1326,7 @@ def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
 
     all_rows = []
     for acct in account_list:
-        mask = df[COL_ACCOUNT].astype(str).str.contains(acct, na=False)
+        mask = df[COL_ACCOUNT].astype(str).str.contains(acct, na=False, regex=False)
         sub = df[mask].copy()
         if sub.empty:
             continue
