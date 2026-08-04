@@ -1592,14 +1592,17 @@ def load_active_tasks(task_list_path: str) -> list:
 
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
     xl = pd.ExcelFile(task_list_path)
+    # 시트명 앞뒤 공백 normalize 후 매칭 (예: "심층분析 (계정별 Top) " → "심층분析 (계정별 Top)")
+    stripped_map = {s.strip(): s for s in xl.sheet_names}
     for candidate in [analysis_name, f'{analysis_name}_파라미터']:
-        if candidate not in xl.sheet_names: continue
-        df = pd.read_excel(task_list_path, sheet_name=candidate).dropna(how='all')
+        actual = candidate if candidate in xl.sheet_names else stripped_map.get(candidate.strip())
+        if actual is None: continue
+        df = pd.read_excel(task_list_path, sheet_name=actual).dropna(how='all')
         if '실행여부' in df.columns:
             flag = df['실행여부'].astype(str).str.strip().str.upper()
             df   = df[flag.isin(['Y','O'])].copy()
         params = df.to_dict('records')
-        print(f'    └ 파라미터 시트 [{candidate}]: {len(params)}행')
+        print(f'    └ 파라미터 시트 [{actual}]: {len(params)}행')
         return params
     return [{}]   # 파라미터 시트 없음 → 함수 내 기본값 사용
 
