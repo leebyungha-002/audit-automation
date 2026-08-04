@@ -311,13 +311,32 @@
 - `journal_analyzer/main_analyzer.py`: `load_analysis_params()` 시트명 공백 처리
 - `journal_analyzer/kyungnam/task_list_kyungnam.xlsx`: 은행조회서 완전성 시트 추가
 - `journal_analyzer/sejoong/task_list_sejoong.xlsx`: 은행조회서 완전성 시트 추가
-- `launcher.py`: 분析번호 필터 입력란 추가 (`_task_row`, `--task` 전달)
+- `launcher.py`: 分析번호 필터 입력란 추가 (`_task_row`, `--task` 전달)
+
+## 2026-08-04 (2차)
+
+**완료 작업**:
+- journal_analyzer 은행조회서 완전성 `str.contains` 경고 수정
+  - 계정과목명에 괄호 `()`가 포함될 경우 pandas가 regex 그룹으로 오해 → `regex=False` 추가
+- journal_analyzer 등록일자 파싱 `UserWarning` 수정
+  - `pd.to_datetime(ser_r, errors='coerce')` → `format='mixed'` 추가 (pandas 2.0+)
+  - 문자열 날짜가 다양한 형식으로 혼재해도 경고 없이 파싱
+- graphy 원장 파일 업데이트 및 결과 파일 정리 (204개 파일 커밋)
+- interest_analyzer/interest_expense_analysis.py 업데이트 커밋
+- task_list_sejoong.xlsx, task_list_kyungnam.xlsx 커밋
+
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: `regex=False`, `format='mixed'` 추가
+- `graphy/raw_data/current/당기_graphy_계정별원장_26년2Q.xlsx`
+- `interest_analyzer/interest_expense_analysis.py`
+- `journal_analyzer/sejoong/task_list_sejoong.xlsx`
+- `journal_analyzer/kyungnam/task_list_kyungnam.xlsx`
 
 **미해결 이슈**: 없음
 
 **다음 할 일**:
-1. 런처앱 실행 -> 주석 검증(sejoong) 실행 -> 소차이/큰차이 분포 재확인
+1. 런처앱 실행 → 주석 검증(sejoong) 실행 → 소차이/큰차이 분포 재확인
 2. 잔여 이슈(시트 1-3 감사표 빈 배열, 시트 8/19/27 블록 미발견) 로그 확인 후 추가 수정
-3. sejoong / kyungnam mapping_list 작성 -> data_injector 연동
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
 
 ---
