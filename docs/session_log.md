@@ -340,3 +340,32 @@
 3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
 
 ---
+
+## 2026-08-05
+
+**완료 작업**:
+- journal_analyzer 메뉴 25번 신규 추가: 손익월별분析
+  - 손익 계정별 전기/당기 월별 비교 (1~12월 행, 증감금액·증감률%)
+  - 거래처별 비교는 2번(거래처비교)과 중복 → 25번에서 제거, 월별만 출력
+  - 레지스트리명: 손익항목分析 → 손익월별分析 변경
+  - sejoong·kyungnam task_list 양쪽에 분析목록 25번 행 + 손익월별分析 파라미터 시트 추가
+- 17번 거래처분析 파라미터 시트 추가 (sejoong·kyungnam 양쪽)
+  - 컬럼: 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
+- sejoong 분析목록에 기준월 컬럼 추가 (kyungnam과 동일 구조)
+  - 기준월은 분析함수 호출 전 공통 필터로 적용됨 (25번 포함 모든 메뉴에 적용)
+- audit-automation Python 코드 → Pandas_Accounting_Tool 폴더로 복사 (15개 파일)
+  - journal_analyzer, interest_analyzer, lease_analyzer, note_verifier, file_classifier, report, launcher.py
+
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: analyze_pl_comparison() 추가, 거래처 시트 제거
+- `journal_analyzer/sejoong/task_list_sejoong.xlsx`: 25번·17번 시트 추가, 기준월 컬럼 추가
+- `journal_analyzer/kyungnam/task_list_kyungnam.xlsx`: 25번·17번 시트 추가
+
+**미해결 이슈**: 없음
+
+**다음 할 일**:
+1. 런처앱 실행 → 주석 검증(sejoong) 실행 → 소차이/큰차이 분포 재확인
+2. 잔여 이슈(시트 1-3 감사표 빈 배열, 시트 8/19/27 블록 미발견) 로그 확인 후 추가 수정
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
+
+---
