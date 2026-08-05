@@ -1502,11 +1502,11 @@ def analyze_lease_completeness(df, params_list):
     return {'리스후보목록': result_df}
 
 
-# ── 25. 손익항목 전기/당기 비교 ──────────────────────────────────────────────
+# ── 25. 손익항목 월별 추이 ────────────────────────────────────────────────────
 def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
-    """25. 손익항목 전기/당기 비교분析
+    """25. 손익항목 월별 추이 (전기/당기 월별 비교)
     task_list 파라미터: 계정과목 / 구분(차변·대변·both) / 실행여부
-    결과: 계정별 [월별비교] + [거래처별비교] 시트
+    결과: 계정별 월별비교 시트 (거래처별 비교는 2번 거래처비교 메뉴 사용)
     """
     targets = []
     for p in params_list:
@@ -1519,10 +1519,10 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             targets.append((acct, direction))
 
     if not targets:
-        return {'손익항목분析': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
+        return {'손익월별분析': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
 
     if '구분' not in df.columns:
-        return {'손익항목분析': pd.DataFrame(
+        return {'손익월별분析': pd.DataFrame(
             {'오류': ['구분(전기/당기) 컬럼 없음 — 전기·당기 데이터를 함께 로드하세요.']})}
 
     out = {}
@@ -1536,7 +1536,6 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
         sub['Month'] = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
         sub['구분_str'] = sub['구분'].astype(str).str.strip()
 
-        # 집계 컬럼 결정
         if direction == '차변':
             sub['_amt'] = sub[COL_DEBIT].fillna(0)
             label = '차변'
@@ -1547,7 +1546,6 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             sub['_amt'] = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
             label = '합계'
 
-        # ── 월별 비교 ───────────────────────────────────
         mon = sub.groupby(['구분_str', 'Month']).agg(
             금액합계=('_amt', 'sum'), 건수=('_amt', 'count')).reset_index()
 
@@ -1577,38 +1575,10 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             if c in mr.columns:
                 mr[c] = pd.to_numeric(mr[c], errors='coerce').fillna(0).astype(int)
 
-        # ── 거래처별 비교 ───────────────────────────────
-        vr = pd.DataFrame()
-        if COL_CLIENT in sub.columns:
-            ven = sub.groupby(['구분_str', COL_CLIENT]).agg(
-                금액합계=('_amt', 'sum'), 건수=('_amt', 'count')).reset_index()
-            prev_v = (ven[ven['구분_str'] == '전기'][[COL_CLIENT, '금액합계', '건수']]
-                      .rename(columns={'금액합계': f'전기_{label}', '건수': '전기_건수'}))
-            curr_v = (ven[ven['구분_str'] == '당기'][[COL_CLIENT, '금액합계', '건수']]
-                      .rename(columns={'금액합계': f'당기_{label}', '건수': '당기_건수'}))
-            vr = prev_v.merge(curr_v, on=COL_CLIENT, how='outer').fillna(0)
-            vr[f'증감_{label}'] = vr[f'당기_{label}'] - vr[f'전기_{label}']
-            vr['증감률(%)'] = vr.apply(
-                lambda r: round(r[f'증감_{label}'] / r[f'전기_{label}'] * 100, 1)
-                if r[f'전기_{label}'] != 0 else 0.0, axis=1)
-            vr = vr.sort_values(f'당기_{label}', ascending=False).reset_index(drop=True)
-            total_v = {c: vr[c].sum() if c not in (COL_CLIENT, '증감률(%)') else ''
-                       for c in vr.columns}
-            total_v[COL_CLIENT] = '합  계'
-            if vr[f'전기_{label}'].sum() != 0:
-                total_v['증감률(%)'] = round(
-                    vr[f'증감_{label}'].sum() / vr[f'전기_{label}'].sum() * 100, 1)
-            vr = pd.concat([vr, pd.DataFrame([total_v])], ignore_index=True)
-            for c in ['전기_건수', '당기_건수']:
-                if c in vr.columns:
-                    vr[c] = pd.to_numeric(vr[c], errors='coerce').fillna(0).astype(int)
-
-        acct_short = re.sub(r'[^가-힣a-zA-Z0-9]', '', acct_name)[:14]
+        acct_short = re.sub(r'[^가-힣a-zA-Z0-9]', '', acct_name)[:16]
         out[_safe_sheet(f'손익월별_{acct_short}')] = mr
-        if not vr.empty:
-            out[_safe_sheet(f'손익거래처_{acct_short}')] = vr
 
-    return out or {'손익항목분析': pd.DataFrame({'결과': ['분析 대상 없음']})}
+    return out or {'손익월별분析': pd.DataFrame({'결과': ['분析 대상 없음']})}
 
 
 # =============================================================================
@@ -1638,7 +1608,7 @@ ANALYSIS_REGISTRY: dict = {
     22: ('은행조회서완전성', analyze_bank_confirmation),
     23: ('계정별상세내역',  analyze_account_transaction_detail),
     24: ('리스완전성',       analyze_lease_completeness),
-    25: ('손익항목분析',     analyze_pl_comparison),
+    25: ('손익월별분析',     analyze_pl_comparison),
 }
 
 # 결과를 메인 파일이 아닌 별도 파일로 저장하는 task 번호 집합
