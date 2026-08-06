@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 journal_analyzer/main_analyzer.py  v3
@@ -1795,9 +1795,10 @@ def _save_lease_completeness_file(results: dict, output_dir: str, company_name: 
 
 
 def save_results(results: dict, output_dir: str, company_name: str,
-                 settings: dict = None) -> str:
+                 settings: dict = None, out_path: str = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
-    out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
+    if out_path is None:
+        out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
 
     settings      = settings or {}
     client_name   = settings.get('ClientName', company_name)
@@ -1929,9 +1930,28 @@ def main():
     # 4) 결과 저장
     print('\n[결과 저장]')
     settings = load_settings(paths['task_list'])
-    out_path = save_results(all_results, paths['output'], company_name, settings)
-    print(f'\n  ✅ 완료: {out_path}')
-    print(f'  시트 수: {len(all_results)}개')
+
+    # --task 지정 시 별도 파일로 저장 (덮어쓰기 방지)
+    partial_out_path = None
+    if args.task and active_tasks:
+        import datetime as _dt
+        _date_str = _dt.datetime.now().strftime('%Y%m%d')
+        _non_sep = [(n, nm) for n, nm, p, m in active_tasks if n not in _SEPARATE_FILE_TASKS]
+        if _non_sep:
+            _parts = []
+            for _n, _nm in _non_sep:
+                _safe_nm = re.sub(r'[\\/*?:\[\]<>|]', '', _nm)[:12]
+                _parts.append(f'{_n}_{_safe_nm}')
+            _fname = '_'.join(_parts) + '_' + _date_str + '.xlsx'
+            partial_out_path = os.path.join(paths['output'], _fname)
+
+    if all_results:
+        out_path = save_results(all_results, paths['output'], company_name, settings,
+                                out_path=partial_out_path)
+        print(f'\n  ✅ 완료: {out_path}')
+        print(f'  시트 수: {len(all_results)}개')
+    else:
+        print('\n  ℹ️ 저장할 결과 없음 (별도 파일 태스크만 실행)')
 
 
 if __name__ == '__main__':
