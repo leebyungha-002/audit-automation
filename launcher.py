@@ -343,7 +343,7 @@ class Launcher(QMainWindow):
         fy_layout.addWidget(QLabel("결산월:"))
         self._fy_combo = QComboBox()
         self._fy_combo.setFont(QFont("맑은 고딕", 10))
-        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (7월~6월)"])
+        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (1월~6월)"])
         fy_layout.addWidget(self._fy_combo)
         fy_layout.addStretch()
         right_layout.addWidget(self._fy_row)
