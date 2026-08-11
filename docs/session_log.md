@@ -419,3 +419,28 @@
 3. sejoong / kyungnam mapping_list 작성 → data_injector 연동 (이전 세션부터 이월된 항목, 위 신규 AI_INJECT 행과 함께 정리 가능)
 
 ---
+
+## 2026-08-11 (3차)
+
+**완료 작업**: 실제 API 키로 메뉴26을 돌려보며 발견된 문제 2건 수정 — 둘 다 실제 Gemini 호출로 E2E 검증 완료
+1. **모델 404 수정**: `gemini-2.5-flash`가 신규 발급 API 키에는 호출이 막혀있음(`models.list()`엔 나오지만 실제 generateContent는 404 "no longer available to new users") → 기본 모델을 `gemini-flash-lite-latest`(별칭, 향후 세대교체에도 자동 대응)로 교체
+2. **AI검토결과 상세화**: "계정당 1행 요약만으론 어떤 전표를 확인해야 할지 모르겠다"는 피드백 반영 — JSON 스키마에 `확인필요전표`(전표번호+확인사유) 배열 추가, AI가 지목한 전표번호를 원본 샘플 데이터와 대조해 실제 금액·거래처·일자를 채운 `AI검토_확인전표` 시트를 별도 생성(확인필요 전표가 있을 때만 생성됨). AI가 응답에 적은 숫자는 신뢰하지 않고 항상 원본 대조.
+   - 검증: 정상 케이스(이상거래 없음) → 확인전표 시트 미생성 / 대표이사 앞 1억원 이체 주입 케이스 → 정확히 해당 전표 1건만 잡아냄
+
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: `_get_gemini_client_and_config` 기본 모델 변경, `_AI_REVIEW_SCHEMA`에 `확인필요전표` 배열 필드 추가, `_build_ai_review_prompt` 지시문 보강, `analyze_ai_review()` 반환 타입 **DataFrame → dict**로 변경(`AI검토결과` + 조건부 `AI검토_확인전표`)
+- `.env.example`: `GEMINI_MODEL` 기본값 갱신 (`.env`는 gitignore 대상이라 로컬에서만 별도 수정됨)
+
+**미해결 이슈**: mapping_list 작업은 내일 이어서 진행 예정 (사용자 요청)
+- 아직 어느 회사부터 할지, 감사조서의 실제 셀 좌표가 무엇인지 확정되지 않음
+
+**다음 할 일** (내일 시작점):
+1. mapping_list 작업 대상 회사 확정 (sejoong / kyungnam 중, 혹은 다른 회사)
+2. 해당 회사 `mapping_list*.xlsx`에 신규 행 2개 추가
+   - `AI검토결과` → 감사조서 좌표, remarks=`AI_INJECT` (위험평가=높음/결론=추가확인필요 행 노란 강조)
+   - `AI검토_확인전표` → 감사조서 좌표, remarks 비움 (표 그대로 주입, 확인필요 전표 있을 때만 시트 존재하므로 없으면 해당 행은 "소스 시트 없음" 처리될 수 있음 — 안내 필요)
+3. 대상 회사 task_list 분석목록에 26번 행 + 파라미터 시트(계정과목) 아직 미등록 상태면 같이 세팅
+4. `python report/data_injector.py <회사>` 실행해서 `_updated.xlsx`에 정상 반영되는지 확인
+5. (이전부터 이월) sejoong / kyungnam mapping_list 전반 작성 — 위 AI_INJECT 행과 함께 한 번에 정리 가능
+
+---
