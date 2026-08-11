@@ -198,7 +198,7 @@ def load_mapping(mapping_path):
       D 소스 데이터 범위(src_range, 선택 — 예: B2:C13)
       E 대상파일명(tgt_kw) / F 대상시트(tgt_sheet) / G 시작셀(start_cell)
       H 기준금액(threshold, 선택 — ANALYSIS_INJECT 유의적 변동 판단 기준)
-      I 비고(remarks, 선택 — 예: PIVOT_AGING / MOVE_IMAGE / ANALYSIS_INJECT)
+      I 비고(remarks, 선택 — 예: PIVOT_AGING / MOVE_IMAGE / ANALYSIS_INJECT / LEASE_INJECT / AI_INJECT)
     """
     wb = load_workbook(mapping_path, data_only=True)
     ws = wb.active
@@ -446,6 +446,57 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
 
     print(f'    [Analysis] 유의적 변동 {sig_count}행 강조'
           + (f' (기준금액 {threshold:,.0f}원 이상)' if threshold > 0 else ' (기준금액 미설정)'))
+    return len(df)
+
+
+# ─── AI 계정별 검토결과 주입 ─────────────────────────────────────────────────
+
+def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
+    """journal_analyzer 메뉴26(AI계정별분석_실행)의 AI검토결과 표를 감사조서에 주입.
+
+    '위험평가'=='높음' 또는 '결론'=='추가확인필요'인 행은 _YELLOW_FILL 강조.
+    시트 없으면 신규 생성. Returns: 주입된 데이터 행 수.
+    """
+    def _read(engine):
+        return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine)
+
+    try:
+        df = _read('calamine')
+    except Exception:
+        df = _read('openpyxl')
+
+    df = df.dropna(how='all').reset_index(drop=True)
+
+    if tgt_sheet_name in wb_tgt.sheetnames:
+        ws = wb_tgt[tgt_sheet_name]
+    else:
+        ws = wb_tgt.create_sheet(title=tgt_sheet_name)
+        print(f'    [AI] 시트 신규 생성: {tgt_sheet_name}')
+
+    start_row, start_col = _parse_cell(start_cell)
+
+    # 재실행 시 이전 결과보다 행이 줄어들 경우 잔존 데이터·강조 서식 제거
+    _clear_range(ws, start_row, start_col, n_rows=1)
+    _clear_range(ws, start_row + 1, start_col, reset_fill=True)
+
+    # ── 헤더 주입 ─────────────────────────────────────────────────────
+    for c_idx, col_name in enumerate(df.columns):
+        ws.cell(row=start_row, column=start_col + c_idx).value = col_name
+
+    # ── 데이터 주입 + 위험/추가확인 행 강조 ──────────────────────────
+    sig_count = 0
+    for r_idx, (_, row_data) in enumerate(df.iterrows(), start=1):
+        is_flag = (str(row_data.get('위험평가', '')).strip() == '높음'
+                   or str(row_data.get('결론', '')).strip() == '추가확인필요')
+        if is_flag:
+            sig_count += 1
+        for c_idx, val in enumerate(row_data):
+            cell = ws.cell(row=start_row + r_idx, column=start_col + c_idx)
+            cell.value = None if pd.isna(val) else val
+            if is_flag:
+                cell.fill = _YELLOW_FILL
+
+    print(f'    [AI] 위험평가 높음/추가확인필요 {sig_count}행 강조')
     return len(df)
 
 
@@ -871,8 +922,8 @@ def main():
         print(f'    매칭 성공 (소스) : {src_kw}')
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
 
-        # ── pandas 직접 처리 조기 분기 (PIVOT_AGING / ANALYSIS_INJECT / LEASE_INJECT) ─
-        if remarks in ('PIVOT_AGING', 'ANALYSIS_INJECT', 'LEASE_INJECT'):
+        # ── pandas 직접 처리 조기 분기 (PIVOT_AGING / ANALYSIS_INJECT / LEASE_INJECT / AI_INJECT) ─
+        if remarks in ('PIVOT_AGING', 'ANALYSIS_INJECT', 'LEASE_INJECT', 'AI_INJECT'):
             if tgt_kw not in tgt_path_cache:
                 tgt_path = find_file_by_keyword(audit_dir, tgt_kw)
                 if not tgt_path:
@@ -903,6 +954,10 @@ def main():
                     print(f'    [Lease] 리스 스케줄 주입 → {tgt_sheet} @ {start_cell}')
                     injected = inject_lease_schedule(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
                     print(f'    [완료] 리스 {injected}건 주입')
+                elif remarks == 'AI_INJECT':
+                    print(f'    [AI] AI검토결과 주입 → {tgt_sheet} @ {start_cell}')
+                    injected = inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet, start_cell)
+                    print(f'    [완료] AI검토결과 {injected}행 주입')
                 else:  # ANALYSIS_INJECT
                     print(f'    [Analysis] 변동분석 주입 → {tgt_sheet} @ {start_cell}'
                           + (f'  기준금액: {threshold:,.0f}' if threshold else ''))

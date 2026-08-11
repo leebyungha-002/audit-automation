@@ -26,6 +26,7 @@ task_list 파라미터 시트 규격:
   매출비용교차 : 구분(매출·비용) / 계정과목 / 실행여부
   심층분석     : 계정과목 / 개수 / 금액열(차변·대변·both) / 실행여부
   AI계정별분석 : 계정과목 / 실행여부
+  AI계정별분석_실행 : 계정과목 / 실행여부  (Gemini 호출 → AI검토결과 시트)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -55,6 +56,10 @@ warnings.filterwarnings('ignore', category=pd.errors.DtypeWarning)
 
 BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
 TASK_MASTER_SHEET = '분석목록'
+
+# .env 로드 (GEMINI_API_KEY 등 — 프로젝트 루트 기준)
+from dotenv import load_dotenv
+load_dotenv(os.path.join(BASE_DIR, '..', '.env'))
 
 # 컬럼명 상수
 COL_DATE       = '전표일자'
@@ -854,34 +859,140 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
 
 
 # ── 15. AI 계정별 분석 ────────────────────────────────────────────────────────
+def _prepare_ai_material(df: pd.DataFrame, acct: str):
+    """계정과목 1건에 대해 (월별집계, 마스킹샘플) 튜플을 반환. 대상 없으면 (None, None).
+
+    메뉴15(analyze_ai_preparation)·메뉴26(analyze_ai_review) 공용 전처리.
+    """
+    filtered = df[df[COL_ACCOUNT].str.contains(acct, na=False, regex=False)].copy()
+    if filtered.empty:
+        return None, None
+
+    filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
+    monthly = filtered.groupby('YM')[[COL_DEBIT, COL_CREDIT]].agg(['sum','count']).reset_index()
+    monthly.columns = ['YM','차변합계','차변건수','대변합계','대변건수']
+
+    filtered['MaxAmt'] = filtered[[COL_DEBIT, COL_CREDIT]].max(axis=1)
+    sample = (filtered[filtered['MaxAmt'] >= filtered['MaxAmt'].quantile(0.90)].copy()
+              if len(filtered) > 10 else filtered.copy())
+    if COL_CLIENT in sample.columns:
+        sample[COL_CLIENT] = sample[COL_CLIENT].apply(get_safe_client_name)
+    for col in MASK_TARGET_COLS:
+        if col in sample.columns: sample[col] = sample[col].apply(mask_sensitive_info)
+    sample = sample.drop(columns=['MaxAmt','YM'], errors='ignore')
+
+    return monthly, sample
+
+
 def analyze_ai_preparation(df: pd.DataFrame, params_list: list) -> dict:
     targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
     if not targets: return {'AI분석': pd.DataFrame({'안내':['계정과목 파라미터 없음']})}
     out = {}
     for acct in targets:
-        filtered = df[df[COL_ACCOUNT].str.contains(acct, na=False, regex=False)].copy()
-        if filtered.empty: continue
-        safe_nm   = re.sub(r'[\\/*?:\[\]]', '', acct)[:10]
-
-        filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
-        monthly = filtered.groupby('YM')[[COL_DEBIT, COL_CREDIT]].agg(['sum','count']).reset_index()
-        monthly.columns = ['YM','차변합계','차변건수','대변합계','대변건수']
-
-        filtered['MaxAmt'] = filtered[[COL_DEBIT, COL_CREDIT]].max(axis=1)
-        sample = (filtered[filtered['MaxAmt'] >= filtered['MaxAmt'].quantile(0.90)].copy()
-                  if len(filtered) > 10 else filtered.copy())
-        if COL_CLIENT in sample.columns:
-            sample[COL_CLIENT] = sample[COL_CLIENT].apply(get_safe_client_name)
-        for col in MASK_TARGET_COLS:
-            if col in sample.columns: sample[col] = sample[col].apply(mask_sensitive_info)
-        sample = sample.drop(columns=['MaxAmt','YM'], errors='ignore')
-
+        monthly, sample = _prepare_ai_material(df, acct)
+        if monthly is None: continue
+        safe_nm = re.sub(r'[\\/*?:\[\]]', '', acct)[:10]
         out[_safe_sheet(f'AI_{safe_nm}_월별')] = monthly
         out[_safe_sheet(f'AI_{safe_nm}_샘플')] = sample
 
     if GLOBAL_SAFE_MAP:
         out['_암호해독표'] = pd.DataFrame(list(GLOBAL_SAFE_MAP.items()), columns=['실명','가명'])
     return out or {'AI분석': pd.DataFrame({'결과':['분석 대상 없음']})}
+
+
+# ── 26. AI 계정별 분석 실행 (Gemini 구조화 응답) ───────────────────────────────
+_AI_REVIEW_SCHEMA = {
+    'type': 'OBJECT',
+    'properties': {
+        '위험평가':    {'type': 'STRING', 'enum': ['높음', '중간', '낮음']},
+        '주요특이사항': {'type': 'STRING'},
+        '결론':        {'type': 'STRING', 'enum': ['적정', '추가확인필요', '부적정']},
+        '결론근거':     {'type': 'STRING'},
+        '추가확인사항': {'type': 'STRING'},
+    },
+    'required': ['위험평가', '주요특이사항', '결론', '결론근거'],
+}
+
+
+def _get_gemini_client_and_config():
+    """GEMINI_API_KEY(.env)로 genai.Client 생성 + 구조화 출력용 config 반환.
+
+    google-generativeai(구 SDK)는 지원 종료되어 신규 google-genai SDK 사용.
+    """
+    from google import genai
+    from google.genai import types
+
+    api_key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY가 설정되어 있지 않습니다. 프로젝트 루트 .env 파일에 "
+            "GEMINI_API_KEY=발급받은키 형식으로 추가한 뒤 다시 실행하세요."
+        )
+    model_name = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+    client = genai.Client(api_key=api_key)
+    config = types.GenerateContentConfig(
+        response_mime_type='application/json',
+        response_schema=_AI_REVIEW_SCHEMA,
+    )
+    return client, model_name, config
+
+
+def _build_ai_review_prompt(company_name: str, acct: str, monthly: pd.DataFrame, sample: pd.DataFrame) -> str:
+    monthly_txt = monthly.to_csv(index=False)
+    sample_txt  = sample.head(30).to_csv(index=False)
+    return f"""당신은 외부감사인입니다. 아래는 '{company_name}'의 '{acct}' 계정 분개장 데이터입니다.
+거래처명·민감정보는 이미 가명 처리·마스킹되어 있습니다.
+
+[월별 차변/대변 합계·건수]
+{monthly_txt}
+
+[금액 상위 10% 샘플 거래 (최대 30건)]
+{sample_txt}
+
+위 데이터를 바탕으로 이 계정의 위험평가, 주요 특이사항, 감사 결론, 결론근거, 추가로 확인이 필요한 사항을
+JSON 스키마에 맞춰 한국어로 답변하세요."""
+
+
+def analyze_ai_review(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
+    """메뉴15와 동일한 계정과목 파라미터를 읽어 Gemini에 구조화 분석을 요청하고,
+    계정과목당 1행짜리 결과 표(AI검토결과)를 만든다. mapping_list에서 이 표를
+    그대로(remarks 비움) 또는 AI_INJECT remarks로 감사조서에 주입한다.
+    """
+    import json
+
+    targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
+    if not targets:
+        return pd.DataFrame({'안내': ['계정과목 파라미터 없음']})
+
+    company_name = os.path.basename(_COMPANY_DIR) if _COMPANY_DIR else ''
+    client, model_name, config = _get_gemini_client_and_config()
+
+    rows = []
+    for acct in targets:
+        monthly, sample = _prepare_ai_material(df, acct)
+        if monthly is None:
+            continue
+        print(f'    [AI검토] {acct} → Gemini({model_name}) 호출 중...', flush=True)
+        try:
+            prompt = _build_ai_review_prompt(company_name, acct, monthly, sample)
+            resp = client.models.generate_content(model=model_name, contents=prompt, config=config)
+            data = json.loads(resp.text)
+            rows.append({
+                '계정과목':     acct,
+                '위험평가':     data.get('위험평가', ''),
+                '주요특이사항': data.get('주요특이사항', ''),
+                '결론':         data.get('결론', ''),
+                '결론근거':     data.get('결론근거', ''),
+                '추가확인사항': data.get('추가확인사항', ''),
+            })
+        except Exception as e:
+            print(f'    [AI검토] {acct} 오류: {e}', flush=True)
+            rows.append({
+                '계정과목': acct, '위험평가': '', '주요특이사항': '',
+                '결론': 'API오류', '결론근거': str(e), '추가확인사항': '',
+            })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame({'결과': ['분석 대상 없음']})
 
 
 # ── 16. 데이터·헤더 확인 ──────────────────────────────────────────────────────
@@ -1609,6 +1720,7 @@ ANALYSIS_REGISTRY: dict = {
     23: ('계정별상세내역',  analyze_account_transaction_detail),
     24: ('리스완전성',       analyze_lease_completeness),
     25: ('손익월별분析',     analyze_pl_comparison),
+    26: ('AI계정별분석_실행', analyze_ai_review),
 }
 
 # 결과를 메인 파일이 아닌 별도 파일로 저장하는 task 번호 집합
