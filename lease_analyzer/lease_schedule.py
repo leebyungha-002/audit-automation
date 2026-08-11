@@ -16,7 +16,7 @@ Usage:
     정기리스료, 지급주기(월/분기/년), 지급시점(기초/기말),
     적용할인율(연 이자율), 보증잔존가치/매수선택권,
     선급리스료, 수취한 리스인센티브, 리스개설직접원가, 복구충당부채,
-    지급보증금(명목가액)
+    지급보증금(명목가액), 상각개시(당월/익월) [선택, 미입력 시 '당월']
 """
 
 import glob
@@ -119,6 +119,9 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
     if annual_r > 1:        # % 단위 입력 (예: 5.0 → 0.05)
         annual_r /= 100
 
+    amort_opt = str(_col(c, '상각개시(당월/익월)', '상각개시월(당월/익월)', '상각인식(당월/익월)') or '당월').strip()
+    amort_offset = 1 if amort_opt == '익월' else 0   # 계약별 상각 인식 시점: 개시월(당월) vs 개시월 다음달(익월)
+
     residual    = _safe_float(_col(c, '보증잔존가치/매수선택권', '보증잔존가치/매수선택권금액', '잔존가치'))
     prepaid     = _safe_float(_col(c, '선급리스료'))
     incentive   = _safe_float(_col(c, '수취한 리스인센티브', '리스인센티브'))
@@ -171,7 +174,9 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
         # 사용권자산 상각·리스부채 인식은 지급시점(기초/기말)과 무관하게
         # 실제 사용기간 기준으로 이루어짐 → 각 기간의 시작월(개시일로부터 mi-1개월 후)로 레이블.
         # (기말/후급이라고 해서 상각 인식월을 한 달 미루면 안 됨 — K-IFRS 1116 위배)
-        dt       = start + relativedelta(months=mi - 1)
+        # 단, 계약에 따라 상각 인식이 개시월 다음달부터 시작되는 경우가 있어
+        # '상각개시(당월/익월)' 입력값으로 전체 라벨을 1개월 오프셋한다 (기간 수·이자계산은 불변).
+        dt       = start + relativedelta(months=mi - 1 + amort_offset)
         ym       = dt.strftime('%Y-%m')
         is_pay   = mi in pay_months
         is_last  = mi == n_months
@@ -387,14 +392,15 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
 
     # ── 1. 계약 정보 ──────────────────────────────────────────────────────────
     desc = str(info.get('desc', '')).strip()
-    title_cols = 11 if has_deposit else 9
+    title_cols = 12 if has_deposit else 10
     _title(cur, f'▶  리스계약 {cid}  /  {desc}' if desc else f'▶  리스계약 {cid}', title_cols)
     cur += 1
 
-    info_labels = ['개시일', '종료일', '기간(월)', '정기리스료', '지급주기', '지급시점', '할인율(연)']
+    info_labels = ['개시일', '종료일', '기간(월)', '정기리스료', '지급주기', '지급시점', '할인율(연)', '상각개시']
     info_values = [
         info.get('start'), info.get('end'), info.get('n_months'),
         info.get('payment'), info.get('freq'), info.get('timing'), info.get('rate'),
+        info.get('amort_start', '당월'),
     ]
     if has_deposit:
         info_labels += ['지급보증금', '보증금PV', '현가할인차금']
@@ -803,6 +809,7 @@ def main():
                 'payment':           _safe_float(_col(row_d, '정기리스료')),
                 'freq':              str(_col(row_d, '지급주기(월/분기/년)', '지급주기(월/분기/반기/년)', '지급주기') or '').strip(),
                 'timing':            str(_col(row_d, '지급시점(기초/기말)', '지급시점') or '').strip(),
+                'amort_start':       str(_col(row_d, '상각개시(당월/익월)', '상각개시월(당월/익월)', '상각인식(당월/익월)') or '당월').strip(),
                 'rate':              annual_r,
                 'deposit':           deposit,
                 'deposit_pv':        deposit_pv,
