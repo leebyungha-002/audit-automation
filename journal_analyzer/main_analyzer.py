@@ -27,6 +27,10 @@ task_list 파라미터 시트 규격:
   심층분석     : 계정과목 / 개수 / 금액열(차변·대변·both) / 실행여부
   AI계정별분석 : 계정과목 / 실행여부
   AI계정별분석_실행 : 계정과목 / 실행여부  (Gemini 호출 → AI검토결과 + AI검토_확인전표 시트)
+  감가상각_평가손익분석 : 계정과목 / 금액열 / 그룹기준열 / 실행여부 / 비고
+      (8번 상대계정분석과 동일 로직 — 감가상각비/외화환산손익/평가손익/대손상각비 등
+       손익 계정의 상대계정(자산 누계액 등) 금액을 전표 단위로 매칭해 추출.
+       Phase 1: 상대계정 매칭까지만. 유형자산별 취득원가·감가상각누계액 롤포워드는 Phase 2 예정)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -686,6 +690,16 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         sname   = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}')
         out[sname] = summary
     return out or {'상대계정분석': pd.DataFrame({'안내':['파라미터에 계정과목이 없습니다.']})}
+
+
+# ── 27. 감가상각/평가손익분석 (Phase 1: 상대계정 매칭) ─────────────────────────
+def analyze_depreciation_valuation(df: pd.DataFrame, params_list: list) -> dict:
+    """감가상각비·외화환산손익·평가손익·대손상각비 등 손익 계정의 상대계정 금액을
+    8번 상대계정분석과 동일한 로직(전표 단위 매칭)으로 추출.
+    예) 감가상각비(차변) → 건물감가상각누계액/기계장치감가상각누계액 등(대변) 집계.
+    유형자산별 취득원가·감가상각누계액 롤포워드 표는 Phase 2에서 추가 예정.
+    """
+    return analyze_counterpart(df, params_list)
 
 
 # ── 9. 키워드 검색 ────────────────────────────────────────────────────────────
@@ -1770,6 +1784,7 @@ ANALYSIS_REGISTRY: dict = {
     24: ('리스완전성',       analyze_lease_completeness),
     25: ('손익월별분析',     analyze_pl_comparison),
     26: ('AI계정별분석_실행', analyze_ai_review),
+    27: ('감가상각_평가손익분석', analyze_depreciation_valuation),
 }
 
 # 결과를 메인 파일이 아닌 별도 파일로 저장하는 task 번호 집합
