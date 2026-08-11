@@ -928,7 +928,9 @@ def _get_gemini_client_and_config():
             "GEMINI_API_KEY가 설정되어 있지 않습니다. 프로젝트 루트 .env 파일에 "
             "GEMINI_API_KEY=발급받은키 형식으로 추가한 뒤 다시 실행하세요."
         )
-    model_name = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+    # 2.5 계열은 신규 API 키에 404(no longer available to new users)로 막히는 사례 확인됨
+    # (2026-08 기준) → '-latest' 별칭 기본값으로 향후 모델 교체에도 안전하게 대응
+    model_name = os.environ.get('GEMINI_MODEL', 'gemini-flash-lite-latest').strip()
     client = genai.Client(api_key=api_key)
     config = types.GenerateContentConfig(
         response_mime_type='application/json',
