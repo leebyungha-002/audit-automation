@@ -369,3 +369,27 @@
 3. sejoong / kyungnam mapping_list 작성 → data_injector 연동
 
 ---
+
+## 2026-08-11 15:10
+
+**완료 작업**: 리스 상각 스케줄에 계약별 상각 인식월(당월/익월) 선택 컬럼 추가
+- 계약별로 상각을 리스개시월 당월부터 인식하거나 익월부터 인식하는 관행이 혼재되어 일괄 코딩이 어려운 문제 → input_data에 '상각개시(당월/익월)' 컬럼(드롭다운) 신설
+- build_schedule()에서 이 값에 따라 월별 라벨(연월)만 1개월 오프셋, 총 기간 수·이자계산 로직은 불변
+- 계약별 시트 상단 계약정보 영역에도 '상각개시' 값 표시
+- 미입력 시 기존과 동일하게 '당월' 처리(하위호환)
+- kyungnam·graphy input_data 파일에 새 컬럼(드롭다운 "당월,익월") 추가, 기존 계약은 전부 '당월' 기본값으로 채움
+
+**변경 파일**:
+- `lease_analyzer/lease_schedule.py`
+- `lease_analyzer/input_data/lease_kyungnam_information_fy26.xlsx`
+- `lease_analyzer/input_data/lease_graphy_information_fy25.xlsx`
+- `lease_analyzer/output/lease_schedule_graphy_2025.xlsx` (재생성 검증)
+
+**미해결 이슈**: kyungnam 결과 파일(`output/lease_schedule_kyungnam_2026.xlsx`)이 사용자 PC에서 엑셀로 열려있어 재생성 스크립트 실행이 PermissionError로 실패. 사용자가 파일을 닫은 후 재실행 필요.
+
+**다음 할 일**:
+1. kyungnam 엑셀 파일 닫은 뒤 `python lease_schedule.py --file lease_kyungnam_information_fy26.xlsx --fiscal-month 6` 재실행하여 결과 갱신
+2. 실제 계약 중 익월 상각 대상이 있는지 확인 후 input_data에서 해당 계약만 '익월'로 표시
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동 (이전 세션 이월 항목)
+
+---
