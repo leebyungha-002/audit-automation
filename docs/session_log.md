@@ -393,3 +393,29 @@
 3. sejoong / kyungnam mapping_list 작성 → data_injector 연동 (이전 세션 이월 항목)
 
 ---
+
+## 2026-08-11 (2차)
+
+**완료 작업**: journal_analyzer 메뉴15(AI계정별분석) 뒷단에 실제 Gemini API 호출 단계를 붙여 mapping_list로 감사조서에 자동 반영되는 구조 구현
+- 메뉴15(`analyze_ai_preparation`)의 계정별 필터링/월별집계/샘플링/마스킹 로직을 `_prepare_ai_material()`로 공용화
+- 신규 메뉴26 `AI계정별분석_실행`(`analyze_ai_review`) 추가: 계정과목별로 Gemini(`google-genai`, 구 `google-generativeai`는 지원종료 확인되어 신규 SDK로 채택)에 공통 JSON 스키마(위험평가/주요특이사항/결론/결론근거/추가확인사항)로 구조화 응답 요청 → 계정당 1행 표(`AI검토결과`) 생성
+- `data_injector.py`에 `AI_INJECT` remarks 키워드 추가(`inject_ai_result`): 위험평가=높음 또는 결론=추가확인필요 행 노란색 강조 후 감사조서에 주입 (기존 `ANALYSIS_INJECT`와 동일 패턴)
+- `.env`/`.env.example`에 `GEMINI_API_KEY`/`GEMINI_MODEL` 항목 추가, `python-dotenv`로 로드
+- import/스키마 검증 등 오프라인 스모크 테스트 통과 (실제 API 키로 살아있는 호출은 미검증 — 키 미보유)
+
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: `_prepare_ai_material`, `analyze_ai_review`, `_get_gemini_client_and_config`, `_build_ai_review_prompt`, `_AI_REVIEW_SCHEMA` 추가, `ANALYSIS_REGISTRY[26]` 등록, `load_dotenv()` 추가
+- `report/data_injector.py`: `inject_ai_result()` 추가, remarks 분기에 `AI_INJECT` 연결
+- `.env`, `.env.example`: `GEMINI_API_KEY`, `GEMINI_MODEL` 플레이스홀더 추가
+
+**미해결 이슈**: 실사용 전 사용자가 직접 해야 할 것
+1. `.env`의 `GEMINI_API_KEY`에 실제 키 입력
+2. 대상 회사 `task_list_<회사>.xlsx`의 분석목록 시트에 26번 행 추가 + `AI계정별분석_실행_파라미터`(또는 분석목록에 적은 이름 그대로 + `_파라미터`) 시트에 계정과목 기입
+3. 해당 회사 `mapping_list*.xlsx`에 신규 행 추가 — src_kw=`AI계정별분석_실행`, src_sheet=`AI검토결과`, remarks=`AI_INJECT`(강조 원할 시), tgt는 실제 감사조서 좌표
+
+**다음 할 일**:
+1. 사용자가 GEMINI_API_KEY 발급/입력 후 `python main_analyzer.py <회사> --task 26` 1회 시험 실행 (계정 1~2개만)
+2. 결과 확인 후 실제 감사조서 좌표를 알려주면 mapping_list 행을 대신 채워줄 수 있음
+3. sejoong / kyungnam mapping_list 작성 → data_injector 연동 (이전 세션부터 이월된 항목, 위 신규 AI_INJECT 행과 함께 정리 가능)
+
+---
