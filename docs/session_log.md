@@ -466,3 +466,32 @@
 2. dae_il 이자비용 차이 원인 확인 (등록 안 된 차입금 존재 여부 등)
 
 ---
+
+## 2026-08-11 (5차)
+
+**완료 작업**: kyungnam AI계정별분석_실행(26번) 세팅 + mapping_list 연동, 실제 실행으로 E2E 검증하며 핵심 버그 1건 발견·수정
+- 사용자 결정사항: kyungnam 대상 계정=보통예금, 주입 위치=감사조서 신규 전용 시트 'AI검토' (AI검토결과 @A1, AI검토_확인전표 @A20)
+- `task_list_kyungnam.xlsx`: 분석목록에 26번(AI계정별분석_실행, Y, 당기) 행 추가 + 'AI계정별분석_실행' 파라미터 시트(보통예금/Y) 신규 생성
+- `Kyungnam_mapping_list_25년.xlsx`: AI검토결과/AI검토_확인전표 매핑 행 2개 추가 (둘 다 remarks=AI_INJECT)
+- **핵심 버그 발견·수정**: `data_injector.py`의 `inject_analysis_result`/`inject_ai_result`가 분석결과 파일을 pandas로 읽을 때 1~2행(회사명/분석기간, `save_results()`가 항상 삽입)을 헤더로 오인식 → 실제 컬럼('위험평가','결론' 등)이 데이터로 밀려 강조 로직·주입 데이터가 전부 깨지는 상태였음 (ANALYSIS_INJECT 사용 매핑 행도 동일 결함 보유했을 것으로 추정되나 kyungnam엔 아직 해당 remarks 사용 행 없어 미발현 상태였음). `header=2` 추가로 수정, 실제 파일로 재현 후 수정 확인
+- 검증 순서: kyungnam 전체 분석 실행(`main_analyzer.py kyungnam`, 125개 시트 생성, 26번의 Gemini 실호출 포함) → `data_injector.py kyungnam` 실행(46건 중 42건 성공) → `당기_Kyungnam_조서_26년_updated.xlsx`의 'AI검토' 시트를 직접 열어 헤더/데이터가 정확히 들어갔는지 확인 완료
+- AI검토_확인전표는 이번 실행에서 이상거래가 없어 시트 자체가 생성되지 않아 "소스 시트 없음" 오류로 스킵됨 — 설계대로 동작(문제 아님)
+- 이번 실행에서 함께 드러난 기존(무관) 오류 3건은 손대지 않음: 상세거래_구축물_차변/상세거래_시설장치_대변/상세거래_임대보증금(비유동)_대변 소스 시트 없음 — 해당 계정 당기 거래 없음으로 추정, 별도 확인 필요
+- xlwings 재저장(XML 정합성 복구) 단계 실패 경고 있었으나 openpyxl 저장은 정상 완료되어 `_updated.xlsx` 자체는 사용 가능
+
+**변경 파일**:
+- `report/data_injector.py`: `inject_analysis_result`/`inject_ai_result` 내부 `pd.read_excel(...)` 에 `header=2` 추가
+- `journal_analyzer/kyungnam/task_list_kyungnam.xlsx`: 26번 등록 + 파라미터 시트 추가
+- `journal_analyzer/kyungnam/감사조서/Kyungnam_mapping_list_25년.xlsx`: AI_INJECT 매핑 행 2개 추가
+
+**미해결 이슈**:
+- sejoong mapping_list는 아직 미작성 (파일 자체가 없음, 다음 세션에서 진행 예정)
+- 이번에 드러난 kyungnam 기존 오류 3건(구축물/시설장치/임대보증금(비유동) 소스 시트 없음) 원인 미확인
+- dae_il 이자비용 차이(+90.55%) 원인 미확인 (4차 세션 이월)
+
+**다음 할 일**:
+1. sejoong mapping_list 신규 작성 (감사조서 좌표 확인 필요 — 회사 형식이 kyungnam과 다를 수 있음)
+2. kyungnam 소스 시트 없음 오류 3건 원인 확인 (해당 계정 당기 거래 유무 확인)
+3. dae_il 이자비용 차이 원인 확인
+
+---
