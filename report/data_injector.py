@@ -375,7 +375,8 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
     Returns: 주입된 데이터 행 수.
     """
     def _read(engine):
-        return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine)
+        # save_results()가 1~2행에 회사명/분석기간을 적어두므로 3행(header=2)이 실제 헤더
+        return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine, header=2)
 
     try:
         df = _read('calamine')
@@ -458,7 +459,8 @@ def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
     시트 없으면 신규 생성. Returns: 주입된 데이터 행 수.
     """
     def _read(engine):
-        return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine)
+        # save_results()가 1~2행에 회사명/분석기간을 적어두므로 3행(header=2)이 실제 헤더
+        return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine, header=2)
 
     try:
         df = _read('calamine')
