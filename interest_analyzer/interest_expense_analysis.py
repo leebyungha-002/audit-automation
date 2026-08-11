@@ -1,4 +1,4 @@
-1"""
+"""
 이자비용 적정성 분석 (Reasonableness Test)
 실행: python interest_expense_analysis.py <회사명>
 예시: python interest_expense_analysis.py dae_il
