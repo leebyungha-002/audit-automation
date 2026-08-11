@@ -26,7 +26,7 @@ task_list 파라미터 시트 규격:
   매출비용교차 : 구분(매출·비용) / 계정과목 / 실행여부
   심층분석     : 계정과목 / 개수 / 금액열(차변·대변·both) / 실행여부
   AI계정별분석 : 계정과목 / 실행여부
-  AI계정별분석_실행 : 계정과목 / 실행여부  (Gemini 호출 → AI검토결과 시트)
+  AI계정별분석_실행 : 계정과목 / 실행여부  (Gemini 호출 → AI검토결과 + AI검토_확인전표 시트)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -909,6 +909,22 @@ _AI_REVIEW_SCHEMA = {
         '결론':        {'type': 'STRING', 'enum': ['적정', '추가확인필요', '부적정']},
         '결론근거':     {'type': 'STRING'},
         '추가확인사항': {'type': 'STRING'},
+        '확인필요전표': {
+            'type': 'ARRAY',
+            'description': (
+                '결론근거·추가확인사항의 근거가 되는 개별 전표. 반드시 프롬프트에 '
+                '제공된 샘플 거래의 전표번호만 인용할 것(임의 생성 금지). '
+                '확인할 특정 전표가 없으면 빈 배열([])로 둘 것.'
+            ),
+            'items': {
+                'type': 'OBJECT',
+                'properties': {
+                    '전표번호': {'type': 'STRING', 'description': '제공된 샘플 데이터의 전표번호를 그대로 인용'},
+                    '확인사유': {'type': 'STRING'},
+                },
+                'required': ['전표번호', '확인사유'],
+            },
+        },
     },
     'required': ['위험평가', '주요특이사항', '결론', '결론근거'],
 }
@@ -948,38 +964,51 @@ def _build_ai_review_prompt(company_name: str, acct: str, monthly: pd.DataFrame,
 [월별 차변/대변 합계·건수]
 {monthly_txt}
 
-[금액 상위 10% 샘플 거래 (최대 30건)]
+[금액 상위 10% 샘플 거래 (최대 30건, 전표번호 포함)]
 {sample_txt}
 
 위 데이터를 바탕으로 이 계정의 위험평가, 주요 특이사항, 감사 결론, 결론근거, 추가로 확인이 필요한 사항을
-JSON 스키마에 맞춰 한국어로 답변하세요."""
+JSON 스키마에 맞춰 한국어로 답변하세요. 특히 결론근거·추가확인사항에서 언급한 우려사항과 직접 관련된
+개별 전표가 위 샘플 데이터에 있다면, 그 전표번호를 반드시 '확인필요전표'에 그대로 인용해 나열하세요.
+샘플에 없는 전표번호를 임의로 만들어내지 마세요. 특정할 전표가 없으면 '확인필요전표'를 빈 배열로 두세요."""
 
 
-def analyze_ai_review(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
-    """메뉴15와 동일한 계정과목 파라미터를 읽어 Gemini에 구조화 분석을 요청하고,
-    계정과목당 1행짜리 결과 표(AI검토결과)를 만든다. mapping_list에서 이 표를
-    그대로(remarks 비움) 또는 AI_INJECT remarks로 감사조서에 주입한다.
+def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
+    """메뉴15와 동일한 계정과목 파라미터를 읽어 Gemini에 구조화 분석을 요청한다.
+
+    두 개의 표를 만든다.
+      AI검토결과      : 계정과목당 1행 요약(위험평가/결론 등) — mapping_list에서
+                        그대로(remarks 비움) 또는 AI_INJECT remarks로 주입.
+      AI검토_확인전표 : AI가 결론 근거로 지목한 개별 전표 1건당 1행. 전표번호로
+                        원본 샘플 데이터(sample)를 다시 찾아 금액·거래처·일자를
+                        채운다(AI가 만든 숫자를 그대로 믿지 않고 원본 대조).
     """
     import json
 
     targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
     if not targets:
-        return pd.DataFrame({'안내': ['계정과목 파라미터 없음']})
+        return {'AI검토결과': pd.DataFrame({'안내': ['계정과목 파라미터 없음']})}
 
     company_name = os.path.basename(_COMPANY_DIR) if _COMPANY_DIR else ''
     client, model_name, config = _get_gemini_client_and_config()
 
-    rows = []
+    summary_rows, detail_rows = [], []
     for acct in targets:
         monthly, sample = _prepare_ai_material(df, acct)
         if monthly is None:
             continue
+        # 전표번호 → 원본 행 조회용 (AI가 지목한 전표의 실제 금액·거래처·일자를 원본에서 재확인)
+        jid_lookup = {}
+        if COL_JOURNAL_ID in sample.columns:
+            for _, r in sample.iterrows():
+                jid_lookup.setdefault(str(r[COL_JOURNAL_ID]), r)
+
         print(f'    [AI검토] {acct} → Gemini({model_name}) 호출 중...', flush=True)
         try:
             prompt = _build_ai_review_prompt(company_name, acct, monthly, sample)
             resp = client.models.generate_content(model=model_name, contents=prompt, config=config)
             data = json.loads(resp.text)
-            rows.append({
+            summary_rows.append({
                 '계정과목':     acct,
                 '위험평가':     data.get('위험평가', ''),
                 '주요특이사항': data.get('주요특이사항', ''),
@@ -987,14 +1016,32 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
                 '결론근거':     data.get('결론근거', ''),
                 '추가확인사항': data.get('추가확인사항', ''),
             })
+            for item in data.get('확인필요전표') or []:
+                jid = str(item.get('전표번호', '')).strip()
+                src_row = jid_lookup.get(jid)
+                detail_rows.append({
+                    '계정과목':   acct,
+                    '전표번호':   jid,
+                    '전표일자':   src_row[COL_DATE] if src_row is not None and COL_DATE in src_row else '',
+                    '거래처명':   src_row[COL_CLIENT] if src_row is not None and COL_CLIENT in src_row else '',
+                    '차변':       src_row[COL_DEBIT] if src_row is not None and COL_DEBIT in src_row else '',
+                    '대변':       src_row[COL_CREDIT] if src_row is not None and COL_CREDIT in src_row else '',
+                    '확인사유':   item.get('확인사유', ''),
+                    '비고':       '' if src_row is not None else '원본 샘플에서 전표번호 미확인 — AI 응답 그대로 기재',
+                })
         except Exception as e:
             print(f'    [AI검토] {acct} 오류: {e}', flush=True)
-            rows.append({
+            summary_rows.append({
                 '계정과목': acct, '위험평가': '', '주요특이사항': '',
                 '결론': 'API오류', '결론근거': str(e), '추가확인사항': '',
             })
 
-    return pd.DataFrame(rows) if rows else pd.DataFrame({'결과': ['분석 대상 없음']})
+    out = {
+        'AI검토결과': pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame({'결과': ['분석 대상 없음']}),
+    }
+    if detail_rows:
+        out['AI검토_확인전표'] = pd.DataFrame(detail_rows)
+    return out
 
 
 # ── 16. 데이터·헤더 확인 ──────────────────────────────────────────────────────
