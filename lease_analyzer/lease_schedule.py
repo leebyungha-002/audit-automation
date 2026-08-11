@@ -168,9 +168,10 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
     dep_bal = deposit_pv   # 보증금 당월 기초PV
 
     for mi in range(1, n_months + 1):
-        # 기말(후급): 각 기간의 끝(= 개시일로부터 mi개월 후)으로 레이블
-        # 기초(선급): 각 기간의 시작(= 개시일로부터 mi-1개월 후)으로 레이블
-        dt       = start + relativedelta(months=mi if when == 0 else mi - 1)
+        # 사용권자산 상각·리스부채 인식은 지급시점(기초/기말)과 무관하게
+        # 실제 사용기간 기준으로 이루어짐 → 각 기간의 시작월(개시일로부터 mi-1개월 후)로 레이블.
+        # (기말/후급이라고 해서 상각 인식월을 한 달 미루면 안 됨 — K-IFRS 1116 위배)
+        dt       = start + relativedelta(months=mi - 1)
         ym       = dt.strftime('%Y-%m')
         is_pay   = mi in pay_months
         is_last  = mi == n_months
