@@ -29,8 +29,12 @@ task_list 파라미터 시트 규격:
   AI계정별분석_실행 : 계정과목 / 실행여부  (Gemini 호출 → AI검토결과 + AI검토_확인전표 시트)
   감가상각_평가손익분석 : 계정과목 / 금액열 / 그룹기준열 / 실행여부 / 비고
       (8번 상대계정분석과 동일 로직 — 감가상각비/외화환산손익/평가손익/대손상각비 등
-       손익 계정의 상대계정(자산 누계액 등) 금액을 전표 단위로 매칭해 추출.
-       Phase 1: 상대계정 매칭까지만. 유형자산별 취득원가·감가상각누계액 롤포워드는 Phase 2 예정)
+       손익 계정의 상대계정(자산 누계액 등) 금액을 전표 단위로 매칭해 추출. (Phase 1)
+       같은 task_list에 '감가상각_유형자산롤포워드' 시트가 있으면 Phase 2도 함께 실행:
+  감가상각_유형자산롤포워드 : 유형자산계정명 / 감가상각누계액계정명 / 실행여부
+      (유형자산계정별 취득원가·감가상각누계액 기초/당기증가/당기감소/기말 롤포워드.
+       당기 감가상각비는 Phase 1의 상대_감가상각* 매칭 결과에서 가져옴.
+       기초잔액은 data/previous의 전기 계정별_거래처별명세 파일이 있는 회사만 채워짐)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -695,11 +699,98 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
 # ── 27. 감가상각/평가손익분석 (Phase 1: 상대계정 매칭) ─────────────────────────
 def analyze_depreciation_valuation(df: pd.DataFrame, params_list: list) -> dict:
     """감가상각비·외화환산손익·평가손익·대손상각비 등 손익 계정의 상대계정 금액을
-    8번 상대계정분석과 동일한 로직(전표 단위 매칭)으로 추출.
-    예) 감가상각비(차변) → 건물감가상각누계액/기계장치감가상각누계액 등(대변) 집계.
-    유형자산별 취득원가·감가상각누계액 롤포워드 표는 Phase 2에서 추가 예정.
+    8번 상대계정분석과 동일한 로직(전표 단위 매칭)으로 추출. (Phase 1)
+    이어서 '감가상각_유형자산롤포워드' 파라미터 시트가 있으면 유형자산계정별
+    취득원가·감가상각누계액 기초/당기증가/당기감소/기말 표를 추가한다. (Phase 2)
     """
-    return analyze_counterpart(df, params_list)
+    out = analyze_counterpart(df, params_list)
+    out.update(_depreciation_rollforward(df, out))
+    return out
+
+
+def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
+    """유형자산계정별 취득원가·감가상각누계액 롤포워드.
+
+    취득원가        : 기초 + 당기증가(해당 자산계정 차변) - 당기감소(대변) = 기말
+    감가상각누계액  : 기초 + 당기감가상각비(Phase1 상대_감가상각* 매칭분)
+                      - 당기감소(해당 상각누계액계정 차변, 처분 등) = 기말
+    기초잔액은 data/previous의 전기 계정별_거래처별명세 파일이 있을 때만 채우고,
+    없으면 공란(None)으로 둔다 (분개장에서 역산하지 않음).
+    """
+    global _COMPANY_DIR
+    if _COMPANY_DIR is None:
+        return {}
+
+    task_path = os.path.join(_COMPANY_DIR, f'task_list_{os.path.basename(_COMPANY_DIR)}.xlsx')
+    if not os.path.isfile(task_path):
+        return {}
+    sheet_name = '감가상각_유형자산롤포워드'
+    try:
+        xl = pd.ExcelFile(task_path)
+        if sheet_name not in xl.sheet_names:
+            return {}
+        pairs = pd.read_excel(xl, sheet_name=sheet_name).dropna(how='all')
+    except Exception:
+        return {}
+    if '실행여부' in pairs.columns:
+        flag = pairs['실행여부'].astype(str).str.strip().str.upper()
+        pairs = pairs[flag.isin(['Y', 'O'])]
+    if pairs.empty:
+        return {}
+
+    # 전기명세 파일 (있으면 기초잔액용)
+    prev_file = _find_prev_detail_file(os.path.join(_COMPANY_DIR, 'data', 'previous'))
+    prev_xl = pd.ExcelFile(prev_file) if prev_file else None
+
+    # Phase 1 '상대_감가상각*' 결과에서 {감가상각누계액계정명: 당기감가상각비} 집계
+    dep_lookup: dict = {}
+    for sname, sdf in phase1_results.items():
+        if not sname.startswith('상대_감가상각') or '상대계정명' not in sdf.columns:
+            continue
+        amt_col = next((c for c in sdf.columns if c.endswith('합계')), None)
+        if amt_col is None:
+            continue
+        for _, r in sdf.iterrows():
+            key = str(r['상대계정명']).strip()
+            dep_lookup[key] = dep_lookup.get(key, 0) + (r[amt_col] or 0)
+
+    def _period_sum(acct_name: str):
+        mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
+        sub = df[mask]
+        return sub[COL_DEBIT].sum(), sub[COL_CREDIT].sum()
+
+    rows = []
+    for _, p in pairs.iterrows():
+        asset_acct = _nv(p.get('유형자산계정명', ''))
+        dep_acct   = _nv(p.get('감가상각누계액계정명', ''))
+        if not asset_acct:
+            continue
+
+        a_incr, a_decr = _period_sum(asset_acct)
+        a_open  = _prev_balance_total(prev_xl, asset_acct)
+        a_close = a_open + a_incr - a_decr if a_open is not None else None
+
+        row = {
+            '유형자산계정': asset_acct,
+            '취득원가_기초': a_open, '취득원가_당기증가': a_incr,
+            '취득원가_당기감소': a_decr, '취득원가_기말': a_close,
+        }
+
+        if dep_acct:
+            _, d_decr = _period_sum(dep_acct)
+            d_incr  = dep_lookup.get(dep_acct, 0)
+            d_open  = _prev_balance_total(prev_xl, dep_acct)
+            d_close = d_open + d_incr - d_decr if d_open is not None else None
+            row.update({
+                '감가상각누계액계정': dep_acct,
+                '상각누계액_기초': d_open, '상각누계액_당기감가상각비': d_incr,
+                '상각누계액_당기감소': d_decr, '상각누계액_기말': d_close,
+            })
+        rows.append(row)
+
+    if not rows:
+        return {}
+    return {'유형자산_롤포워드': pd.DataFrame(rows)}
 
 
 # ── 9. 키워드 검색 ────────────────────────────────────────────────────────────
@@ -1174,6 +1265,67 @@ def analyze_monthly_full_account(df: pd.DataFrame, params_list: list) -> pd.Data
     return work.groupby(grp)[[COL_DEBIT, COL_CREDIT]].sum().reset_index()
 
 
+# ── 전기 계정별_거래처별명세 공용 헬퍼 (20번·27번에서 공유) ─────────────────────
+def _find_prev_detail_file(prev_dir: str):
+    """data/previous 폴더에서 전기 계정별_거래처별명세 파일 경로 탐색. 없으면 None."""
+    if not os.path.isdir(prev_dir):
+        return None
+    for f in sorted(os.listdir(prev_dir)):
+        if ('계정별' in f or '거래처별' in f) and f.endswith('.xlsx') and not f.startswith('~$'):
+            if '명세' in f or '거래처별' in f:
+                return os.path.join(prev_dir, f)
+    return None
+
+
+def _find_prev_sheet(prev_sheets: list, acct_name: str):
+    """계정명과 가장 근접한 전기명세 시트명을 찾는다 (공백/특수문자 정규화 후 매칭)."""
+    if acct_name in prev_sheets:
+        return acct_name
+    norm = acct_name.replace(' ', '')
+    for s in prev_sheets:
+        if s.replace(' ', '') == norm:
+            return s
+    norm2 = re.sub(r'[\s()（）]', '', acct_name)
+    for s in prev_sheets:
+        if re.sub(r'[\s()（）]', '', s) == norm2:
+            return s
+    for s in prev_sheets:
+        if acct_name in s or s in acct_name:
+            return s
+    return None
+
+
+def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str) -> dict:
+    """전기명세 시트에서 {거래처명: 잔액} 딕셔너리 로드."""
+    pdf = pd.read_excel(prev_xl, sheet_name=sheet_name, header=0)
+    pdf.columns = [str(c).strip() for c in pdf.columns]
+    vendor_col = next((c for c in pdf.columns if '거래처' in c), None)
+    bal_col = next((c for c in pdf.columns if '잔' in c), None)
+    if not vendor_col or not bal_col:
+        return {}
+    balances = {}
+    for _, row in pdf.iterrows():
+        vendor = str(row[vendor_col]).strip() if pd.notna(row[vendor_col]) else ''
+        if not vendor or vendor.replace(' ', '') in ('합계:', '합계', 'nan', ''):
+            continue
+        try:
+            bal = float(row[bal_col]) if pd.notna(row[bal_col]) else 0
+        except (ValueError, TypeError):
+            bal = 0
+        balances[vendor] = balances.get(vendor, 0) + bal
+    return balances
+
+
+def _prev_balance_total(prev_xl, acct_name: str):
+    """전기명세에서 계정명 전체 합산 잔액. 시트가 없으면 None (표시 안 함)."""
+    if prev_xl is None:
+        return None
+    sheet = _find_prev_sheet(prev_xl.sheet_names, acct_name)
+    if not sheet:
+        return None
+    return sum(_load_prev_balances(prev_xl, sheet).values())
+
+
 # ── 20. 당기증감분석 (계정별 거래처별) ───────────────────────────────────────
 def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     """전기 계정별_거래처별명세에서 기초잔액, 당기 분개장에서 증감 산출하여 기말잔액 계산.
@@ -1185,16 +1337,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
         return {'잔액증감분석': pd.DataFrame({'오류': ['company_dir 미설정']})}
 
     prev_dir = os.path.join(_COMPANY_DIR, 'data', 'previous')
-    if not os.path.isdir(prev_dir):
-        return {'잔액증감분석': pd.DataFrame({'오류': [f'previous 폴더 없음: {prev_dir}']})}
-
-    # ── 전기 명세 파일 탐색 ──
-    prev_file = None
-    for f in sorted(os.listdir(prev_dir)):
-        if ('계정별' in f or '거래처별' in f) and f.endswith('.xlsx') and not f.startswith('~$'):
-            if '명세' in f or '거래처별' in f:
-                prev_file = os.path.join(prev_dir, f)
-                break
+    prev_file = _find_prev_detail_file(prev_dir)
     if not prev_file:
         return {'잔액증감분석': pd.DataFrame({'오류': ['전기 계정별_거래처별명세 파일 없음']})}
 
@@ -1262,49 +1405,14 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     prev_xl = pd.ExcelFile(prev_file)
     prev_sheets = prev_xl.sheet_names
 
-    def _find_prev_sheet(acct_name):
-        if acct_name in prev_sheets:
-            return acct_name
-        norm = acct_name.replace(' ', '')
-        for s in prev_sheets:
-            if s.replace(' ', '') == norm:
-                return s
-        norm2 = re.sub(r'[\s()（）]', '', acct_name)
-        for s in prev_sheets:
-            if re.sub(r'[\s()（）]', '', s) == norm2:
-                return s
-        for s in prev_sheets:
-            if acct_name in s or s in acct_name:
-                return s
-        return None
-
-    def _load_prev_balances(sheet_name):
-        pdf = pd.read_excel(prev_xl, sheet_name=sheet_name, header=0)
-        pdf.columns = [str(c).strip() for c in pdf.columns]
-        vendor_col = next((c for c in pdf.columns if '거래처' in c), None)
-        bal_col = next((c for c in pdf.columns if '잔' in c), None)
-        if not vendor_col or not bal_col:
-            return {}
-        balances = {}
-        for _, row in pdf.iterrows():
-            vendor = str(row[vendor_col]).strip() if pd.notna(row[vendor_col]) else ''
-            if not vendor or vendor.replace(' ', '') in ('합계:', '합계', 'nan', ''):
-                continue
-            try:
-                bal = float(row[bal_col]) if pd.notna(row[bal_col]) else 0
-            except (ValueError, TypeError):
-                bal = 0
-            balances[vendor] = balances.get(vendor, 0) + bal
-        return balances
-
     # ── 계정별 분석 실행 ──
     all_results = {}
 
     for acct_name, gubun in targets:
         is_asset = gubun in ('차변', '자산')
 
-        prev_sheet = _find_prev_sheet(acct_name)
-        prev_balances = _load_prev_balances(prev_sheet) if prev_sheet else {}
+        prev_sheet = _find_prev_sheet(prev_sheets, acct_name)
+        prev_balances = _load_prev_balances(prev_xl, prev_sheet) if prev_sheet else {}
         if prev_sheet:
             print(f'      {acct_name}: 전기 {len(prev_balances)}건 (시트: {prev_sheet})')
         else:
