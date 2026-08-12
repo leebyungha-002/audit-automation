@@ -54,6 +54,18 @@ task_list 파라미터 시트 규격:
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
+4번(데이터개요) 부가 기능 — 당기 계정별원장 기초/기말잔액표:
+  data/current 폴더에 파일명에 '계정별원장'이 들어간 xlsx가 있으면(파라미터 불필요,
+  회사 무관 자동 감지), 4번 실행 시 '계정별원장_잔액표' 시트를 추가로 만든다.
+  시트 1개 = 계정 1개(예: '0_당좌예금(10200)') 형식을 전제로 시트명 앞의 순번 접두어와
+  뒤의 '(계정코드)' 접미어를 정규식으로 제거해 계정명을 뽑는다.
+  각 시트에서 적요란이 '전기이월'/'기초잔액'인 행(공백·대괄호 제거 후 비교)의
+  차변/대변 금액을 기초잔액으로, '월계'/'누계'/'합계' 소계 행은 제외하고 나머지
+  실제 거래행의 차변합계·대변합계를 구한 뒤, 자산/비용 성격(기초+차변-대변)과
+  부채/자본/수익 성격(기초-차변+대변) 두 계산식 중 원장의 마지막 행 잔액과 일치하는
+  쪽으로 구분을 자동 판정한다(수기 계정과목표 매핑 불필요). 둘 다 불일치하면
+  '검증필요'로 표시.
+
 실행:  python main_analyzer.py sejoong
 """
 
@@ -435,6 +447,9 @@ def load_data(company_dir: str) -> pd.DataFrame:
         for f in sorted(os.listdir(dir_path)):
             if not (f.endswith('.csv') or f.endswith('.xlsx')): continue
             if f.startswith('~$'): continue
+            if '계정별원장' in f:
+                print(f'   ℹ️ 계정별원장 파일은 분개장 로드에서 제외 (4번 메뉴 잔액표 전용): {f}')
+                continue
             df = _read(os.path.join(dir_path, f), f)
             if df is not None and not df.empty:
                 df['구분'] = label
@@ -566,6 +581,228 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
     return out
 
 
+# ── 당기 계정별원장 기초/기말잔액표 공용 헬퍼 (4번 데이터개요에서 사용) ─────────
+_LEDGER_SHEET_PREFIX_RE = re.compile(r'^\d+_')
+_LEDGER_SHEET_CODE_RE   = re.compile(r'\(\d+\)\s*$')
+_LEDGER_OPEN_KEYWORDS   = ('전기이월', '기초잔액')
+_LEDGER_SKIP_KEYWORDS   = ('월계', '누계', '합계')
+
+# 차감계정 라벨 세분화 (계산식은 손대지 않고 '구분' 표시만 정교화).
+# - 자산차감 키워드: 대변성격으로 감지되면 자산차감(예: 감가상각누계액·대손충당금은
+#   실제로 대변성격이며 자산을 순액으로 줄이는 역할)
+# - 부채차감 키워드: 차변성격으로 감지되면 부채차감(예: 사채할인발행차금, 퇴직급여충당금/
+#   퇴직급여충당부채를 상계하는 사외적립자산·퇴직연금운용자산 — 2026-08-12 사용자 확인)
+# - 애매(양쪽 다 나올 수 있는 계정): 감지된 방향에 따라 자산차감/부채차감을 자동 판정
+#   (예: 현재가치할인차금은 대상이 채권이면 자산차감, 채무면 부채차감)
+# 주의: '충당금'이 들어간다고 전부 차감계정은 아님 — 퇴직급여충당금(퇴직급여충당부채)은
+# 그 자체가 부채 계정이라 목록에서 제외함 (2026-08-12 사용자 확인).
+_LEDGER_CONTRA_ASSET_KEYWORDS = ('감가상각누계액', '대손충당금', '재고평가충당금',
+                                  '재고자산평가충당금', '손상차손누계액')
+_LEDGER_CONTRA_LIAB_KEYWORDS  = ('사채할인발행차금', '퇴직연금운영자산', '퇴직연금운용자산',
+                                  '사외적립자산')
+_LEDGER_CONTRA_AMBIGUOUS_KEYWORDS = ('현재가치할인차금',)
+
+def _refine_ledger_gubun(acct_name: str, gubun: str) -> str:
+    """'자산/비용'·'부채/자본/수익' 라벨을 차감계정이면 '자산차감'·'부채차감'으로 세분화."""
+    if gubun not in ('자산/비용', '부채/자본/수익'):
+        return gubun
+    if any(k in acct_name for k in _LEDGER_CONTRA_ASSET_KEYWORDS):
+        return '자산차감'
+    if any(k in acct_name for k in _LEDGER_CONTRA_LIAB_KEYWORDS):
+        return '부채차감'
+    if any(k in acct_name for k in _LEDGER_CONTRA_AMBIGUOUS_KEYWORDS):
+        return '자산차감' if gubun == '부채/자본/수익' else '부채차감'
+    return gubun
+
+def _find_current_ledger_files(current_dir: str) -> list:
+    """
+    data/current 폴더에서 파일명에 '계정별원장'이 들어간 당기 파일 경로를 모두 탐색.
+    sejoong처럼 자산/부채/수익비용이 파일 단위로 나뉜 회사는 여러 개가 나올 수 있다.
+    """
+    if not os.path.isdir(current_dir):
+        return []
+    return [os.path.join(current_dir, f) for f in sorted(os.listdir(current_dir))
+            if '계정별원장' in f and f.endswith('.xlsx') and not f.startswith('~$')]
+
+def _clean_ledger_account_name(sheet_name: str) -> str:
+    """시트명 '0_당좌예금(10200)' -> '당좌예금' (순번 접두어 + 계정코드 접미어 제거)."""
+    name = _LEDGER_SHEET_PREFIX_RE.sub('', str(sheet_name))
+    name = _LEDGER_SHEET_CODE_RE.sub('', name).strip()
+    return name
+
+def _clean_ledger_text(s) -> str:
+    """적요란 텍스트에서 공백·대괄호 제거 (예: '[ 전 기 이 월 ]' -> '전기이월')."""
+    if s is None:
+        return ''
+    return re.sub(r'[\s\[\]]', '', str(s))
+
+def _compute_ledger_balance(records: list) -> dict:
+    """
+    ERP 형식과 무관한 공용 계산부. records는 계정 1개 분량의 거래를 시간순으로 나열한
+    (종류, 차변, 대변, 잔액) 튜플 리스트 — 종류는 'open'(기초잔액 행) 또는 'txn'(실거래 행)만
+    포함하고, 월계/누계/소계 같은 집계 행은 호출부(형식별 추출 함수)에서 이미 제외한 상태여야 한다.
+
+    기초잔액·차변합계·대변합계·원장상 최종 표시잔액을 구한다.
+    구분(자산/비용 vs 부채/자본/수익) 판정: 마지막 행 하나만 보면 그 행의 잔액이
+    비어 있는 특수 케이스(예: 기말 결산정리 행이 잔액을 갱신하지 않고 남겨두는 경우)에
+    취약하므로, 기초잔액 이후 각 거래 행마다 누적(차변-대변)을 계속 추적하면서
+    잔액이 채워진 모든 행에 대해 '자산/비용 부호'와 '부채/자본/수익 부호' 중 어느 쪽과
+    일치하는지 투표(voting)하여 다수결로 구분을 정한다. records가 비어 있으면 None.
+    """
+    if not records:
+        return None
+
+    open_debit = open_credit = 0.0
+    sum_debit  = sum_credit  = 0.0
+    last_balance = 0.0
+    running_signed = 0.0        # 누적(차변-대변) — 자산/비용 부호 기준
+    votes_asset = votes_liab = 0
+
+    for typ, debit, credit, balance in records:
+        if typ == 'open':
+            open_debit, open_credit = debit, credit
+            running_signed = open_debit - open_credit
+        else:
+            sum_debit  += debit
+            sum_credit += credit
+            running_signed += debit - credit
+
+        if balance is not None:
+            try:
+                actual = float(balance)
+                last_balance = actual
+                TOL = 1
+                if abs(running_signed - actual) <= TOL:
+                    votes_asset += 1
+                elif abs(-running_signed - actual) <= TOL:
+                    votes_liab += 1
+            except (TypeError, ValueError):
+                pass
+
+    calc_asset = running_signed          # 자산/비용: 기초+차변-대변 누적
+    calc_liab  = -running_signed         # 부채/자본/수익: 기초-차변+대변 누적
+
+    if open_debit == 0 and open_credit == 0 and sum_debit == 0 and sum_credit == 0:
+        gubun, calc = '데이터없음', 0.0        # 기초잔액도 당기 거래도 없는 휴면 계정
+    elif votes_asset == 0 and votes_liab == 0:
+        gubun, calc = '검증필요', calc_asset
+    elif votes_asset >= votes_liab:
+        gubun, calc = '자산/비용', calc_asset
+    else:
+        gubun, calc = '부채/자본/수익', calc_liab
+
+    return {
+        '기초잔액':      open_debit if open_debit else (open_credit if open_credit else 0.0),
+        '차변합계':      sum_debit,
+        '대변합계':      sum_credit,
+        '구분':          gubun,
+        '기말잔액(계산)': calc,
+        '최종표시잔액(원장)': last_balance,
+        '차이':          round(calc - last_balance, 2),
+    }
+
+def _extract_duzon_style_records(ws) -> list:
+    """
+    더존 계열(예: graphy, dae_il) 시트 1개(열: 날짜/적요란/코드/거래처명/사업자등록번호/
+    차변/대변/잔액)에서 (종류, 차변, 대변, 잔액) 레코드 리스트를 뽑는다.
+    """
+    records = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row is None or len(row) < 8:
+            continue
+        desc, debit, credit, balance = row[1], row[5] or 0, row[6] or 0, row[7]
+        debit, credit = float(debit) if debit else 0.0, float(credit) if credit else 0.0
+        text = _clean_ledger_text(desc)
+        if not text and not debit and not credit and balance is None:
+            continue
+        if any(k in text for k in _LEDGER_OPEN_KEYWORDS):
+            records.append(('open', debit, credit, balance))
+        elif text in _LEDGER_SKIP_KEYWORDS:
+            continue
+        else:
+            records.append(('txn', debit, credit, balance))
+    return records
+
+# sejoong 계열: 파일 1개 = 대분류(자산/부채/수익비용 등) 1개, 시트 1개에 여러 계정이
+# '전월이월' 행으로 구분되어 연속 나열됨 (2026-08-12 확인).
+# 컬럼(0-idx): 0 계정과목 / 1 계정과목명 / 4 일자 / 5 전표번호 / 9 차변금액 / 10 대변금액 / 11 잔액
+_SEJOONG_STYLE_OPEN_LABELS = ('전월이월', '전기이월', '기초잔액')
+_SEJOONG_STYLE_SKIP_LABELS = ('계정별월별소계', '계정별누계', '총누계', '총계', '합계')
+
+def _iter_sejoong_style_ledger_accounts(ws):
+    """
+    sejoong 계열 시트에서 계정별로 (계정명, records) 를 순서대로 만들어 낸다.
+    파일이 대용량이라 원본 파일 내에 헤더 행이 중간에 재삽입된 경우(계정과목=='계정과목')도
+    있어 이를 건너뛴다.
+    """
+    current_name = None
+    current_records = []
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row is None or len(row) < 12:
+            continue
+        code, name, jeonpyo = row[0], row[1], row[5]
+        if code == '계정과목':                  # 재삽입된 헤더 행
+            continue
+        jeonpyo_norm = _clean_ledger_text(jeonpyo)
+        debit  = float(row[9])  if row[9]  else 0.0
+        credit = float(row[10]) if row[10] else 0.0
+        balance = row[11]
+
+        if jeonpyo_norm in _SEJOONG_STYLE_OPEN_LABELS:
+            if current_name is not None:
+                yield current_name, current_records
+            current_name = str(name).strip() if name else ''
+            current_records = [('open', debit, credit, balance)]
+            continue
+
+        if code is None:
+            continue                             # 소계/누계/총계 행 또는 빈 행 — 실거래 아님
+
+        if current_name is None:
+            continue                             # 전월이월 행을 만나기 전의 고아 행 방어
+
+        current_records.append(('txn', debit, credit, balance))
+
+    if current_name is not None:
+        yield current_name, current_records
+
+def _build_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
+    """
+    계정별원장 파일 1개를 읽어 계정별 기초/기말잔액표를 만든다. 두 형식을 자동 감지한다:
+      - 더존 계열: 시트 1개 = 계정 1개, 시트명 '0_계정명(코드)'
+      - sejoong 계열: 시트 1개에 '계정과목'/'계정과목명' 헤더로 여러 계정이 나열됨
+    """
+    wb = openpyxl.load_workbook(ledger_path, read_only=True, data_only=True)
+    try:
+        first_ws = wb[wb.sheetnames[0]]
+        header = next(first_ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        is_sejoong_style = (len(wb.sheetnames) == 1 and len(header) >= 2
+                             and header[0] == '계정과목' and header[1] == '계정과목명')
+
+        rows = []
+        if is_sejoong_style:
+            print(f'  [계정별원장] sejoong 계열 형식(단일 시트·전월이월 구분) 감지: '
+                  f'{os.path.basename(ledger_path)}')
+            for acct_name, records in _iter_sejoong_style_ledger_accounts(first_ws):
+                result = _compute_ledger_balance(records)
+                if result is None:
+                    continue
+                result['구분'] = _refine_ledger_gubun(acct_name, result['구분'])
+                rows.append({'계정명': acct_name, **result})
+        else:
+            for sn in wb.sheetnames:
+                result = _compute_ledger_balance(_extract_duzon_style_records(wb[sn]))
+                if result is None:
+                    continue
+                acct_name = _clean_ledger_account_name(sn)
+                result['구분'] = _refine_ledger_gubun(acct_name, result['구분'])
+                rows.append({'계정명': acct_name, **result})
+    finally:
+        wb.close()
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
 # ── 4. 데이터 개요 ────────────────────────────────────────────────────────────
 def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
     summary = pd.DataFrame({
@@ -585,7 +822,21 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
         stats = pd.concat([d, c], axis=1).fillna(0).sort_values('차변합계',ascending=False).reset_index()
     else:
         stats = pd.DataFrame()
-    return {'데이터개요_요약': summary, '데이터개요_계정별': stats}
+
+    out = {'데이터개요_요약': summary, '데이터개요_계정별': stats}
+
+    if _COMPANY_DIR:
+        ledger_paths = _find_current_ledger_files(os.path.join(_COMPANY_DIR, 'data', 'current'))
+        ledger_tables = []
+        for path in ledger_paths:
+            t = _build_ledger_balance_table(path)
+            if not t.empty:
+                t.insert(0, '출처파일', os.path.basename(path))
+                ledger_tables.append(t)
+        if ledger_tables:
+            out['계정별원장_잔액표'] = pd.concat(ledger_tables, axis=0, ignore_index=True)
+
+    return out
 
 
 # ── 5. 계정명 리스트 ──────────────────────────────────────────────────────────
