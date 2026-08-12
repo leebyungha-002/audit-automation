@@ -31,10 +31,18 @@ task_list 파라미터 시트 규격:
       (8번 상대계정분석과 동일 로직 — 감가상각비/외화환산손익/평가손익/대손상각비 등
        손익 계정의 상대계정(자산 누계액 등) 금액을 전표 단위로 매칭해 추출. (Phase 1)
        같은 task_list에 '감가상각_유형자산롤포워드' 시트가 있으면 Phase 2도 함께 실행:
-  감가상각_유형자산롤포워드 : 유형자산계정명 / 감가상각누계액계정명 / 실행여부
+  감가상각_유형자산롤포워드 : 유형자산계정명 / 감가상각누계액계정명 / 대체상대계정 /
+                              취득원가_수동조정 / 상각누계액_수동조정 / 실행여부
       (유형자산계정별 취득원가·감가상각누계액 기초/당기증가/당기감소/기말 롤포워드.
        당기 감가상각비는 Phase 1의 상대_감가상각* 매칭 결과에서 가져옴.
-       기초잔액은 data/previous의 전기 계정별_거래처별명세 파일이 있는 회사만 채워짐)
+       기초잔액은 data/previous의 전기 계정별_거래처별명세 파일이 있는 회사만 채워짐.
+       대체상대계정: 다른 유형자산으로 계정대체(예: 건물→투자부동산_건물, 건설중인자산→
+       본계정)가 있는 경우 그 상대쪽 유형자산계정명을 적으면, 전표 매칭으로 당기증가/
+       당기감소를 '대체'분과 '기타'분으로 분리 표시함. 콤마로 여러 개 지정 가능
+       (예: 건물 행 = "건설중인자산,투자부동산_건물" — 건설중인자산에서 들어오고
+       투자부동산_건물로 나가는 두 방향을 동시에 잡음). 없으면 비워둠.
+       수동조정 2종: 전표 매칭으로 못 잡는 잔여 차이(상각누계액_미매칭차이 컬럼 참고)를
+       감사인이 직접 확인 후 숫자로 입력하면 기말잔액 계산에 반영됨. 기본 0.)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -711,9 +719,15 @@ def analyze_depreciation_valuation(df: pd.DataFrame, params_list: list) -> dict:
 def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
     """유형자산계정별 취득원가·감가상각누계액 롤포워드.
 
-    취득원가        : 기초 + 당기증가(해당 자산계정 차변) - 당기감소(대변) = 기말
-    감가상각누계액  : 기초 + 당기감가상각비(Phase1 상대_감가상각* 매칭분)
-                      - 당기감소(해당 상각누계액계정 차변, 처분 등) = 기말
+    취득원가        : 기초 + 당기증가(대체+기타) - 당기감소(대체+기타) = 기말
+    감가상각누계액  : 기초 + 당기감가상각비(Phase1 상대_감가상각* 매칭분) + 당기증가_대체
+                      - 당기감소_대체 - 당기감소_기타 + 수동조정 = 기말
+    - '대체'분: 파라미터의 대체상대계정과 같은 전표에서 함께 나타나는 금액만 전표 매칭으로
+      분리(예: 건물→투자부동산_건물 계정대체, 건설중인자산→본계정 완성대체).
+    - 감가상각누계액의 '당기증가'는 감가상각비 상대계정 매칭분(정상적인 상각)과 대체 매칭분만
+      코드로 잡고, 그 외(예: 손상차손환입 등)는 '미매칭차이' 컬럼에 남겨 감사인이 확인 후
+      수동조정 컬럼에 직접 입력하도록 한다 — 모든 대변 조정을 자동으로 상각비로 잡지 않기
+      위한 의도적 설계(8-6차 세션 요청사항).
     기초잔액은 data/previous의 전기 계정별_거래처별명세 파일이 있을 때만 채우고,
     없으면 공란(None)으로 둔다 (분개장에서 역산하지 않음).
     """
@@ -754,37 +768,97 @@ def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
             key = str(r['상대계정명']).strip()
             dep_lookup[key] = dep_lookup.get(key, 0) + (r[amt_col] or 0)
 
+    # 유형자산계정명 -> 감가상각누계액계정명 (대체상대계정의 상각누계액계정 역참조용)
+    asset_to_dep: dict = {}
+    for _, pr in pairs.iterrows():
+        an = _nv(pr.get('유형자산계정명', ''))
+        if an:
+            asset_to_dep[an] = _nv(pr.get('감가상각누계액계정명', ''))
+
     def _period_sum(acct_name: str):
         mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
         sub = df[mask]
         return sub[COL_DEBIT].sum(), sub[COL_CREDIT].sum()
 
+    def _split_names(raw: str) -> list:
+        if not raw:
+            return []
+        return [n.strip() for n in re.split(r'[,\n]', str(raw)) if n.strip()]
+
+    def _transfer_amount(acct_name: str, counterpart_names, col: str):
+        """acct_name 계정의 col(차변/대변) 중, 같은 전표번호에 counterpart_names(리스트 또는
+        문자열, 콤마로 복수 지정 가능) 계정 중 하나라도 함께 나타나는 금액만 전표 단위로
+        매칭해 집계 (계정대체 분리용). 예: 건물은 건설중인자산에서 들어오고 투자부동산_건물로
+        나가는 두 방향이 동시에 있을 수 있으므로 상대계정을 복수로 받는다."""
+        names = counterpart_names if isinstance(counterpart_names, list) else _split_names(counterpart_names)
+        names = [n for n in names if n]
+        if not names:
+            return 0
+        mask_this = _account_match_flexible(df[COL_ACCOUNT], acct_name) & (df[col] != 0)
+        if not mask_this.any():
+            return 0
+        counterpart_mask = pd.Series(False, index=df.index)
+        for n in names:
+            counterpart_mask = counterpart_mask | _account_match_flexible(df[COL_ACCOUNT], n)
+        valid_jids = set(df.loc[counterpart_mask, COL_JOURNAL_ID].unique())
+        sub = df[mask_this & df[COL_JOURNAL_ID].isin(valid_jids)]
+        return sub[col].sum()
+
+    def _manual_num(p, col):
+        v = pd.to_numeric(p.get(col, 0), errors='coerce')
+        return 0 if pd.isna(v) else v
+
     rows = []
     for _, p in pairs.iterrows():
         asset_acct = _nv(p.get('유형자산계정명', ''))
         dep_acct   = _nv(p.get('감가상각누계액계정명', ''))
+        transfer_partner = _nv(p.get('대체상대계정', ''), blank_vals=('nan', 'none', ''))
+        cost_manual = _manual_num(p, '취득원가_수동조정')
+        dep_manual  = _manual_num(p, '상각누계액_수동조정')
         if not asset_acct:
             continue
 
-        a_incr, a_decr = _period_sum(asset_acct)
+        a_incr_total, a_decr_total = _period_sum(asset_acct)
+        a_incr_xfer = _transfer_amount(asset_acct, transfer_partner, COL_DEBIT)
+        a_decr_xfer = _transfer_amount(asset_acct, transfer_partner, COL_CREDIT)
+        a_incr_etc  = a_incr_total - a_incr_xfer
+        a_decr_etc  = a_decr_total - a_decr_xfer
         a_open  = _prev_balance_total(prev_xl, asset_acct)
-        a_close = a_open + a_incr - a_decr if a_open is not None else None
+        a_close = (a_open + a_incr_xfer + a_incr_etc - a_decr_xfer - a_decr_etc + cost_manual
+                   if a_open is not None else None)
 
         row = {
             '유형자산계정': asset_acct,
-            '취득원가_기초': a_open, '취득원가_당기증가': a_incr,
-            '취득원가_당기감소': a_decr, '취득원가_기말': a_close,
+            '취득원가_기초': a_open,
+            '취득원가_당기증가_대체': a_incr_xfer, '취득원가_당기증가_기타': a_incr_etc,
+            '취득원가_당기감소_대체': a_decr_xfer, '취득원가_당기감소_기타': a_decr_etc,
+            '취득원가_수동조정': cost_manual,
+            '취득원가_기말': a_close,
         }
 
         if dep_acct:
-            _, d_decr = _period_sum(dep_acct)
-            d_incr  = dep_lookup.get(dep_acct, 0)
+            d_debit_total, d_credit_total = _period_sum(dep_acct)  # 차변=감소(전체), 대변=증가(전체)
+            d_dep_expense = dep_lookup.get(dep_acct, 0)             # 당기감가상각비(감가상각비 매칭분)
+            # 대체상대계정(복수 가능) 각각의 감가상각누계액계정을 역참조해서 상각누계액 대체 매칭에 사용
+            dep_partner_accts = [asset_to_dep.get(n, '') for n in _split_names(transfer_partner)]
+            dep_partner_accts = [d for d in dep_partner_accts if d]
+            d_incr_xfer = _transfer_amount(dep_acct, dep_partner_accts, COL_CREDIT)
+            d_decr_xfer = _transfer_amount(dep_acct, dep_partner_accts, COL_DEBIT)
+            d_decr_etc  = d_debit_total - d_decr_xfer
             d_open  = _prev_balance_total(prev_xl, dep_acct)
-            d_close = d_open + d_incr - d_decr if d_open is not None else None
+            d_unexplained = d_credit_total - d_dep_expense - d_incr_xfer
+            d_close = (d_open + d_dep_expense + d_incr_xfer - d_decr_xfer - d_decr_etc + dep_manual
+                       if d_open is not None else None)
             row.update({
                 '감가상각누계액계정': dep_acct,
-                '상각누계액_기초': d_open, '상각누계액_당기감가상각비': d_incr,
-                '상각누계액_당기감소': d_decr, '상각누계액_기말': d_close,
+                '상각누계액_기초': d_open,
+                '상각누계액_당기감가상각비': d_dep_expense,
+                '상각누계액_당기증가_대체': d_incr_xfer,
+                '상각누계액_당기감소_대체': d_decr_xfer,
+                '상각누계액_당기감소_기타': d_decr_etc,
+                '상각누계액_미매칭차이': d_unexplained,
+                '상각누계액_수동조정': dep_manual,
+                '상각누계액_기말': d_close,
             })
         rows.append(row)
 
