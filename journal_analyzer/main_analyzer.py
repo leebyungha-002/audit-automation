@@ -290,7 +290,9 @@ def _preprocess_df(df):
             break
 
     # 전표 단위 매칭용 그룹키: 전표일자+전표번호 결합 (전표번호 단독 재사용 대응)
-    if COL_DATE in df.columns and COL_JOURNAL_ID in df.columns:
+    # 회사별 preprocess.py 가 이미 전표그룹키를 만들어뒀으면 존중하고 덮어쓰지 않는다
+    # (예: sejoong은 전표번호 자체가 손상돼 있어 항번호 리셋 기반으로 별도 재구성함)
+    if COL_JOURNAL_KEY not in df.columns and COL_DATE in df.columns and COL_JOURNAL_ID in df.columns:
         date_str = df[COL_DATE].dt.strftime('%Y%m%d').fillna('nodate')
         df[COL_JOURNAL_KEY] = date_str + '_' + df[COL_JOURNAL_ID].fillna('').astype(str).str.strip()
 
@@ -693,7 +695,11 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         # (전표번호 단독은 회사에 따라 전표일자별로 재사용되는 순번일 수 있어 신뢰 불가 — 2026-08-12)
         default_group_col = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
         group_col_name = _nv(p.get('그룹기준열', ''), blank_vals=('nan', 'none', ''))
-        if group_col_name:
+        if group_col_name == COL_JOURNAL_ID and COL_JOURNAL_KEY in df.columns:
+            # "전표번호로 묶어라"는 지정의 실제 의도는 "같은 전표 단위로 묶어라"이므로
+            # 전표그룹키가 있으면 그쪽을 우선한다 (전표번호 단독은 신뢰 불가 — 2026-08-12)
+            group_col = COL_JOURNAL_KEY
+        elif group_col_name:
             matched_col = next((c for c in df.columns
                                 if c.strip() == group_col_name
                                 or group_col_name in c), None)
