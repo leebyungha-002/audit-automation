@@ -43,6 +43,14 @@ task_list 파라미터 시트 규격:
        투자부동산_건물로 나가는 두 방향을 동시에 잡음). 없으면 비워둠.
        수동조정 2종: 전표 매칭으로 못 잡는 잔여 차이(상각누계액_미매칭차이 컬럼 참고)를
        감사인이 직접 확인 후 숫자로 입력하면 기말잔액 계산에 반영됨. 기본 0.)
+       같은 task_list에 '유형자산_처분손익' 시트가 있으면 Phase 3도 함께 실행:
+  유형자산_처분손익 : 처분이익계정명 / 처분손실계정명 / 실행여부
+      (처분이익·처분손실 계정이 등장한 전표(전표그룹키)마다 같은 전표의 유형자산
+       취득원가·감가상각누계액(감가상각_유형자산롤포워드 시트의 계정 쌍 기준)을
+       찾아 처분 건별로 한 줄씩 유형자산_처분손익명세 시트를 만든다. 장부가액=
+       취득원가_처분분-감가상각누계액_처분분, 처분가액(역산)=장부가액+처분손익.
+       한계: 개별 자산이 아닌 계정과목×전표 단위로만 구분됨 — 한 전표에 여러
+       자산을 묶어 처분하면 그 전표 전체가 한 줄로 잡힘.)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열 / 실행여부
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -737,9 +745,12 @@ def analyze_depreciation_valuation(df: pd.DataFrame, params_list: list) -> dict:
     8번 상대계정분석과 동일한 로직(전표 단위 매칭)으로 추출. (Phase 1)
     이어서 '감가상각_유형자산롤포워드' 파라미터 시트가 있으면 유형자산계정별
     취득원가·감가상각누계액 기초/당기증가/당기감소/기말 표를 추가한다. (Phase 2)
+    '유형자산_처분손익' 파라미터 시트가 있으면 처분 건별 유형자산처분손익명세서를
+    추가한다. (Phase 3)
     """
     out = analyze_counterpart(df, params_list)
     out.update(_depreciation_rollforward(df, out))
+    out.update(_disposal_schedule(df))
     return out
 
 
@@ -893,6 +904,100 @@ def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
     if not rows:
         return {}
     return {'유형자산_롤포워드': pd.DataFrame(rows)}
+
+
+def _disposal_schedule(df: pd.DataFrame) -> dict:
+    """유형자산 처분손익명세서 (Phase 3).
+
+    '유형자산_처분손익' 파라미터 시트(처분이익계정명/처분손실계정명)가 있으면,
+    그 계정이 등장한 전표(전표그룹키)마다 같은 전표에 있는 유형자산 취득원가·
+    감가상각누계액 금액(전표그룹키 매칭, '감가상각_유형자산롤포워드' 시트의
+    유형자산계정명/감가상각누계액계정명 쌍 기준)을 찾아 처분 건별로 한 줄씩 뽑는다.
+
+    장부가액 = 취득원가_처분분 - 감가상각누계액_처분분
+    처분손익 = 처분손익계정 순액(대변-차변, 이익이면 +, 손실이면 -)
+    처분가액(역산) = 장부가액 + 처분손익
+
+    한계: 개별 자산(고정자산대장 항목) 단위가 아니라 계정과목×전표 단위로만
+    구분된다 — 한 전표에 여러 자산을 묶어 처분/폐기하면 그 전표 전체가 한 줄로 잡힘.
+    """
+    global _COMPANY_DIR
+    if _COMPANY_DIR is None:
+        return {}
+    task_path = os.path.join(_COMPANY_DIR, f'task_list_{os.path.basename(_COMPANY_DIR)}.xlsx')
+    if not os.path.isfile(task_path):
+        return {}
+    try:
+        xl = pd.ExcelFile(task_path)
+        if '유형자산_처분손익' not in xl.sheet_names or '감가상각_유형자산롤포워드' not in xl.sheet_names:
+            return {}
+        disp_params = pd.read_excel(xl, sheet_name='유형자산_처분손익').dropna(how='all')
+        pairs = pd.read_excel(xl, sheet_name='감가상각_유형자산롤포워드').dropna(how='all')
+    except Exception:
+        return {}
+    if '실행여부' in disp_params.columns:
+        flag = disp_params['실행여부'].astype(str).str.strip().str.upper()
+        disp_params = disp_params[flag.isin(['Y', 'O'])]
+    if disp_params.empty:
+        return {}
+
+    asset_dep_pairs = []
+    for _, pr in pairs.iterrows():
+        an = _nv(pr.get('유형자산계정명', ''))
+        dn = _nv(pr.get('감가상각누계액계정명', ''))
+        if an:
+            asset_dep_pairs.append((an, dn))
+    if not asset_dep_pairs:
+        return {}
+
+    jkey = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
+
+    rows = []
+    for _, p in disp_params.iterrows():
+        gain_acct = _nv(p.get('처분이익계정명', ''), blank_vals=('nan', 'none', ''))
+        loss_acct = _nv(p.get('처분손실계정명', ''), blank_vals=('nan', 'none', ''))
+        disp_accts = [a for a in (gain_acct, loss_acct) if a]
+        if not disp_accts:
+            continue
+        # 이익계정·손실계정이 같은 전표에 함께 나타나는 경우(혼합 처분) 자산 금액이
+        # 중복 집계되지 않도록, 두 계정을 하나로 합쳐서 전표 단위로 순액을 구한다
+        mask = pd.Series(False, index=df.index)
+        for a in disp_accts:
+            mask = mask | _account_match_flexible(df[COL_ACCOUNT], a)
+        sub = df[mask]
+        if sub.empty:
+            continue
+        for jid, g in sub.groupby(jkey):
+            pl_net = g[COL_CREDIT].sum() - g[COL_DEBIT].sum()
+            disposal_date = g[COL_DATE].iloc[0] if COL_DATE in g.columns else None
+
+            for asset_acct, dep_acct in asset_dep_pairs:
+                a_mask = _account_match_flexible(df[COL_ACCOUNT], asset_acct)
+                a_sub = df[a_mask & (df[jkey] == jid)]
+                if a_sub.empty:
+                    continue
+                cost_decr = a_sub[COL_CREDIT].sum() - a_sub[COL_DEBIT].sum()
+                dep_decr = 0
+                if dep_acct:
+                    d_mask = _account_match_flexible(df[COL_ACCOUNT], dep_acct)
+                    d_sub = df[d_mask & (df[jkey] == jid)]
+                    dep_decr = d_sub[COL_DEBIT].sum() - d_sub[COL_CREDIT].sum()
+                book_value = cost_decr - dep_decr
+                rows.append({
+                    '전표그룹': jid,
+                    '처분일자': disposal_date,
+                    '유형자산계정': asset_acct,
+                    '취득원가_처분분': cost_decr,
+                    '감가상각누계액_처분분': dep_decr,
+                    '장부가액': book_value,
+                    '처분손익': pl_net,
+                    '처분가액(역산)': book_value + pl_net,
+                })
+
+    if not rows:
+        return {}
+    result = pd.DataFrame(rows).sort_values(['처분일자', '유형자산계정']).reset_index(drop=True)
+    return {'유형자산_처분손익명세': result}
 
 
 # ── 9. 키워드 검색 ────────────────────────────────────────────────────────────
