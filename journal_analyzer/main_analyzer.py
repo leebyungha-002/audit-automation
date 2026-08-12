@@ -87,6 +87,13 @@ COL_DEBIT      = '차변'
 COL_CREDIT     = '대변'
 COL_EMPLOYEE   = '사원명'
 
+# 전표 단위 매칭용 그룹키 (전표일자+전표번호 결합).
+# 일부 회사(예: kyungnam)는 전표번호가 전표일자별로 재사용되는 일별 순번이라
+# 전표번호 단독으로는 "같은 전표"를 유일하게 특정할 수 없다 (2026-08-12 발견).
+# 상대계정/대체 매칭처럼 "같은 전표에 속한 거래" 판정이 필요한 로직은
+# 전표번호 대신 이 컬럼을 사용한다. 화면 표시용 전표번호(COL_JOURNAL_ID)는 그대로 둔다.
+COL_JOURNAL_KEY = '전표그룹키'
+
 # 분석 상수
 BENFORD_MIN_ROWS        = 5
 BENFORD_PROBS           = {1:0.301,2:0.176,3:0.125,4:0.097,5:0.079,6:0.067,7:0.058,8:0.051,9:0.046}
@@ -281,6 +288,12 @@ def _preprocess_df(df):
             except Exception:
                 df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
             break
+
+    # 전표 단위 매칭용 그룹키: 전표일자+전표번호 결합 (전표번호 단독 재사용 대응)
+    if COL_DATE in df.columns and COL_JOURNAL_ID in df.columns:
+        date_str = df[COL_DATE].dt.strftime('%Y%m%d').fillna('nodate')
+        df[COL_JOURNAL_KEY] = date_str + '_' + df[COL_JOURNAL_ID].fillna('').astype(str).str.strip()
+
     return df
 
 def _get_gubun_col(df):
@@ -571,11 +584,12 @@ def analyze_account_list(df: pd.DataFrame, params_list: list) -> dict:
         return {'계정명리스트': pd.DataFrame({'오류':['계정명 컬럼 없음']})}
     accs   = sorted({str(a).strip() for a in df[COL_ACCOUNT].dropna() if str(a).strip()})
     simple = pd.DataFrame({'계정명': accs})
+    jkey_acc = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
     agg_map = {COL_DEBIT:['sum','count'], COL_CREDIT:['sum','count']}
-    if COL_JOURNAL_ID in df.columns: agg_map[COL_JOURNAL_ID] = 'nunique'
+    if jkey_acc in df.columns: agg_map[jkey_acc] = 'nunique'
     stats = df.groupby(COL_ACCOUNT).agg(agg_map).reset_index()
     base_cols = ['계정명','차변합계','차변건수','대변합계','대변건수']
-    stats.columns = base_cols + (['전표개수'] if COL_JOURNAL_ID in df.columns else [])
+    stats.columns = base_cols + (['전표개수'] if jkey_acc in df.columns else [])
     stats['최대금액'] = stats[['차변합계','대변합계']].max(axis=1)
     stats = stats.sort_values('최대금액', ascending=False).drop(columns=['최대금액'])
     return {'계정명_간단': simple, '계정명_통계': stats}
@@ -591,7 +605,8 @@ def analyze_employee_summary(df: pd.DataFrame, params_list: list) -> pd.DataFram
     df_emp = df[df[emp_col].notna() & (df[emp_col].astype(str).str.strip() != '')].copy()
     if df_emp.empty: return pd.DataFrame({'오류':['사원명 데이터 없음']})
 
-    jid = COL_JOURNAL_ID if COL_JOURNAL_ID in df.columns else None
+    jid = (COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns
+           else COL_JOURNAL_ID if COL_JOURNAL_ID in df.columns else None)
     rows = []
     for emp in sorted(df_emp[emp_col].astype(str).unique()):
         sub   = df_emp[df_emp[emp_col].astype(str) == emp]
@@ -646,12 +661,16 @@ def analyze_date_difference(df: pd.DataFrame, params_list: list) -> dict:
     if filtered.empty:
         return {'일자차이분석': pd.DataFrame({'결과':[f'{days_threshold}일 이상 차이 전표 없음']})}
 
-    j_sum = filtered.groupby(COL_JOURNAL_ID).agg({
-        COL_DATE:'first', reg_col:'first', '일자차이':'first',
-        COL_ACCOUNT: lambda x: ', '.join(x.unique()[:5]),
-        COL_DEBIT:'sum', COL_CREDIT:'sum'
-    }).reset_index().sort_values('일자차이', ascending=False)
-    j_sum.columns = ['전표번호','전표일자','등록일자','일자차이','계정명','차변합계','대변합계']
+    jkey = COL_JOURNAL_KEY if COL_JOURNAL_KEY in filtered.columns else COL_JOURNAL_ID
+    j_sum = filtered.groupby(jkey).agg(
+        전표번호=(COL_JOURNAL_ID, 'first'),
+        전표일자=(COL_DATE, 'first'),
+        등록일자=(reg_col, 'first'),
+        일자차이=('일자차이', 'first'),
+        계정명=(COL_ACCOUNT, lambda x: ', '.join(x.unique()[:5])),
+        차변합계=(COL_DEBIT, 'sum'),
+        대변합계=(COL_CREDIT, 'sum'),
+    ).reset_index(drop=True).sort_values('일자차이', ascending=False)
 
     detail = filtered.sort_values(['일자차이', COL_JOURNAL_ID], ascending=[False, True])
     dc = [c for c in ['구분', COL_JOURNAL_ID, COL_DATE, reg_col, '일자차이',
@@ -670,19 +689,21 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         if direction not in ('차변','대변'): direction = '차변'
         if not acct: continue
 
-        # 그룹기준열: 파라미터에서 읽고, 없으면 COL_JOURNAL_ID 사용
+        # 그룹기준열: 파라미터에서 읽고, 없으면 전표그룹키(전표일자+전표번호) 사용
+        # (전표번호 단독은 회사에 따라 전표일자별로 재사용되는 순번일 수 있어 신뢰 불가 — 2026-08-12)
+        default_group_col = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
         group_col_name = _nv(p.get('그룹기준열', ''), blank_vals=('nan', 'none', ''))
         if group_col_name:
             matched_col = next((c for c in df.columns
                                 if c.strip() == group_col_name
                                 or group_col_name in c), None)
             if matched_col is None:
-                print(f'    [경고] 그룹기준열 "{group_col_name}" 컬럼 없음 → 전표번호로 대체')
-                group_col = COL_JOURNAL_ID
+                print(f'    [경고] 그룹기준열 "{group_col_name}" 컬럼 없음 → 전표그룹키로 대체')
+                group_col = default_group_col
             else:
                 group_col = matched_col
         else:
-            group_col = COL_JOURNAL_ID
+            group_col = default_group_col
 
         tcol  = COL_DEBIT if direction == '차변' else COL_CREDIT
         mask  = _account_match_flexible(df[COL_ACCOUNT], acct) & (df[tcol] != 0)
@@ -800,8 +821,9 @@ def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
         counterpart_mask = pd.Series(False, index=df.index)
         for n in names:
             counterpart_mask = counterpart_mask | _account_match_flexible(df[COL_ACCOUNT], n)
-        valid_jids = set(df.loc[counterpart_mask, COL_JOURNAL_ID].unique())
-        sub = df[mask_this & df[COL_JOURNAL_ID].isin(valid_jids)]
+        jkey = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
+        valid_jids = set(df.loc[counterpart_mask, jkey].unique())
+        sub = df[mask_this & df[jkey].isin(valid_jids)]
         return sub[col].sum()
 
     def _manual_num(p, col):
