@@ -89,19 +89,46 @@ def _find_input_file(company: str = None, file: str = None) -> str:
     return matches[0]
 
 
+_SUBTOTAL_EXACT = ("소계", "합계", "총계", "누계", "계", "합 계", "소 계", "총 계")
+_SUBTOTAL_SUFFIX = ("소계", "합계", "총계", "누계")  # '계' 단독은 접미어 검사에서 제외 (예: '온도계' 등 실제 자산명 오탐 방지)
+_SUBTOTAL_CHECK_COLS = ("자산관리번호", "계정과목", "자산명(세부내역)")
+
+
+def _looks_like_subtotal_row(rec: dict) -> bool:
+    """원장에서 계정별 소계/합계 행이 그대로 복사돼 들어온 경우를 감지해서 걸러낸다.
+    (예: 계정과목/자산명 칸에 '기계장치 소계', '합계' 등이 들어있고 취득일 없이 금액만 있는 행)"""
+    for col in _SUBTOTAL_CHECK_COLS:
+        v = rec.get(col)
+        if v is None:
+            continue
+        text = str(v).strip()
+        if not text:
+            continue
+        if text in _SUBTOTAL_EXACT or text.endswith(_SUBTOTAL_SUFFIX):
+            return True
+    return False
+
+
 def load_assets(path: str) -> list:
-    """'자산정보' 시트(1~2행 헤더, 3행부터 데이터)를 읽어 dict 목록으로 반환."""
+    """'자산정보' 시트(1~2행 헤더, 3행부터 데이터)를 읽어 dict 목록으로 반환.
+    계정별 소계/합계 행이 원장에서 그대로 복사돼 들어온 경우 자동으로 제외한다."""
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb["자산정보"] if "자산정보" in wb.sheetnames else wb.worksheets[0]
     headers = [c.value for c in ws[2]]
     assets = []
+    skipped_subtotals = 0
     for row in ws.iter_rows(min_row=3, values_only=True):
         if row is None or all(v is None for v in row):
             continue
         rec = dict(zip(headers, row))
         if not rec.get("자산명(세부내역)") and not rec.get("자산관리번호"):
             continue
+        if _looks_like_subtotal_row(rec):
+            skipped_subtotals += 1
+            continue
         assets.append(rec)
+    if skipped_subtotals:
+        print(f"[안내] 소계/합계로 보이는 행 {skipped_subtotals}건을 자산 목록에서 제외했습니다.")
     return assets
 
 
