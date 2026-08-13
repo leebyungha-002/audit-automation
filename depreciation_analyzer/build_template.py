@@ -15,6 +15,7 @@ OUT_PATH = os.path.join(HERE, "input_data", "depreciation_template.xlsx")
 
 # (그룹헤더, 상세헤더, 열너비)
 COLUMNS = [
+    ("자산기본정보", "사업장", 14),
     ("자산기본정보", "자산관리번호", 12),
     ("자산기본정보", "계정과목", 16),
     ("자산기본정보", "자산명(세부내역)", 28),
@@ -86,15 +87,15 @@ def build():
     # 예시행 (정액법 1건 + 정률법 1건 + 손상차손 반영 1건)
     examples = [
         [
-            "FA-0001", "기계장치", "예시) 사출성형기 1호", "2023-03-15", 120000000, 0, 8,
+            "본사", "FA-0001", "기계장치", "예시) 사출성형기 1호", "2023-03-15", 120000000, 0, 8,
             "정액법", None, "당월", None, None, None, 45000000, 15000000, "제조", "예시 행 — 실제 자산으로 교체",
         ],
         [
-            "FA-0002", "차량운반구", "예시) 업무용 승용차", "2024-07-01", 45000000, 0, 5,
+            "본사", "FA-0002", "차량운반구", "예시) 업무용 승용차", "2024-07-01", 45000000, 0, 5,
             "정률법", 0.451, "익월", None, None, None, 0, 10147500, "판관", "예시 행 — 실제 자산으로 교체",
         ],
         [
-            "FA-0003", "건물", "예시) CGU 손상평가 반영 자산", "2015-01-01", 500000000, 0, 40,
+            "제2공장", "FA-0003", "건물", "예시) CGU 손상평가 반영 자산", "2015-01-01", 500000000, 0, 40,
             "정액법", None, "당월", None, "2025-12-31", 80000000, None, None, "제조",
             "예시) 25년말 CGU 손상평가로 손상차손 인식 → 남은 기간(내용연수 그대로) 정액법 재상각",
         ],
@@ -111,18 +112,24 @@ def build():
             if COLUMNS[c - 1][1] == "상각률(정률법전용)" and val is not None:
                 cell.number_format = "0.000"
 
-    # 데이터 유효성 검사 (100행까지)
+    # 데이터 유효성 검사 (100행까지) — 컬럼명으로 위치를 찾아 열 순서가 바뀌어도 안전하게 적용
     last_row = 100
+
+    def _col_letter(header_name: str) -> str:
+        idx = next(i for i, (_, name, _) in enumerate(COLUMNS, start=1) if name == header_name)
+        return get_column_letter(idx)
 
     dv_method = DataValidation(type="list", formula1='"정액법,정률법"', allow_blank=True, showErrorMessage=True)
     dv_method.error = "정액법 또는 정률법 중 선택하세요."
     ws.add_data_validation(dv_method)
-    dv_method.add(f"H3:H{last_row}")
+    col = _col_letter("상각방법(정액법/정률법)")
+    dv_method.add(f"{col}3:{col}{last_row}")
 
     dv_start = DataValidation(type="list", formula1='"당월,익월"', allow_blank=True, showErrorMessage=True)
     dv_start.error = "당월 또는 익월 중 선택하세요."
     ws.add_data_validation(dv_start)
-    dv_start.add(f"J3:J{last_row}")
+    col = _col_letter("상각개시(당월/익월)")
+    dv_start.add(f"{col}3:{col}{last_row}")
 
     dv_account = DataValidation(
         type="list",
@@ -131,7 +138,8 @@ def build():
         showErrorMessage=False,  # 목록 외 자유 입력 허용 (신규 계정과목 대응)
     )
     ws.add_data_validation(dv_account)
-    dv_account.add(f"B3:B{last_row}")
+    col = _col_letter("계정과목")
+    dv_account.add(f"{col}3:{col}{last_row}")
 
     # 안내 시트
     guide = wb.create_sheet("작성안내")
@@ -139,7 +147,9 @@ def build():
     lines = [
         "감가상각비 검증앱 — 입력 템플릿 작성 안내",
         "",
-        "1. 자산 1건 = 1행. '자산정보' 시트에 계속 추가하면 됩니다(계정과목별로 시트를 나누지 않음).",
+        "1. 자산 1건 = 1행. '자산정보' 시트에 계속 추가하면 됩니다(계정과목별·사업장별로 시트를 나누지 않음).",
+        "1-1. 사업장: 사업장이 여러 곳인 회사만 채우면 됩니다(예: 본사/제2공장). 채워두면 출력물이 사업장별 → 계정과목별 2단 소계로 나옵니다.",
+        "     사업장이 한 곳뿐이거나 구분이 필요 없으면 비워둬도 됩니다(비워두면 기존처럼 계정과목 소계만 표시).",
         "2. 계정과목: 드롭다운 목록에 없는 계정(신규 취득 등)은 직접 입력해도 됩니다.",
         "3. 상각방법: 정액법 선택 시 '상각률' 열은 비워두면 자동 계산됩니다((취득원가-잔존가치)/내용연수).",
         "   정률법 선택 시 '상각률'을 반드시 입력하세요(세법상 상각률표 등 참고).",

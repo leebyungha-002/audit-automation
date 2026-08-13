@@ -214,6 +214,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
             비고 = f"{비고} / {warning}".strip(" /")
 
         rows.append({
+            "사업장": a.get("사업장") or "",
             "계정과목": a.get("계정과목") or "(미분류)",
             "자산관리번호": a.get("자산관리번호"),
             "자산명(세부내역)": a.get("자산명(세부내역)"),
@@ -237,7 +238,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    return df.sort_values(["계정과목", "자산명(세부내역)"], na_position="last").reset_index(drop=True)
+    return df.sort_values(["사업장", "계정과목", "자산명(세부내역)"], na_position="last").reset_index(drop=True)
 
 
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
@@ -289,6 +290,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
 
     r = header_row + 1
     totals = {c: 0.0 for c in MONEY_COLS}
+    site_totals = {c: 0.0 for c in MONEY_COLS}
     grand_totals = {c: 0.0 for c in MONEY_COLS}
 
     if df.empty:
@@ -296,40 +298,64 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
         wb.save(output_path)
         return
 
-    groups = list(df.groupby("계정과목", sort=False))
-    for gi, (account, gdf) in enumerate(groups):
-        for _, row in gdf.iterrows():
-            for i, h in enumerate(headers, start=1):
-                val = row[h]
-                cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
-                cell.border = border
-                if h == "취득일" and val is not None and not pd.isna(val):
-                    cell.number_format = "yyyy-mm-dd"
-                if h in MONEY_COLS:
-                    cell.number_format = "#,##0"
-                if h in ("기초누계액 차이", "당기상각비 차이"):
-                    base_col = "전기말 회사계상 누계액" if h == "기초누계액 차이" else "당기 회사계상 상각비"
-                    if _is_significant(val, row.get(base_col)):
-                        cell.fill = sig_fill
-            for c in MONEY_COLS:
-                v = row.get(c)
-                if v is not None and not pd.isna(v):
-                    totals[c] += v
-                    grand_totals[c] += v
-            r += 1
+    # 사업장 컬럼에 실제 값이 하나라도 있으면 사업장→계정과목 2단 소계, 없으면 기존처럼 계정과목 소계만
+    has_site = "사업장" in df.columns and (df["사업장"].astype(str).str.strip() != "").any()
+    if has_site:
+        df = df.copy()
+        df["사업장"] = df["사업장"].astype(str).str.strip().replace("", "(미분류)")
+        outer_groups = list(df.groupby("사업장", sort=False))
+    else:
+        outer_groups = [(None, df)]
 
-        # 계정과목 소계 행
-        ws.cell(row=r, column=1, value=f"[{account} 소계]").font = bold
-        for i, h in enumerate(headers, start=1):
-            cell = ws.cell(row=r, column=i)
-            cell.fill = subtotal_fill
-            cell.border = border
-            if h in MONEY_COLS:
-                cell.value = totals[h]
-                cell.number_format = "#,##0"
-                cell.font = bold
-        r += 1
-        totals = {c: 0.0 for c in MONEY_COLS}
+    for site, site_df in outer_groups:
+        for account, gdf in site_df.groupby("계정과목", sort=False):
+            for _, row in gdf.iterrows():
+                for i, h in enumerate(headers, start=1):
+                    val = row[h]
+                    cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
+                    cell.border = border
+                    if h == "취득일" and val is not None and not pd.isna(val):
+                        cell.number_format = "yyyy-mm-dd"
+                    if h in MONEY_COLS:
+                        cell.number_format = "#,##0"
+                    if h in ("기초누계액 차이", "당기상각비 차이"):
+                        base_col = "전기말 회사계상 누계액" if h == "기초누계액 차이" else "당기 회사계상 상각비"
+                        if _is_significant(val, row.get(base_col)):
+                            cell.fill = sig_fill
+                for c in MONEY_COLS:
+                    v = row.get(c)
+                    if v is not None and not pd.isna(v):
+                        totals[c] += v
+                        site_totals[c] += v
+                        grand_totals[c] += v
+                r += 1
+
+            # 계정과목 소계 행
+            ws.cell(row=r, column=1, value=f"[{account} 소계]").font = bold
+            for i, h in enumerate(headers, start=1):
+                cell = ws.cell(row=r, column=i)
+                cell.fill = subtotal_fill
+                cell.border = border
+                if h in MONEY_COLS:
+                    cell.value = totals[h]
+                    cell.number_format = "#,##0"
+                    cell.font = bold
+            r += 1
+            totals = {c: 0.0 for c in MONEY_COLS}
+
+        if has_site:
+            # 사업장 소계 행
+            ws.cell(row=r, column=1, value=f"[{site} 사업장 소계]").font = bold
+            for i, h in enumerate(headers, start=1):
+                cell = ws.cell(row=r, column=i)
+                cell.fill = total_fill
+                cell.border = border
+                if h in MONEY_COLS:
+                    cell.value = site_totals[h]
+                    cell.number_format = "#,##0"
+                    cell.font = bold
+            r += 1
+            site_totals = {c: 0.0 for c in MONEY_COLS}
 
     # 총계 행
     ws.cell(row=r, column=1, value="총계").font = Font(bold=True, size=11)
