@@ -67,6 +67,14 @@ def _fiscal_year(ym: str, fiscal_month: int) -> str:
     return str(year + 1) if month > fiscal_month else str(year)
 
 
+def _fy_bounds(target_fy: str, fiscal_month: int) -> tuple:
+    """대상 회계연도(target_fy)의 시작월/종료월(YYYY-MM 문자열) 반환."""
+    fy = int(target_fy)
+    if fiscal_month == 12:
+        return f"{fy}-01", f"{fy}-12"
+    return f"{fy - 1}-{fiscal_month + 1:02d}", f"{fy}-{fiscal_month:02d}"
+
+
 # ── 입력 로딩 ────────────────────────────────────────────────────────────────
 
 def _find_input_file(company: str = None, file: str = None) -> str:
@@ -224,12 +232,38 @@ def summarize_for_fy(sched: pd.DataFrame, fiscal_month: int, target_fy: str) -> 
 # ── 명세서 구성 ──────────────────────────────────────────────────────────────
 
 def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.DataFrame:
+    fy_start, fy_end = _fy_bounds(target_fy, fiscal_month)
+
     rows = []
     for a in assets:
         sched, warning = build_asset_schedule(a)
         agg = summarize_for_fy(sched, fiscal_month, target_fy)
         cost = _safe_float(a.get("취득원가"))
-        기말장부가액 = cost - agg["기말누계"] - agg["기말손상누계"]
+
+        acquire = _safe_date(a.get("취득일"))
+        acquire_ym = acquire.strftime("%Y-%m") if acquire else None
+        dispose = _safe_date(a.get("처분일"))
+        dispose_ym = dispose.strftime("%Y-%m") if dispose else None
+
+        # 전기 이전(당기 이전 연도)에 이미 처분된 자산은 당기 기초잔액에도 잡히지 않아야 함
+        disposed_before_fy = dispose_ym is not None and dispose_ym < fy_start
+        disposed_in_fy = dispose_ym is not None and fy_start <= dispose_ym <= fy_end
+        acquired_in_fy = acquire_ym is not None and fy_start <= acquire_ym <= fy_end
+
+        if disposed_before_fy:
+            기초취득원가, 당기증가, 당기감소, 기말취득원가 = 0.0, 0.0, 0.0, 0.0
+        else:
+            기초취득원가 = 0.0 if acquired_in_fy else cost
+            당기증가 = cost if acquired_in_fy else 0.0
+            당기감소 = cost if disposed_in_fy else 0.0
+            기말취득원가 = 기초취득원가 + 당기증가 - 당기감소
+
+        # 처분 시 그 자산의 감가상각누계액·손상차손누계액도 함께 장부에서 제거(당기 상각비 자체는 처분월까지 정상 반영됨)
+        누계액_처분감소 = (agg["기초누계"] + agg["당기상각비"]) if disposed_in_fy else 0.0
+        기말감가상각누계액 = agg["기초누계"] + agg["당기상각비"] - 누계액_처분감소
+        손상누계_처분감소 = agg["기말손상누계"] if disposed_in_fy else 0.0
+        기말손상차손누계액 = agg["기말손상누계"] - 손상누계_처분감소
+        기말장부가액 = 기말취득원가 - 기말감가상각누계액 - 기말손상차손누계액
 
         company_beg = a.get("전기말 회사계상 감가상각누계액")
         company_dep = a.get("당기 회사계상 감가상각비")
@@ -239,6 +273,8 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
         비고 = a.get("비고") or ""
         if warning:
             비고 = f"{비고} / {warning}".strip(" /")
+        if disposed_in_fy:
+            비고 = f"{비고} / 당기 처분(취득원가·상각누계액 전액 제거)".strip(" /")
 
         rows.append({
             "사업장": a.get("사업장") or "",
@@ -247,13 +283,17 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
             "자산관리번호": a.get("자산관리번호"),
             "자산명(세부내역)": a.get("자산명(세부내역)"),
             "취득일": a.get("취득일"),
-            "취득원가": cost,
+            "기초취득원가": 기초취득원가,
+            "당기증가(신규취득)": 당기증가,
+            "당기감소(처분)": 당기감소,
+            "기말취득원가": 기말취득원가,
             "기초감가상각누계액(계산)": agg["기초누계"],
             "당기감가상각비(계산)": agg["당기상각비"],
-            "기말감가상각누계액(계산)": agg["기말누계"],
+            "처분시감소(누계액)": 누계액_처분감소,
+            "기말감가상각누계액(계산)": 기말감가상각누계액,
             "전기말 손상차손누계액(계산)": agg["기초손상누계"],
             "당기 손상차손인식액(계산)": agg["당기손상"],
-            "기말 손상차손누계액(계산)": agg["기말손상누계"],
+            "기말 손상차손누계액(계산)": 기말손상차손누계액,
             "기말장부가액(계산)": 기말장부가액,
             "전기말 회사계상 누계액": company_beg_f,
             "기초누계액 차이": (None if company_beg_f is None else agg["기초누계"] - company_beg_f),
@@ -283,7 +323,7 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     d["자산분류"] = d["자산분류"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
     d["사업장"] = d["사업장"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
     d["원가구분"] = d["원가구분"].astype(str).str.strip().replace({"": "(미분류)", "None": "(미분류)", "nan": "(미분류)"})
-    d["기초장부금액"] = d["취득원가"] - d["기초감가상각누계액(계산)"] - d["전기말 손상차손누계액(계산)"]
+    d["기초장부금액"] = d["기초취득원가"] - d["기초감가상각누계액(계산)"] - d["전기말 손상차손누계액(계산)"]
 
     present = list(dict.fromkeys(d["자산분류"]))
     ordered = [c for c in CATEGORY_ORDER if c in present] + [c for c in present if c not in CATEGORY_ORDER]
@@ -389,7 +429,8 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
 
 MONEY_COLS = [
-    "취득원가", "기초감가상각누계액(계산)", "당기감가상각비(계산)", "기말감가상각누계액(계산)",
+    "기초취득원가", "당기증가(신규취득)", "당기감소(처분)", "기말취득원가",
+    "기초감가상각누계액(계산)", "당기감가상각비(계산)", "처분시감소(누계액)", "기말감가상각누계액(계산)",
     "전기말 손상차손누계액(계산)", "당기 손상차손인식액(계산)", "기말 손상차손누계액(계산)",
     "기말장부가액(계산)", "전기말 회사계상 누계액", "기초누계액 차이",
     "당기 회사계상 상각비", "당기상각비 차이",
