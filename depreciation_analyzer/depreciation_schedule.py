@@ -122,17 +122,23 @@ def build_asset_schedule(a: dict) -> tuple:
     amort_opt = str(a.get("상각개시(당월/익월)") or "당월").strip()
     offset = 1 if amort_opt == "익월" else 0
     dispose = _safe_date(a.get("처분일"))
+    impair_date = _safe_date(a.get("손상차손 인식일"))
+    impair_amt = _safe_float(a.get("손상차손 인식액"))
 
     if acquire is None or n_months <= 0 or cost <= 0:
-        return pd.DataFrame(columns=["연월", "기초장부가액", "당월상각비", "기말장부가액"]), \
-            "취득일/취득원가/내용연수 중 필수값 누락 — 상각 계산 불가"
+        cols = ["연월", "기초장부가액", "당월상각비", "손상차손인식액", "기말장부가액"]
+        return pd.DataFrame(columns=cols), "취득일/취득원가/내용연수 중 필수값 누락 — 상각 계산 불가"
 
     if method == "정률법" and rate <= 0:
         method = "정액법"
         warning = "상각률 미입력 → 정액법으로 대체 계산"
 
+    # 손상 전(全 기간) 정액법 월상각액. 손상 인식월에 도달하면 잔여 개월수 기준으로 재계산한다
+    # (내용연수 자체는 재평가하지 않는다는 전제 — 원래 종료시점은 그대로 유지).
     monthly_straight = (cost - residual) / n_months if n_months > 0 else 0.0
     dispose_ym = dispose.strftime("%Y-%m") if dispose else None
+    impair_ym = impair_date.strftime("%Y-%m") if impair_date else None
+    impair_applied = False
 
     rows = []
     book = cost
@@ -150,7 +156,20 @@ def build_asset_schedule(a: dict) -> tuple:
         dep = max(0.0, min(dep, open_book - residual))
         close_book = open_book - dep
 
-        rows.append({"연월": ym, "기초장부가액": open_book, "당월상각비": dep, "기말장부가액": close_book})
+        impair_this_month = 0.0
+        if impair_ym is not None and not impair_applied and ym == impair_ym and impair_amt > 0:
+            # 손상 인식월의 정상 상각을 먼저 반영한 뒤, 그 시점 장부금액에서 손상차손을 차감(0 하한)
+            impair_this_month = min(impair_amt, close_book)
+            close_book = max(0.0, close_book - impair_this_month)
+            impair_applied = True
+            remaining_months = n_months - mi
+            if method != "정률법":
+                monthly_straight = (close_book - residual) / remaining_months if remaining_months > 0 else 0.0
+
+        rows.append({
+            "연월": ym, "기초장부가액": open_book, "당월상각비": dep,
+            "손상차손인식액": impair_this_month, "기말장부가액": close_book,
+        })
         book = close_book
         if book <= residual + 1e-6:
             break
@@ -159,13 +178,20 @@ def build_asset_schedule(a: dict) -> tuple:
 
 
 def summarize_for_fy(sched: pd.DataFrame, fiscal_month: int, target_fy: str) -> dict:
-    """전체 월별 스케줄에서 특정 회계연도(target_fy)의 기초/당기/기말 누계상각액 집계."""
+    """전체 월별 스케줄에서 특정 회계연도(target_fy)의 기초/당기/기말 누계상각액·손상차손누계액 집계."""
+    empty = {"기초누계": 0.0, "당기상각비": 0.0, "기말누계": 0.0,
+             "기초손상누계": 0.0, "당기손상": 0.0, "기말손상누계": 0.0}
     if sched.empty:
-        return {"기초누계": 0.0, "당기상각비": 0.0, "기말누계": 0.0}
+        return empty
     fy_col = sched["연월"].apply(lambda ym: _fiscal_year(ym, fiscal_month))
     기초누계 = sched.loc[fy_col < target_fy, "당월상각비"].sum()
     당기상각비 = sched.loc[fy_col == target_fy, "당월상각비"].sum()
-    return {"기초누계": 기초누계, "당기상각비": 당기상각비, "기말누계": 기초누계 + 당기상각비}
+    기초손상 = sched.loc[fy_col < target_fy, "손상차손인식액"].sum() if "손상차손인식액" in sched.columns else 0.0
+    당기손상 = sched.loc[fy_col == target_fy, "손상차손인식액"].sum() if "손상차손인식액" in sched.columns else 0.0
+    return {
+        "기초누계": 기초누계, "당기상각비": 당기상각비, "기말누계": 기초누계 + 당기상각비,
+        "기초손상누계": 기초손상, "당기손상": 당기손상, "기말손상누계": 기초손상 + 당기손상,
+    }
 
 
 # ── 명세서 구성 ──────────────────────────────────────────────────────────────
@@ -176,7 +202,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
         sched, warning = build_asset_schedule(a)
         agg = summarize_for_fy(sched, fiscal_month, target_fy)
         cost = _safe_float(a.get("취득원가"))
-        기말장부가액 = cost - agg["기말누계"]
+        기말장부가액 = cost - agg["기말누계"] - agg["기말손상누계"]
 
         company_beg = a.get("전기말 회사계상 감가상각누계액")
         company_dep = a.get("당기 회사계상 감가상각비")
@@ -196,6 +222,9 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
             "기초감가상각누계액(계산)": agg["기초누계"],
             "당기감가상각비(계산)": agg["당기상각비"],
             "기말감가상각누계액(계산)": agg["기말누계"],
+            "전기말 손상차손누계액(계산)": agg["기초손상누계"],
+            "당기 손상차손인식액(계산)": agg["당기손상"],
+            "기말 손상차손누계액(계산)": agg["기말손상누계"],
             "기말장부가액(계산)": 기말장부가액,
             "전기말 회사계상 누계액": company_beg_f,
             "기초누계액 차이": (None if company_beg_f is None else agg["기초누계"] - company_beg_f),
@@ -215,6 +244,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
 
 MONEY_COLS = [
     "취득원가", "기초감가상각누계액(계산)", "당기감가상각비(계산)", "기말감가상각누계액(계산)",
+    "전기말 손상차손누계액(계산)", "당기 손상차손인식액(계산)", "기말 손상차손누계액(계산)",
     "기말장부가액(계산)", "전기말 회사계상 누계액", "기초누계액 차이",
     "당기 회사계상 상각비", "당기상각비 차이",
 ]
