@@ -1,10 +1,18 @@
 """유형자산·투자부동산 감가상각비 검증앱 — 엔진.
 
 input_data/depreciation_<company>_information_fy<year>.xlsx 를 읽어
-자산별 월별 상각 스케줄을 재계산하고, 계정과목별 소계가 있는
+자산별 당기 감가상각비를 재계산하고, 계정과목별 소계가 있는
 '고정자산명세서'를 output/depreciation_schedule_<company>_<fy>.xlsx 로 생성한다.
 
-회사계상 감가상각누계액/당기상각비를 입력해 두면 앱의 재계산 결과와 자동 대사해
+핵심 설계: 취득원가·감가상각누계액·손상차손누계액·정부보조금잔액 전부
+"기초잔액은 회사가 보고한 값을 그대로 신뢰하고, 당기 증감만 재계산"하는
+동일한 방식을 따른다(다년간 이력을 시뮬레이션하지 않음). 그래서:
+  - 기초취득원가/기초 감가상각누계액/기초 손상차손누계액/기초 정부보조금잔액 = 입력값 그대로
+  - 당기취득원가(신규취득)/당기처분원가/당기 손상차손인식액/당기 정부보조금수령액 = 입력값(이벤트)
+  - 당기감가상각비/당기 정부보조금환입액 = 앱이 계산
+  - 기말 각 잔액 = 기초 + 당기증가 - 당기감소 (계산)
+
+당기 회사계상 감가상각비/보조금환입액을 입력해 두면 앱의 재계산 결과와 자동 대사해
 차이를 표시한다(유의차이는 노란색 강조).
 
 실행 예:
@@ -75,6 +83,21 @@ def _fy_bounds(target_fy: str, fiscal_month: int) -> tuple:
     return f"{fy - 1}-{fiscal_month + 1:02d}", f"{fy}-{fiscal_month:02d}"
 
 
+def _months_between(start_ym: str, end_ym: str) -> int:
+    """두 YYYY-MM 사이의 개월 수(양끝 포함)."""
+    sy, sm = int(start_ym[:4]), int(start_ym[5:7])
+    ey, em = int(end_ym[:4]), int(end_ym[5:7])
+    return (ey - sy) * 12 + (em - sm) + 1
+
+
+def _add_month(ym: str, n: int = 1) -> str:
+    y, m = int(ym[:4]), int(ym[5:7])
+    m += n
+    y += (m - 1) // 12
+    m = (m - 1) % 12 + 1
+    return f"{y}-{m:02d}"
+
+
 # ── 입력 로딩 ────────────────────────────────────────────────────────────────
 
 def _find_input_file(company: str = None, file: str = None) -> str:
@@ -140,100 +163,150 @@ def load_assets(path: str) -> list:
     return assets
 
 
-# ── 상각 스케줄 계산 ─────────────────────────────────────────────────────────
+# ── 당기 감가상각/손상차손/정부보조금 계산 ───────────────────────────────────
 
-def build_asset_schedule(a: dict) -> tuple:
-    """단일 자산의 취득일~내용연수(또는 처분일) 전체 월별 상각 스케줄 계산.
-    Returns (schedule_df, warning: str|None)
-    """
-    warning = None
-    acquire = _safe_date(a.get("취득일"))
-    cost = _safe_float(a.get("취득원가"))
-    residual = _safe_float(a.get("잔존가치"))
-    life_years = _safe_float(a.get("내용연수(년)"))
-    n_months = round(life_years * 12)
+def compute_asset(a: dict, fiscal_month: int, target_fy: str) -> dict:
+    """자산 1건의 당기 활동을 계산한다.
+    기초잔액(감가상각누계액/손상차손누계액/정부보조금잔액)은 입력값을 그대로 신뢰하고,
+    당기분(상각비/손상차손/보조금환입)만 계산한다. 다년간 이력 시뮬레이션은 하지 않는다."""
+    fy_start, fy_end = _fy_bounds(target_fy, fiscal_month)
+
+    기초취득원가 = _safe_float(a.get("기초취득원가"))
+    당기취득원가 = _safe_float(a.get("당기취득원가"))
+    cost = 기초취득원가 + 당기취득원가
+    잔존가치 = _safe_float(a.get("잔존가치"))
+    n_months = round(_safe_float(a.get("내용연수(년)")) * 12)
     method = str(a.get("상각방법(정액법/정률법)") or "정액법").strip()
     rate = _safe_float(a.get("상각률(정률법전용)"))
     amort_opt = str(a.get("상각개시(당월/익월)") or "당월").strip()
     offset = 1 if amort_opt == "익월" else 0
+    acquire = _safe_date(a.get("취득일"))
     dispose = _safe_date(a.get("처분일"))
+    dispose_ym = dispose.strftime("%Y-%m") if dispose else None
     impair_date = _safe_date(a.get("손상차손 인식일"))
     impair_amt = _safe_float(a.get("손상차손 인식액"))
-    grant_amt = _safe_float(a.get("정부보조금 수령액"))
-    grant_ratio = (grant_amt / cost) if cost > 0 and grant_amt > 0 else 0.0
+    impair_ym = impair_date.strftime("%Y-%m") if impair_date else None
+    grant_new = _safe_float(a.get("당기 정부보조금수령액"))
 
-    if acquire is None or n_months <= 0 or cost <= 0:
-        cols = ["연월", "기초장부가액", "당월상각비", "손상차손인식액", "정부보조금환입액", "기말장부가액"]
-        return pd.DataFrame(columns=cols), "취득일/취득원가/내용연수 중 필수값 누락 — 상각 계산 불가"
+    result = {
+        "기초감가상각누계액": 0.0, "당기감가상각비": 0.0, "처분시감소_누계액": 0.0, "기말감가상각누계액": 0.0,
+        "기초손상차손누계액": 0.0, "당기손상차손인식액": 0.0, "처분시감소_손상": 0.0, "기말손상차손누계액": 0.0,
+        "기초정부보조금잔액": 0.0, "당기정부보조금수령액": 0.0, "당기정부보조금환입액": 0.0,
+        "처분시감소_보조금": 0.0, "기말정부보조금잔액": 0.0,
+        "warning": None,
+    }
+
+    if cost <= 0 or n_months <= 0:
+        result["warning"] = "취득원가(기초+당기)/내용연수 중 필수값 누락 — 상각 계산 불가"
+        return result
 
     if method == "정률법" and rate <= 0:
         method = "정액법"
-        warning = "상각률 미입력 → 정액법으로 대체 계산"
+        result["warning"] = "상각률 미입력 → 정액법으로 대체 계산"
 
-    # 손상 전(全 기간) 정액법 월상각액. 손상 인식월에 도달하면 잔여 개월수 기준으로 재계산한다
-    # (내용연수 자체는 재평가하지 않는다는 전제 — 원래 종료시점은 그대로 유지).
-    monthly_straight = (cost - residual) / n_months if n_months > 0 else 0.0
-    dispose_ym = dispose.strftime("%Y-%m") if dispose else None
-    impair_ym = impair_date.strftime("%Y-%m") if impair_date else None
-    impair_applied = False
+    is_existing = 기초취득원가 > 0
+    disposed_in_fy = dispose_ym is not None and fy_start <= dispose_ym <= fy_end
 
-    rows = []
-    book = cost
-    for mi in range(1, n_months + 1):
-        dt = acquire + relativedelta(months=mi - 1 + offset)
-        ym = dt.strftime("%Y-%m")
-        if dispose_ym is not None and ym > dispose_ym:
-            break
-
-        open_book = book
-        if method == "정률법":
-            dep = open_book * (rate / 12)
+    if is_existing:
+        기초누계 = _safe_float(a.get("기초 감가상각누계액"))
+        기초손상 = _safe_float(a.get("기초 손상차손누계액"))
+        기초보조금 = _safe_float(a.get("기초 정부보조금잔액"))
+        # 감가상각은 정부보조금과 무관하게 자산 자체의 장부가(취득원가-감가상각누계액-손상차손누계액) 기준으로 계산한다.
+        # 정부보조금은 별도 차감계정으로, 상각비와 같은 비율로 환입만 될 뿐 상각 계산 자체의 기준에는 포함되지 않는다.
+        base_book_before_grant = cost - 기초누계 - 기초손상
+        held_start = fy_start
+        if acquire:
+            eff_start_ym = (acquire + relativedelta(months=offset)).strftime("%Y-%m")
+            elapsed = max(0, _months_between(eff_start_ym, fy_start) - 1)
+            remaining_total_months = max(1, n_months - elapsed)
         else:
-            dep = monthly_straight
-        dep = max(0.0, min(dep, open_book - residual))
-        close_book = open_book - dep
+            remaining_total_months = n_months  # 취득일 미입력 시 근사치(정확한 잔여내용연수 계산 불가)
+        grant_ratio = (기초보조금 / base_book_before_grant) if base_book_before_grant > 0 else 0.0
+        보조금_당기증가 = 0.0
+    else:
+        # 당기 신규취득
+        if acquire is None:
+            result["warning"] = "당기취득원가가 있는 자산은 취득일이 필요합니다"
+            return result
+        기초누계 = 0.0
+        기초손상 = 0.0
+        기초보조금 = 0.0
+        base_book_before_grant = cost
+        held_start = (acquire + relativedelta(months=offset)).strftime("%Y-%m")
+        if held_start < fy_start:
+            held_start = fy_start
+        remaining_total_months = n_months
+        grant_ratio = (grant_new / 당기취득원가) if 당기취득원가 > 0 else 0.0
+        보조금_당기증가 = grant_new
 
-        impair_this_month = 0.0
-        if impair_ym is not None and not impair_applied and ym == impair_ym and impair_amt > 0:
-            # 손상 인식월의 정상 상각을 먼저 반영한 뒤, 그 시점 장부금액에서 손상차손을 차감(0 하한)
-            impair_this_month = min(impair_amt, close_book)
-            close_book = max(0.0, close_book - impair_this_month)
-            impair_applied = True
-            remaining_months = n_months - mi
-            if method != "정률법":
-                monthly_straight = (close_book - residual) / remaining_months if remaining_months > 0 else 0.0
-
-        rows.append({
-            "연월": ym, "기초장부가액": open_book, "당월상각비": dep,
-            "손상차손인식액": impair_this_month, "정부보조금환입액": dep * grant_ratio,
-            "기말장부가액": close_book,
+    held_end = dispose_ym if disposed_in_fy else fy_end
+    if held_end < held_start:
+        result.update({
+            "기초감가상각누계액": 기초누계, "기말감가상각누계액": 기초누계,
+            "기초손상차손누계액": 기초손상, "기말손상차손누계액": 기초손상,
+            "기초정부보조금잔액": 기초보조금, "기말정부보조금잔액": 기초보조금 + 보조금_당기증가,
+            "당기정부보조금수령액": 보조금_당기증가,
         })
-        book = close_book
-        if book <= residual + 1e-6:
-            break
+        return result
 
-    return pd.DataFrame(rows), warning
+    impair_in_period = (
+        impair_ym is not None and impair_amt > 0 and held_start <= impair_ym <= held_end
+    )
 
+    당기감가상각비 = 0.0
+    당기손상 = 0.0
 
-def summarize_for_fy(sched: pd.DataFrame, fiscal_month: int, target_fy: str) -> dict:
-    """전체 월별 스케줄에서 특정 회계연도(target_fy)의 기초/당기/기말 누계상각액·손상차손누계액·정부보조금환입누계액 집계."""
-    empty = {"기초누계": 0.0, "당기상각비": 0.0, "기말누계": 0.0,
-             "기초손상누계": 0.0, "당기손상": 0.0, "기말손상누계": 0.0,
-             "기초보조금누계": 0.0, "당기보조금환입": 0.0, "기말보조금누계": 0.0}
-    if sched.empty:
-        return empty
-    fy_col = sched["연월"].apply(lambda ym: _fiscal_year(ym, fiscal_month))
-    기초누계 = sched.loc[fy_col < target_fy, "당월상각비"].sum()
-    당기상각비 = sched.loc[fy_col == target_fy, "당월상각비"].sum()
-    기초손상 = sched.loc[fy_col < target_fy, "손상차손인식액"].sum() if "손상차손인식액" in sched.columns else 0.0
-    당기손상 = sched.loc[fy_col == target_fy, "손상차손인식액"].sum() if "손상차손인식액" in sched.columns else 0.0
-    기초보조금 = sched.loc[fy_col < target_fy, "정부보조금환입액"].sum() if "정부보조금환입액" in sched.columns else 0.0
-    당기보조금 = sched.loc[fy_col == target_fy, "정부보조금환입액"].sum() if "정부보조금환입액" in sched.columns else 0.0
-    return {
-        "기초누계": 기초누계, "당기상각비": 당기상각비, "기말누계": 기초누계 + 당기상각비,
-        "기초손상누계": 기초손상, "당기손상": 당기손상, "기말손상누계": 기초손상 + 당기손상,
-        "기초보조금누계": 기초보조금, "당기보조금환입": 당기보조금, "기말보조금누계": 기초보조금 + 당기보조금,
-    }
+    if method == "정률법":
+        book = base_book_before_grant
+        m = held_start
+        while m <= held_end:
+            dep = book * (rate / 12)
+            dep = max(0.0, min(dep, book - 잔존가치))
+            book -= dep
+            당기감가상각비 += dep
+            if impair_in_period and m == impair_ym:
+                imp = min(impair_amt, book)
+                book = max(0.0, book - imp)
+                당기손상 += imp
+            m = _add_month(m, 1)
+    else:  # 정액법
+        monthly_rate = (base_book_before_grant - 잔존가치) / remaining_total_months if remaining_total_months > 0 else 0.0
+        if impair_in_period:
+            n1 = _months_between(held_start, impair_ym)
+            n2 = max(0, _months_between(impair_ym, held_end) - 1)
+            dep1 = max(0.0, min(monthly_rate * n1, base_book_before_grant - 잔존가치))
+            book_at_impair = base_book_before_grant - dep1
+            imp = min(impair_amt, book_at_impair)
+            book_after = max(0.0, book_at_impair - imp)
+            months_left_in_life = max(1, remaining_total_months - n1)
+            monthly_rate2 = (book_after - 잔존가치) / months_left_in_life if months_left_in_life > 0 else 0.0
+            dep2 = max(0.0, min(monthly_rate2 * n2, book_after - 잔존가치)) if n2 > 0 else 0.0
+            당기감가상각비 = dep1 + dep2
+            당기손상 = imp
+        else:
+            n = _months_between(held_start, held_end)
+            당기감가상각비 = max(0.0, min(monthly_rate * n, base_book_before_grant - 잔존가치))
+
+    당기정부보조금환입액 = 당기감가상각비 * grant_ratio
+
+    처분시감소_누계액 = (기초누계 + 당기감가상각비) if disposed_in_fy else 0.0
+    기말감가상각누계액 = 기초누계 + 당기감가상각비 - 처분시감소_누계액
+    처분시감소_손상 = (기초손상 + 당기손상) if disposed_in_fy else 0.0
+    기말손상차손누계액 = 기초손상 + 당기손상 - 처분시감소_손상
+    기말정부보조금잔액_처분전 = 기초보조금 + 보조금_당기증가 - 당기정부보조금환입액
+    처분시감소_보조금 = 기말정부보조금잔액_처분전 if disposed_in_fy else 0.0
+    기말정부보조금잔액 = 기말정부보조금잔액_처분전 - 처분시감소_보조금
+
+    result.update({
+        "기초감가상각누계액": 기초누계, "당기감가상각비": 당기감가상각비,
+        "처분시감소_누계액": 처분시감소_누계액, "기말감가상각누계액": 기말감가상각누계액,
+        "기초손상차손누계액": 기초손상, "당기손상차손인식액": 당기손상,
+        "처분시감소_손상": 처분시감소_손상, "기말손상차손누계액": 기말손상차손누계액,
+        "기초정부보조금잔액": 기초보조금, "당기정부보조금수령액": 보조금_당기증가,
+        "당기정부보조금환입액": 당기정부보조금환입액,
+        "처분시감소_보조금": 처분시감소_보조금, "기말정부보조금잔액": 기말정부보조금잔액,
+    })
+    return result
 
 
 # ── 명세서 구성 ──────────────────────────────────────────────────────────────
@@ -243,56 +316,28 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
 
     rows = []
     for a in assets:
-        sched, warning = build_asset_schedule(a)
-        agg = summarize_for_fy(sched, fiscal_month, target_fy)
-        cost = _safe_float(a.get("취득원가"))
+        r = compute_asset(a, fiscal_month, target_fy)
 
-        acquire = _safe_date(a.get("취득일"))
-        acquire_ym = acquire.strftime("%Y-%m") if acquire else None
-        dispose = _safe_date(a.get("처분일"))
-        dispose_ym = dispose.strftime("%Y-%m") if dispose else None
+        기초취득원가 = _safe_float(a.get("기초취득원가"))
+        당기취득원가 = _safe_float(a.get("당기취득원가"))
+        당기처분원가 = _safe_float(a.get("당기처분원가"))
+        기말취득원가 = 기초취득원가 + 당기취득원가 - 당기처분원가
 
-        # 전기 이전(당기 이전 연도)에 이미 처분된 자산은 당기 기초잔액에도 잡히지 않아야 함
-        disposed_before_fy = dispose_ym is not None and dispose_ym < fy_start
-        disposed_in_fy = dispose_ym is not None and fy_start <= dispose_ym <= fy_end
-        acquired_in_fy = acquire_ym is not None and fy_start <= acquire_ym <= fy_end
+        순감가상각비 = r["당기감가상각비"] - r["당기정부보조금환입액"]
+        기말장부가액 = 기말취득원가 - r["기말감가상각누계액"] - r["기말손상차손누계액"] - r["기말정부보조금잔액"]
 
-        if disposed_before_fy:
-            기초취득원가, 당기증가, 당기감소, 기말취득원가 = 0.0, 0.0, 0.0, 0.0
-        else:
-            기초취득원가 = 0.0 if acquired_in_fy else cost
-            당기증가 = cost if acquired_in_fy else 0.0
-            당기감소 = cost if disposed_in_fy else 0.0
-            기말취득원가 = 기초취득원가 + 당기증가 - 당기감소
-
-        # 처분 시 그 자산의 감가상각누계액·손상차손누계액도 함께 장부에서 제거(당기 상각비 자체는 처분월까지 정상 반영됨)
-        누계액_처분감소 = (agg["기초누계"] + agg["당기상각비"]) if disposed_in_fy else 0.0
-        기말감가상각누계액 = agg["기초누계"] + agg["당기상각비"] - 누계액_처분감소
-        손상누계_처분감소 = agg["기말손상누계"] if disposed_in_fy else 0.0
-        기말손상차손누계액 = agg["기말손상누계"] - 손상누계_처분감소
-
-        # 정부보조금(유형자산차감계정) — 감가상각과 동일한 비율로 환입되며, 환입액은 감가상각비의 차감계정
-        grant_amt = _safe_float(a.get("정부보조금 수령액"))
-        기초정부보조금잔액 = grant_amt - agg["기초보조금누계"]
-        기말정부보조금잔액_처분전 = grant_amt - agg["기말보조금누계"]
-        보조금_처분감소 = 기말정부보조금잔액_처분전 if disposed_in_fy else 0.0
-        기말정부보조금잔액 = 기말정부보조금잔액_처분전 - 보조금_처분감소
-        순감가상각비 = agg["당기상각비"] - agg["당기보조금환입"]
-
-        기말장부가액 = 기말취득원가 - 기말감가상각누계액 - 기말손상차손누계액 - 기말정부보조금잔액
-
-        company_beg = a.get("전기말 회사계상 감가상각누계액")
         company_dep = a.get("당기 회사계상 감가상각비")
-        company_beg_f = _safe_float(company_beg) if company_beg not in (None, "") else None
         company_dep_f = _safe_float(company_dep) if company_dep not in (None, "") else None
-        company_grant_beg = a.get("전기말 회사계상 보조금잔액")
         company_grant_amort = a.get("당기 회사계상 보조금환입액")
-        company_grant_beg_f = _safe_float(company_grant_beg) if company_grant_beg not in (None, "") else None
         company_grant_amort_f = _safe_float(company_grant_amort) if company_grant_amort not in (None, "") else None
 
+        dispose = _safe_date(a.get("처분일"))
+        dispose_ym = dispose.strftime("%Y-%m") if dispose else None
+        disposed_in_fy = dispose_ym is not None and fy_start <= dispose_ym <= fy_end
+
         비고 = a.get("비고") or ""
-        if warning:
-            비고 = f"{비고} / {warning}".strip(" /")
+        if r["warning"]:
+            비고 = f"{비고} / {r['warning']}".strip(" /")
         if disposed_in_fy:
             비고 = f"{비고} / 당기 처분(취득원가·상각누계액 전액 제거)".strip(" /")
 
@@ -304,30 +349,27 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
             "자산명(세부내역)": a.get("자산명(세부내역)"),
             "취득일": a.get("취득일"),
             "기초취득원가": 기초취득원가,
-            "당기증가(신규취득)": 당기증가,
-            "당기감소(처분)": 당기감소,
+            "당기증가(신규취득)": 당기취득원가,
+            "당기감소(처분)": 당기처분원가,
             "기말취득원가": 기말취득원가,
-            "기초감가상각누계액(계산)": agg["기초누계"],
-            "당기감가상각비(계산)": agg["당기상각비"],
-            "처분시감소(누계액)": 누계액_처분감소,
-            "기말감가상각누계액(계산)": 기말감가상각누계액,
-            "전기말 손상차손누계액(계산)": agg["기초손상누계"],
-            "당기 손상차손인식액(계산)": agg["당기손상"],
-            "기말 손상차손누계액(계산)": 기말손상차손누계액,
+            "기초감가상각누계액": r["기초감가상각누계액"],
+            "당기감가상각비(계산)": r["당기감가상각비"],
+            "처분시감소(누계액)": r["처분시감소_누계액"],
+            "기말감가상각누계액(계산)": r["기말감가상각누계액"],
+            "기초손상차손누계액": r["기초손상차손누계액"],
+            "당기 손상차손인식액(계산)": r["당기손상차손인식액"],
+            "기말 손상차손누계액(계산)": r["기말손상차손누계액"],
             "정부보조금 계정명": a.get("정부보조금 계정명") or "",
-            "기초 정부보조금잔액(계산)": 기초정부보조금잔액,
-            "당기 정부보조금환입액(계산)": agg["당기보조금환입"],
-            "기말 정부보조금잔액(계산)": 기말정부보조금잔액,
+            "기초정부보조금잔액": r["기초정부보조금잔액"],
+            "당기 정부보조금수령액": r["당기정부보조금수령액"],
+            "당기 정부보조금환입액(계산)": r["당기정부보조금환입액"],
+            "기말 정부보조금잔액(계산)": r["기말정부보조금잔액"],
             "순 감가상각비(보조금차감후)(계산)": 순감가상각비,
             "기말장부가액(계산)": 기말장부가액,
-            "전기말 회사계상 누계액": company_beg_f,
-            "기초누계액 차이": (None if company_beg_f is None else agg["기초누계"] - company_beg_f),
             "당기 회사계상 상각비": company_dep_f,
-            "당기상각비 차이": (None if company_dep_f is None else agg["당기상각비"] - company_dep_f),
-            "전기말 회사계상 보조금잔액": company_grant_beg_f,
-            "기초보조금잔액 차이": (None if company_grant_beg_f is None else 기초정부보조금잔액 - company_grant_beg_f),
+            "당기상각비 차이": (None if company_dep_f is None else r["당기감가상각비"] - company_dep_f),
             "당기 회사계상 보조금환입액": company_grant_amort_f,
-            "당기환입액 차이": (None if company_grant_amort_f is None else agg["당기보조금환입"] - company_grant_amort_f),
+            "당기환입액 차이": (None if company_grant_amort_f is None else r["당기정부보조금환입액"] - company_grant_amort_f),
             "원가구분": a.get("원가구분"),
             "비고": 비고,
         })
@@ -353,8 +395,7 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     d["사업장"] = d["사업장"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
     d["원가구분"] = d["원가구분"].astype(str).str.strip().replace({"": "(미분류)", "None": "(미분류)", "nan": "(미분류)"})
     d["기초장부금액"] = (
-        d["기초취득원가"] - d["기초감가상각누계액(계산)"] - d["전기말 손상차손누계액(계산)"]
-        - d["기초 정부보조금잔액(계산)"]
+        d["기초취득원가"] - d["기초감가상각누계액"] - d["기초손상차손누계액"] - d["기초정부보조금잔액"]
     )
 
     present = list(dict.fromkeys(d["자산분류"]))
@@ -467,21 +508,18 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
 
 MONEY_COLS = [
     "기초취득원가", "당기증가(신규취득)", "당기감소(처분)", "기말취득원가",
-    "기초감가상각누계액(계산)", "당기감가상각비(계산)", "처분시감소(누계액)", "기말감가상각누계액(계산)",
-    "전기말 손상차손누계액(계산)", "당기 손상차손인식액(계산)", "기말 손상차손누계액(계산)",
-    "기초 정부보조금잔액(계산)", "당기 정부보조금환입액(계산)", "기말 정부보조금잔액(계산)",
+    "기초감가상각누계액", "당기감가상각비(계산)", "처분시감소(누계액)", "기말감가상각누계액(계산)",
+    "기초손상차손누계액", "당기 손상차손인식액(계산)", "기말 손상차손누계액(계산)",
+    "기초정부보조금잔액", "당기 정부보조금수령액", "당기 정부보조금환입액(계산)", "기말 정부보조금잔액(계산)",
     "순 감가상각비(보조금차감후)(계산)",
-    "기말장부가액(계산)", "전기말 회사계상 누계액", "기초누계액 차이",
+    "기말장부가액(계산)",
     "당기 회사계상 상각비", "당기상각비 차이",
-    "전기말 회사계상 보조금잔액", "기초보조금잔액 차이",
     "당기 회사계상 보조금환입액", "당기환입액 차이",
 ]
 
 # 대사 차이 컬럼 → 유의성 판단 기준(분모)이 되는 회사계상액 컬럼
 DIFF_BASE_COLS = {
-    "기초누계액 차이": "전기말 회사계상 누계액",
     "당기상각비 차이": "당기 회사계상 상각비",
-    "기초보조금잔액 차이": "전기말 회사계상 보조금잔액",
     "당기환입액 차이": "당기 회사계상 보조금환입액",
 }
 
