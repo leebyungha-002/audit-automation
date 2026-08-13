@@ -159,9 +159,11 @@ def build_asset_schedule(a: dict) -> tuple:
     dispose = _safe_date(a.get("처분일"))
     impair_date = _safe_date(a.get("손상차손 인식일"))
     impair_amt = _safe_float(a.get("손상차손 인식액"))
+    grant_amt = _safe_float(a.get("정부보조금 수령액"))
+    grant_ratio = (grant_amt / cost) if cost > 0 and grant_amt > 0 else 0.0
 
     if acquire is None or n_months <= 0 or cost <= 0:
-        cols = ["연월", "기초장부가액", "당월상각비", "손상차손인식액", "기말장부가액"]
+        cols = ["연월", "기초장부가액", "당월상각비", "손상차손인식액", "정부보조금환입액", "기말장부가액"]
         return pd.DataFrame(columns=cols), "취득일/취득원가/내용연수 중 필수값 누락 — 상각 계산 불가"
 
     if method == "정률법" and rate <= 0:
@@ -203,7 +205,8 @@ def build_asset_schedule(a: dict) -> tuple:
 
         rows.append({
             "연월": ym, "기초장부가액": open_book, "당월상각비": dep,
-            "손상차손인식액": impair_this_month, "기말장부가액": close_book,
+            "손상차손인식액": impair_this_month, "정부보조금환입액": dep * grant_ratio,
+            "기말장부가액": close_book,
         })
         book = close_book
         if book <= residual + 1e-6:
@@ -213,9 +216,10 @@ def build_asset_schedule(a: dict) -> tuple:
 
 
 def summarize_for_fy(sched: pd.DataFrame, fiscal_month: int, target_fy: str) -> dict:
-    """전체 월별 스케줄에서 특정 회계연도(target_fy)의 기초/당기/기말 누계상각액·손상차손누계액 집계."""
+    """전체 월별 스케줄에서 특정 회계연도(target_fy)의 기초/당기/기말 누계상각액·손상차손누계액·정부보조금환입누계액 집계."""
     empty = {"기초누계": 0.0, "당기상각비": 0.0, "기말누계": 0.0,
-             "기초손상누계": 0.0, "당기손상": 0.0, "기말손상누계": 0.0}
+             "기초손상누계": 0.0, "당기손상": 0.0, "기말손상누계": 0.0,
+             "기초보조금누계": 0.0, "당기보조금환입": 0.0, "기말보조금누계": 0.0}
     if sched.empty:
         return empty
     fy_col = sched["연월"].apply(lambda ym: _fiscal_year(ym, fiscal_month))
@@ -223,9 +227,12 @@ def summarize_for_fy(sched: pd.DataFrame, fiscal_month: int, target_fy: str) -> 
     당기상각비 = sched.loc[fy_col == target_fy, "당월상각비"].sum()
     기초손상 = sched.loc[fy_col < target_fy, "손상차손인식액"].sum() if "손상차손인식액" in sched.columns else 0.0
     당기손상 = sched.loc[fy_col == target_fy, "손상차손인식액"].sum() if "손상차손인식액" in sched.columns else 0.0
+    기초보조금 = sched.loc[fy_col < target_fy, "정부보조금환입액"].sum() if "정부보조금환입액" in sched.columns else 0.0
+    당기보조금 = sched.loc[fy_col == target_fy, "정부보조금환입액"].sum() if "정부보조금환입액" in sched.columns else 0.0
     return {
         "기초누계": 기초누계, "당기상각비": 당기상각비, "기말누계": 기초누계 + 당기상각비,
         "기초손상누계": 기초손상, "당기손상": 당기손상, "기말손상누계": 기초손상 + 당기손상,
+        "기초보조금누계": 기초보조금, "당기보조금환입": 당기보조금, "기말보조금누계": 기초보조금 + 당기보조금,
     }
 
 
@@ -263,12 +270,25 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
         기말감가상각누계액 = agg["기초누계"] + agg["당기상각비"] - 누계액_처분감소
         손상누계_처분감소 = agg["기말손상누계"] if disposed_in_fy else 0.0
         기말손상차손누계액 = agg["기말손상누계"] - 손상누계_처분감소
-        기말장부가액 = 기말취득원가 - 기말감가상각누계액 - 기말손상차손누계액
+
+        # 정부보조금(유형자산차감계정) — 감가상각과 동일한 비율로 환입되며, 환입액은 감가상각비의 차감계정
+        grant_amt = _safe_float(a.get("정부보조금 수령액"))
+        기초정부보조금잔액 = grant_amt - agg["기초보조금누계"]
+        기말정부보조금잔액_처분전 = grant_amt - agg["기말보조금누계"]
+        보조금_처분감소 = 기말정부보조금잔액_처분전 if disposed_in_fy else 0.0
+        기말정부보조금잔액 = 기말정부보조금잔액_처분전 - 보조금_처분감소
+        순감가상각비 = agg["당기상각비"] - agg["당기보조금환입"]
+
+        기말장부가액 = 기말취득원가 - 기말감가상각누계액 - 기말손상차손누계액 - 기말정부보조금잔액
 
         company_beg = a.get("전기말 회사계상 감가상각누계액")
         company_dep = a.get("당기 회사계상 감가상각비")
         company_beg_f = _safe_float(company_beg) if company_beg not in (None, "") else None
         company_dep_f = _safe_float(company_dep) if company_dep not in (None, "") else None
+        company_grant_beg = a.get("전기말 회사계상 보조금잔액")
+        company_grant_amort = a.get("당기 회사계상 보조금환입액")
+        company_grant_beg_f = _safe_float(company_grant_beg) if company_grant_beg not in (None, "") else None
+        company_grant_amort_f = _safe_float(company_grant_amort) if company_grant_amort not in (None, "") else None
 
         비고 = a.get("비고") or ""
         if warning:
@@ -294,11 +314,20 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
             "전기말 손상차손누계액(계산)": agg["기초손상누계"],
             "당기 손상차손인식액(계산)": agg["당기손상"],
             "기말 손상차손누계액(계산)": 기말손상차손누계액,
+            "정부보조금 계정명": a.get("정부보조금 계정명") or "",
+            "기초 정부보조금잔액(계산)": 기초정부보조금잔액,
+            "당기 정부보조금환입액(계산)": agg["당기보조금환입"],
+            "기말 정부보조금잔액(계산)": 기말정부보조금잔액,
+            "순 감가상각비(보조금차감후)(계산)": 순감가상각비,
             "기말장부가액(계산)": 기말장부가액,
             "전기말 회사계상 누계액": company_beg_f,
             "기초누계액 차이": (None if company_beg_f is None else agg["기초누계"] - company_beg_f),
             "당기 회사계상 상각비": company_dep_f,
             "당기상각비 차이": (None if company_dep_f is None else agg["당기상각비"] - company_dep_f),
+            "전기말 회사계상 보조금잔액": company_grant_beg_f,
+            "기초보조금잔액 차이": (None if company_grant_beg_f is None else 기초정부보조금잔액 - company_grant_beg_f),
+            "당기 회사계상 보조금환입액": company_grant_amort_f,
+            "당기환입액 차이": (None if company_grant_amort_f is None else agg["당기보조금환입"] - company_grant_amort_f),
             "원가구분": a.get("원가구분"),
             "비고": 비고,
         })
@@ -323,7 +352,10 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     d["자산분류"] = d["자산분류"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
     d["사업장"] = d["사업장"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
     d["원가구분"] = d["원가구분"].astype(str).str.strip().replace({"": "(미분류)", "None": "(미분류)", "nan": "(미분류)"})
-    d["기초장부금액"] = d["기초취득원가"] - d["기초감가상각누계액(계산)"] - d["전기말 손상차손누계액(계산)"]
+    d["기초장부금액"] = (
+        d["기초취득원가"] - d["기초감가상각누계액(계산)"] - d["전기말 손상차손누계액(계산)"]
+        - d["기초 정부보조금잔액(계산)"]
+    )
 
     present = list(dict.fromkeys(d["자산분류"]))
     ordered = [c for c in CATEGORY_ORDER if c in present] + [c for c in present if c not in CATEGORY_ORDER]
@@ -331,8 +363,9 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     summaries = {}
     for cat in ordered:
         cdf = d[d["자산분류"] == cat]
+        # 사업장×원가구분 피벗은 정부보조금 환입액을 이미 차감한 순액 기준(실제 P&L 반영액)
         pivot = cdf.pivot_table(
-            index="사업장", columns="원가구분", values="당기감가상각비(계산)",
+            index="사업장", columns="원가구분", values="순 감가상각비(보조금차감후)(계산)",
             aggfunc="sum", fill_value=0.0,
         )
         pivot["소계"] = pivot.sum(axis=1)
@@ -344,6 +377,8 @@ def build_category_summary(df: pd.DataFrame) -> dict:
             "자산수": int(len(cdf)),
             "기초장부금액": cdf["기초장부금액"].sum(),
             "당기감가상각비": cdf["당기감가상각비(계산)"].sum(),
+            "당기정부보조금환입액": cdf["당기 정부보조금환입액(계산)"].sum(),
+            "순감가상각비": cdf["순 감가상각비(보조금차감후)(계산)"].sum(),
             "당기손상차손": cdf["당기 손상차손인식액(계산)"].sum(),
             "기말장부금액": cdf["기말장부가액(계산)"].sum(),
             "pivot": pivot,
@@ -364,7 +399,7 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
 
     ws.cell(row=1, column=1, value=f"고정자산 계정분류별 요약표 (회사: {company}, 회계연도: {target_fy})").font = Font(bold=True, size=13)
     ws.column_dimensions["A"].width = 16
-    for col in "BCDEFGH":
+    for col in "BCDEFGHIJ":
         ws.column_dimensions[col].width = 16
 
     r = 3
@@ -372,12 +407,13 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
         ws.cell(row=r, column=1, value="(자산 데이터 없음)")
         return
 
-    METRIC_COLS = ["상각대상 자산수", "기초장부금액", "당기감가상각비", "당기손상차손", "기말장부금액"]
+    METRIC_COLS = ["상각대상 자산수", "기초장부금액", "당기감가상각비(총액)", "정부보조금환입액",
+                   "순감가상각비", "당기손상차손", "기말장부금액"]
 
     for cat, s in summaries.items():
         ws.cell(row=r, column=1, value=f"■ {cat}").fill = section_fill
         ws.cell(row=r, column=1).font = section_font
-        for c in range(2, 8):
+        for c in range(2, len(METRIC_COLS) + 1):
             ws.cell(row=r, column=c).fill = section_fill
         r += 2
 
@@ -388,7 +424,8 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
             cell.alignment = center
             cell.border = border
         r += 1
-        values = [s["자산수"], s["기초장부금액"], s["당기감가상각비"], s["당기손상차손"], s["기말장부금액"]]
+        values = [s["자산수"], s["기초장부금액"], s["당기감가상각비"], s["당기정부보조금환입액"],
+                  s["순감가상각비"], s["당기손상차손"], s["기말장부금액"]]
         for i, v in enumerate(values, start=1):
             cell = ws.cell(row=r, column=i, value=v)
             cell.border = border
@@ -396,7 +433,7 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
                 cell.number_format = "#,##0"
         r += 2
 
-        ws.cell(row=r, column=1, value="사업장별 당기감가상각비 (원가구분별)").font = bold
+        ws.cell(row=r, column=1, value="사업장별 순 당기감가상각비 (원가구분별, 정부보조금환입액 차감후)").font = bold
         r += 1
         pivot = s["pivot"]
         cost_cols = list(pivot.columns)
@@ -432,9 +469,21 @@ MONEY_COLS = [
     "기초취득원가", "당기증가(신규취득)", "당기감소(처분)", "기말취득원가",
     "기초감가상각누계액(계산)", "당기감가상각비(계산)", "처분시감소(누계액)", "기말감가상각누계액(계산)",
     "전기말 손상차손누계액(계산)", "당기 손상차손인식액(계산)", "기말 손상차손누계액(계산)",
+    "기초 정부보조금잔액(계산)", "당기 정부보조금환입액(계산)", "기말 정부보조금잔액(계산)",
+    "순 감가상각비(보조금차감후)(계산)",
     "기말장부가액(계산)", "전기말 회사계상 누계액", "기초누계액 차이",
     "당기 회사계상 상각비", "당기상각비 차이",
+    "전기말 회사계상 보조금잔액", "기초보조금잔액 차이",
+    "당기 회사계상 보조금환입액", "당기환입액 차이",
 ]
+
+# 대사 차이 컬럼 → 유의성 판단 기준(분모)이 되는 회사계상액 컬럼
+DIFF_BASE_COLS = {
+    "기초누계액 차이": "전기말 회사계상 누계액",
+    "당기상각비 차이": "당기 회사계상 상각비",
+    "기초보조금잔액 차이": "전기말 회사계상 보조금잔액",
+    "당기환입액 차이": "당기 회사계상 보조금환입액",
+}
 
 
 def _is_significant(diff, base) -> bool:
@@ -507,9 +556,8 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                         cell.number_format = "yyyy-mm-dd"
                     if h in MONEY_COLS:
                         cell.number_format = "#,##0"
-                    if h in ("기초누계액 차이", "당기상각비 차이"):
-                        base_col = "전기말 회사계상 누계액" if h == "기초누계액 차이" else "당기 회사계상 상각비"
-                        if _is_significant(val, row.get(base_col)):
+                    if h in DIFF_BASE_COLS:
+                        if _is_significant(val, row.get(DIFF_BASE_COLS[h])):
                             cell.fill = sig_fill
                 for c in MONEY_COLS:
                     v = row.get(c)
