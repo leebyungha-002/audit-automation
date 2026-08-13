@@ -85,6 +85,22 @@ def detect_lease_input_files() -> list[tuple[str, str]]:
                 files.append((f'{company}  [{year}]', f.name))
     return files
 
+
+def detect_dep_input_files() -> list[tuple[str, str]]:
+    """depreciation_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
+    in_dir = ROOT / 'depreciation_analyzer' / 'input_data'
+    if not in_dir.exists():
+        return []
+    _pat = re.compile(r'^depreciation_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
+    files = []
+    for f in sorted(in_dir.iterdir()):
+        if f.is_file() and f.suffix.lower() == '.xlsx' and not f.name.startswith('~$') and 'template' not in f.name.lower():
+            m = _pat.match(f.name)
+            if m:
+                company, year = m.group(1), m.group(2)
+                files.append((f'{company}  [{year}]', f.name))
+    return files
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 도구 정의
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,6 +167,15 @@ TOOLS = [
         "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_filter.py"), "--base", "journal_analyzer"],
         "cwd": str(ROOT / "lease_analyzer"),
         "company": "journal",
+        "extra": None,
+    },
+    {
+        "category": "감가상각 검증",
+        "name": "감가상각비 검증 (depreciation_schedule)",
+        "desc": "⚠ 실행 전 depreciation_analyzer/input_data/ 폴더에 depreciation_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\n유형자산·투자부동산 감가상각비 재계산(정액법/정률법) — 계정과목별 소계가 있는 고정자산명세서 생성, 회사계상액과 자동 대사",
+        "cmd": ["python", str(ROOT / "depreciation_analyzer" / "depreciation_schedule.py")],
+        "cwd": str(ROOT / "depreciation_analyzer"),
+        "company": "dep_file",
         "extra": None,
     },
     {
@@ -226,6 +251,7 @@ class Launcher(QMainWindow):
         self._interest_companies = detect_interest_companies()
         self._lease_companies = detect_lease_companies()
         self._lease_input_files: list[tuple[str, str]] = detect_lease_input_files()
+        self._dep_input_files: list[tuple[str, str]] = detect_dep_input_files()
 
         self._build_ui()
         self._tool_list.setCurrentRow(0)
@@ -455,6 +481,10 @@ class Launcher(QMainWindow):
             self._company_row.setVisible(True)
             self._lease_input_files = detect_lease_input_files()
             self._company_combo.addItems([d for d, _ in self._lease_input_files])
+        elif t["company"] == "dep_file":
+            self._company_row.setVisible(True)
+            self._dep_input_files = detect_dep_input_files()
+            self._company_combo.addItems([d for d, _ in self._dep_input_files])
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -472,8 +502,8 @@ class Launcher(QMainWindow):
         # 모드 선택 (sheet_splitter 전용)
         self._mode_row.setVisible(t["extra"] == "sheet_mode")
 
-        # 결산월 선택 (리스 스케줄 전용)
-        self._fy_row.setVisible(t["company"] == "lease_file")
+        # 결산월 선택 (리스 스케줄·감가상각 검증 전용)
+        self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file"))
 
     # ── 실행 ─────────────────────────────────────────────────────────────────
 
@@ -505,6 +535,15 @@ class Launcher(QMainWindow):
                 self._log_line("⚠  처리할 파일을 선택하세요.", "#FBBF24")
                 return
             _, fname = self._lease_input_files[file_idx]
+            cmd += ["--file", fname]
+            fy_month = 6 if self._fy_combo.currentIndex() == 1 else 12
+            cmd += ["--fiscal-month", str(fy_month)]
+        elif t["company"] == "dep_file":
+            file_idx = self._company_combo.currentIndex()
+            if file_idx < 0 or not self._dep_input_files:
+                self._log_line("⚠  처리할 파일을 선택하세요.", "#FBBF24")
+                return
+            _, fname = self._dep_input_files[file_idx]
             cmd += ["--file", fname]
             fy_month = 6 if self._fy_combo.currentIndex() == 1 else 12
             cmd += ["--fiscal-month", str(fy_month)]
