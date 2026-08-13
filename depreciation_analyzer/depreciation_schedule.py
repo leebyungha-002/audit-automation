@@ -215,6 +215,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
 
         rows.append({
             "사업장": a.get("사업장") or "",
+            "자산분류": a.get("자산분류(유형자산/투자부동산/무형자산)") or "",
             "계정과목": a.get("계정과목") or "(미분류)",
             "자산관리번호": a.get("자산관리번호"),
             "자산명(세부내역)": a.get("자산명(세부내역)"),
@@ -241,6 +242,123 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.
     return df.sort_values(["사업장", "계정과목", "자산명(세부내역)"], na_position="last").reset_index(drop=True)
 
 
+# ── 계정분류별 요약표 ─────────────────────────────────────────────────────────
+
+CATEGORY_ORDER = ["유형자산", "투자부동산", "무형자산"]
+
+
+def build_category_summary(df: pd.DataFrame) -> dict:
+    """자산분류(유형자산/투자부동산/무형자산)별 요약 지표 + 사업장×원가구분 감가상각비 피벗 계산."""
+    if df.empty:
+        return {}
+
+    d = df.copy()
+    d["자산분류"] = d["자산분류"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
+    d["사업장"] = d["사업장"].astype(str).str.strip().replace({"": "(미분류)", "nan": "(미분류)"})
+    d["원가구분"] = d["원가구분"].astype(str).str.strip().replace({"": "(미분류)", "None": "(미분류)", "nan": "(미분류)"})
+    d["기초장부금액"] = d["취득원가"] - d["기초감가상각누계액(계산)"] - d["전기말 손상차손누계액(계산)"]
+
+    present = list(dict.fromkeys(d["자산분류"]))
+    ordered = [c for c in CATEGORY_ORDER if c in present] + [c for c in present if c not in CATEGORY_ORDER]
+
+    summaries = {}
+    for cat in ordered:
+        cdf = d[d["자산분류"] == cat]
+        pivot = cdf.pivot_table(
+            index="사업장", columns="원가구분", values="당기감가상각비(계산)",
+            aggfunc="sum", fill_value=0.0,
+        )
+        pivot["소계"] = pivot.sum(axis=1)
+        grand = pivot.sum(axis=0)
+        grand.name = "총계"
+        pivot = pd.concat([pivot, grand.to_frame().T])
+
+        summaries[cat] = {
+            "자산수": int(len(cdf)),
+            "기초장부금액": cdf["기초장부금액"].sum(),
+            "당기감가상각비": cdf["당기감가상각비(계산)"].sum(),
+            "당기손상차손": cdf["당기 손상차손인식액(계산)"].sum(),
+            "기말장부금액": cdf["기말장부가액(계산)"].sum(),
+            "pivot": pivot,
+        }
+    return summaries
+
+
+def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
+    header_fill = PatternFill("solid", fgColor="4472C4")
+    header_font = Font(bold=True, color="FFFFFF")
+    section_fill = PatternFill("solid", fgColor="203864")
+    section_font = Font(bold=True, color="FFFFFF", size=12)
+    total_fill = PatternFill("solid", fgColor="9DC3E6")
+    bold = Font(bold=True)
+    thin = Side(style="thin", color="B7B7B7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center")
+
+    ws.cell(row=1, column=1, value=f"고정자산 계정분류별 요약표 (회사: {company}, 회계연도: {target_fy})").font = Font(bold=True, size=13)
+    ws.column_dimensions["A"].width = 16
+    for col in "BCDEFGH":
+        ws.column_dimensions[col].width = 16
+
+    r = 3
+    if not summaries:
+        ws.cell(row=r, column=1, value="(자산 데이터 없음)")
+        return
+
+    METRIC_COLS = ["상각대상 자산수", "기초장부금액", "당기감가상각비", "당기손상차손", "기말장부금액"]
+
+    for cat, s in summaries.items():
+        ws.cell(row=r, column=1, value=f"■ {cat}").fill = section_fill
+        ws.cell(row=r, column=1).font = section_font
+        for c in range(2, 8):
+            ws.cell(row=r, column=c).fill = section_fill
+        r += 2
+
+        for i, h in enumerate(METRIC_COLS, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        values = [s["자산수"], s["기초장부금액"], s["당기감가상각비"], s["당기손상차손"], s["기말장부금액"]]
+        for i, v in enumerate(values, start=1):
+            cell = ws.cell(row=r, column=i, value=v)
+            cell.border = border
+            if i > 1:
+                cell.number_format = "#,##0"
+        r += 2
+
+        ws.cell(row=r, column=1, value="사업장별 당기감가상각비 (원가구분별)").font = bold
+        r += 1
+        pivot = s["pivot"]
+        cost_cols = list(pivot.columns)
+        headers = ["사업장"] + cost_cols
+        for i, h in enumerate(headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        for site, row in pivot.iterrows():
+            is_total = site == "총계"
+            cell = ws.cell(row=r, column=1, value=site)
+            cell.border = border
+            if is_total:
+                cell.font = bold
+                cell.fill = total_fill
+            for i, c in enumerate(cost_cols, start=2):
+                cell = ws.cell(row=r, column=i, value=row[c])
+                cell.number_format = "#,##0"
+                cell.border = border
+                if is_total:
+                    cell.font = bold
+                    cell.fill = total_fill
+            r += 1
+        r += 2
+
+
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
 
 MONEY_COLS = [
@@ -261,8 +379,11 @@ def _is_significant(diff, base) -> bool:
 
 def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str):
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "고정자산명세서"
+    ws_summary = wb.active
+    ws_summary.title = "요약표"
+    write_summary_sheet(ws_summary, build_category_summary(df), company, target_fy)
+
+    ws = wb.create_sheet("고정자산명세서")
 
     header_fill = PatternFill("solid", fgColor="4472C4")
     header_font = Font(bold=True, color="FFFFFF")
