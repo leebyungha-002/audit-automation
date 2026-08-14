@@ -218,6 +218,7 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
 
     is_existing = 기초취득원가 > 0
     disposed_in_fy = dispose_ym is not None and fy_start <= dispose_ym <= fy_end
+    fixed_monthly_rate = None  # 내용연수 초과 자산: 잔여내용연수 재계산 대신 취득원가/내용연수 고정월상각률 사용
 
     if is_existing:
         기초누계 = _safe_float(a.get("기초 감가상각누계액"))
@@ -231,6 +232,16 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
             eff_start_ym = (acquire + relativedelta(months=offset)).strftime("%Y-%m")
             elapsed = max(0, _months_between(eff_start_ym, fy_start) - 1)
             remaining_total_months = max(1, n_months - elapsed)
+            if elapsed >= n_months:
+                # 경과월수가 이미 내용연수를 초과했지만 장부가액이 남은 경우
+                # (잔여내용연수를 1개월로 압축해 잔여장부가액을 한번에 상각해버리는 것을 방지)
+                # 취득원가/내용연수 고정월상각률로 잔가에 도달할 때까지 계속 상각한다.
+                fixed_monthly_rate = (cost - 잔존가치) / n_months if n_months > 0 else 0.0
+                over_warning = (
+                    f"⚠ 내용연수초과(경과 {elapsed}개월 > 내용연수 {n_months}개월) "
+                    f"— 취득원가/내용연수 고정월상각률로 계속 상각"
+                )
+                result["warning"] = f"{result['warning']} / {over_warning}".strip(" /") if result["warning"] else over_warning
         else:
             remaining_total_months = n_months  # 취득일 미입력 시 근사치(정확한 잔여내용연수 계산 불가)
         grant_ratio = (기초보조금 / base_book_before_grant) if base_book_before_grant > 0 else 0.0
@@ -282,7 +293,10 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
                 당기손상 += imp
             m = _add_month(m, 1)
     else:  # 정액법
-        monthly_rate = (base_book_before_grant - 잔존가치) / remaining_total_months if remaining_total_months > 0 else 0.0
+        if fixed_monthly_rate is not None:
+            monthly_rate = fixed_monthly_rate
+        else:
+            monthly_rate = (base_book_before_grant - 잔존가치) / remaining_total_months if remaining_total_months > 0 else 0.0
         if impair_in_period:
             n1 = _months_between(held_start, impair_ym)
             n2 = max(0, _months_between(impair_ym, held_end) - 1)
@@ -361,6 +375,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str, interi
             "자산관리번호": a.get("자산관리번호"),
             "자산명(세부내역)": a.get("자산명(세부내역)"),
             "취득일": a.get("취득일"),
+            "내용연수(년)": a.get("내용연수(년)"),
             "기초취득원가": 기초취득원가,
             "당기증가(신규취득)": 당기취득원가,
             "당기감소(처분)": 당기처분원가,
@@ -559,6 +574,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
     subtotal_fill = PatternFill("solid", fgColor="D9E1F2")
     total_fill = PatternFill("solid", fgColor="9DC3E6")
     sig_fill = PatternFill("solid", fgColor="FFFF00")
+    over_life_fill = PatternFill("solid", fgColor="FFC000")
     bold = Font(bold=True)
     thin = Side(style="thin", color="B7B7B7")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -601,6 +617,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
     for site, site_df in outer_groups:
         for account, gdf in site_df.groupby("계정과목", sort=False):
             for _, row in gdf.iterrows():
+                is_over_life = "내용연수초과" in str(row.get("비고") or "")
                 for i, h in enumerate(headers, start=1):
                     val = row[h]
                     cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
@@ -609,6 +626,8 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                         cell.number_format = "yyyy-mm-dd"
                     if h in MONEY_COLS:
                         cell.number_format = "#,##0"
+                    if is_over_life:
+                        cell.fill = over_life_fill
                     if h in DIFF_BASE_COLS:
                         if _is_significant(val, row.get(DIFF_BASE_COLS[h])):
                             cell.fill = sig_fill
