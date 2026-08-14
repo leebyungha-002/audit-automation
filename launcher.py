@@ -378,7 +378,7 @@ class Launcher(QMainWindow):
         fy_layout.addStretch()
         right_layout.addWidget(self._fy_row)
 
-        # 반기 등 중간결산 검토 (감가상각 검증 전용) — 12월 결산 법인의 상반기(1~6월) 검토처럼
+        # 반기 등 중간결산 검토 (리스 스케줄·감가상각 검증 공용) — 12월 결산 법인의 상반기(1~6월) 검토처럼
         # 회계연도는 그대로 두고 계산기간만 특정월까지로 앞당길 때 사용 (결산월 자체를 바꾸는 위 콤보와는 별개)
         self._interim_row = QWidget()
         interim_layout = QHBoxLayout(self._interim_row)
@@ -520,9 +520,9 @@ class Launcher(QMainWindow):
         # 결산월 선택 (리스 스케줄·감가상각 검증 전용)
         self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file"))
 
-        # 반기 등 중간결산 검토 (감가상각 검증 전용)
-        self._interim_row.setVisible(t["company"] == "dep_file")
-        if t["company"] != "dep_file":
+        # 반기 등 중간결산 검토 (리스 스케줄·감가상각 검증 전용)
+        self._interim_row.setVisible(t["company"] in ("lease_file", "dep_file"))
+        if t["company"] not in ("lease_file", "dep_file"):
             self._interim_check.setChecked(False)
 
     # ── 실행 ─────────────────────────────────────────────────────────────────
@@ -556,8 +556,12 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._lease_input_files[file_idx]
             cmd += ["--file", fname]
-            fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
-            cmd += ["--fiscal-month", str(fy_month)]
+            if self._interim_check.isChecked():
+                # 반기(1~6월) 검토: 결산월 6월 기준 스냅샷은 유지하되 당기 집계는 1~6월로 제한
+                cmd += ["--fiscal-month", "6", "--interim"]
+            else:
+                fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
+                cmd += ["--fiscal-month", str(fy_month)]
         elif t["company"] == "dep_file":
             file_idx = self._company_combo.currentIndex()
             if file_idx < 0 or not self._dep_input_files:

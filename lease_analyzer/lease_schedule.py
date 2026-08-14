@@ -717,9 +717,14 @@ def main():
     _parser.add_argument('company', nargs='?', default=None, help='처리할 회사명 (생략 시 전체)')
     _parser.add_argument('--file', default=None, help='처리할 특정 파일명 (input_data/ 기준)')
     _parser.add_argument('--fiscal-month', type=int, default=12,
-                         help='결산월 (12=12월 결산, 6=6월 결산, 기본값 12)')
+                         help='결산월 (12=12월 결산, 6=6월 결산, 기본값 12) — 유동성대체 스냅샷 산정일로도 쓰임')
+    _parser.add_argument('--interim', action='store_true',
+                         help='반기 등 중간결산 검토 모드. 지정 시 "당기" 집계를 회계연도가 --fiscal-month 만큼 '
+                              '앞당겨진 것으로 보지 않고, 파일명 연도의 1월~--fiscal-month월(같은 캘린더 연도)로 제한 '
+                              '(예: 12월 결산 법인의 상반기 1~6월 검토 시 --fiscal-month 6 --interim)')
     _args, _ = _parser.parse_known_args()
     fiscal_month = _args.fiscal_month
+    interim = _args.interim
 
     if _args.file:
         _glob = os.path.join(INPUT_DIR, _args.file)
@@ -746,8 +751,9 @@ def main():
         company  = m.group(1)
         raw_year = m.group(2)
         year     = raw_year if raw_year.isdigit() else f'20{raw_year[2:]}'  # fy25 → 2025
+        interim_note = f', 반기검토(1~{fiscal_month}월)' if interim else ''
         print(f'\n{"="*60}')
-        print(f'  처리: {fname}  (회사: {company}, 연도: {year})')
+        print(f'  처리: {fname}  (회사: {company}, 연도: {year}{interim_note})')
         print(f'{"="*60}')
 
         try:
@@ -775,8 +781,13 @@ def main():
 
             annual = _annual_summary(sched, fiscal_month)
 
-            # 당기(회계연도) 집계 (summary_df 컬럼용)
-            yr_rows   = sched[sched['연월'].apply(lambda ym: _fiscal_year(ym, fiscal_month)) == year]
+            # 당기 집계 (summary_df 컬럼용)
+            if interim:
+                # 반기 등 중간결산: 회계연도를 이동시키지 않고 파일명 연도의 1월~fiscal_month월만 당기로 집계
+                yr_rows = sched[(sched['연월'] >= f'{year}-01') & (sched['연월'] <= f'{year}-{fiscal_month:02d}')]
+            else:
+                yr_rows = sched[sched['연월'].apply(lambda ym: _fiscal_year(ym, fiscal_month)) == year]
+            # 유동성대체·기말잔액 스냅샷은 반기 모드에서도 동일하게 '{year}-{fiscal_month}' 시점 그대로 사용(정확)
             dec_row   = sched[sched['연월'] == f'{year}-{fiscal_month:02d}']
             has_dec   = not dec_row.empty
 
@@ -820,6 +831,7 @@ def main():
             dep_msg = f' / 보증금PV {deposit_pv:>12,.0f}원' if deposit > 0 else ''
             print(f'초기부채 {init_liab:>14,.0f}원 / 사용권자산 {init_rou:>14,.0f}원{dep_msg}')
 
+            period_label = f'{year}년(1~{fiscal_month}월)' if interim else f'{year}년'
             summary_row = {
                 '리스계약번호':          cid,
                 '원가구분':             cost_type,
@@ -832,9 +844,9 @@ def main():
                 '할인율(연)':           annual_r,
                 '최초 리스부채':        round(init_liab),
                 '사용권자산(최초)':     round(init_rou),
-                f'{year}년 이자비용':   round(yr_int),
-                f'{year}년 감가상각비': round(yr_dep),
-                f'{year}년 리스료지급': round(yr_cash),
+                f'{period_label} 이자비용':   round(yr_int),
+                f'{period_label} 감가상각비': round(yr_dep),
+                f'{period_label} 리스료지급': round(yr_cash),
                 f'{year}년말 리스부채': round(yr_end_lb) if yr_end_lb is not None else 0,
                 '유동성대체대상액':      round(cur_p)    if cur_p    is not None else 0,
                 '비유동성리스부채잔액':  round(nc_p)     if nc_p     is not None else 0,
@@ -852,13 +864,14 @@ def main():
             continue
 
         summary_df  = pd.DataFrame(summary_rows)
-        output_path = os.path.join(OUTPUT_DIR, f'lease_schedule_{company}_{year}.xlsx')
+        out_suffix  = f'_interim{fiscal_month:02d}' if interim else ''
+        output_path = os.path.join(OUTPUT_DIR, f'lease_schedule_{company}_{year}{out_suffix}.xlsx')
         save_results(summary_df, contracts, output_path, fiscal_month)
 
         # 회사별 results/ 폴더에도 복사
         company_results = os.path.join(PROJECT_DIR, company, 'results')
         if os.path.isdir(company_results):
-            copy_path = os.path.join(company_results, f'lease_schedule_{company}_{year}.xlsx')
+            copy_path = os.path.join(company_results, f'lease_schedule_{company}_{year}{out_suffix}.xlsx')
             shutil.copy2(output_path, copy_path)
             print(f'  → results 복사: {os.path.relpath(copy_path, PROJECT_DIR)}')
         else:
