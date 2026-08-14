@@ -83,6 +83,15 @@ def _fy_bounds(target_fy: str, fiscal_month: int) -> tuple:
     return f"{fy - 1}-{fiscal_month + 1:02d}", f"{fy}-{fiscal_month:02d}"
 
 
+def _apply_interim(fy_end: str, target_fy: str, interim_month: int = None) -> str:
+    """반기 등 중간결산 검토: 회계연도 종료월(fy_end)을 interim_month까지로 앞당긴다.
+    (기초잔액은 회계연도 시작 기준 그대로, 계산 종료월만 축소 — 정상 처분/손상 시점 판정 로직과 동일 방식)"""
+    if not interim_month:
+        return fy_end
+    interim_ym = f"{target_fy}-{interim_month:02d}"
+    return min(fy_end, interim_ym)
+
+
 def _months_between(start_ym: str, end_ym: str) -> int:
     """두 YYYY-MM 사이의 개월 수(양끝 포함)."""
     sy, sm = int(start_ym[:4]), int(start_ym[5:7])
@@ -165,11 +174,14 @@ def load_assets(path: str) -> list:
 
 # ── 당기 감가상각/손상차손/정부보조금 계산 ───────────────────────────────────
 
-def compute_asset(a: dict, fiscal_month: int, target_fy: str) -> dict:
+def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int = None) -> dict:
     """자산 1건의 당기 활동을 계산한다.
     기초잔액(감가상각누계액/손상차손누계액/정부보조금잔액)은 입력값을 그대로 신뢰하고,
-    당기분(상각비/손상차손/보조금환입)만 계산한다. 다년간 이력 시뮬레이션은 하지 않는다."""
+    당기분(상각비/손상차손/보조금환입)만 계산한다. 다년간 이력 시뮬레이션은 하지 않는다.
+    interim_month 지정 시 회계연도 전체가 아니라 그 월까지만(반기 검토 등) 계산한다
+    — 기초잔액 기준(회계연도 시작월)은 그대로 두고 계산 종료월만 앞당긴다."""
     fy_start, fy_end = _fy_bounds(target_fy, fiscal_month)
+    fy_end = _apply_interim(fy_end, target_fy, interim_month)
 
     기초취득원가 = _safe_float(a.get("기초취득원가"))
     당기취득원가 = _safe_float(a.get("당기취득원가"))
@@ -311,12 +323,13 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str) -> dict:
 
 # ── 명세서 구성 ──────────────────────────────────────────────────────────────
 
-def build_schedule_table(assets: list, fiscal_month: int, target_fy: str) -> pd.DataFrame:
+def build_schedule_table(assets: list, fiscal_month: int, target_fy: str, interim_month: int = None) -> pd.DataFrame:
     fy_start, fy_end = _fy_bounds(target_fy, fiscal_month)
+    fy_end = _apply_interim(fy_end, target_fy, interim_month)
 
     rows = []
     for a in assets:
-        r = compute_asset(a, fiscal_month, target_fy)
+        r = compute_asset(a, fiscal_month, target_fy, interim_month)
 
         기초취득원가 = _safe_float(a.get("기초취득원가"))
         당기취득원가 = _safe_float(a.get("당기취득원가"))
@@ -427,7 +440,7 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     return summaries
 
 
-def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
+def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str, interim_month: int = None):
     header_fill = PatternFill("solid", fgColor="4472C4")
     header_font = Font(bold=True, color="FFFFFF")
     section_fill = PatternFill("solid", fgColor="203864")
@@ -438,7 +451,8 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str):
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center")
 
-    ws.cell(row=1, column=1, value=f"고정자산 계정분류별 요약표 (회사: {company}, 회계연도: {target_fy})").font = Font(bold=True, size=13)
+    period_note = f", ~{interim_month}월 중간결산(반기 등)" if interim_month else ""
+    ws.cell(row=1, column=1, value=f"고정자산 계정분류별 요약표 (회사: {company}, 회계연도: {target_fy}{period_note})").font = Font(bold=True, size=13)
     ws.column_dimensions["A"].width = 16
     for col in "BCDEFGHIJ":
         ws.column_dimensions[col].width = 16
@@ -532,11 +546,11 @@ def _is_significant(diff, base) -> bool:
     return False
 
 
-def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str):
+def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str, interim_month: int = None):
     wb = openpyxl.Workbook()
     ws_summary = wb.active
     ws_summary.title = "요약표"
-    write_summary_sheet(ws_summary, build_category_summary(df), company, target_fy)
+    write_summary_sheet(ws_summary, build_category_summary(df), company, target_fy, interim_month)
 
     ws = wb.create_sheet("고정자산명세서")
 
@@ -550,7 +564,8 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(horizontal="center", vertical="center")
 
-    ws.cell(row=1, column=1, value=f"고정자산명세서 (회사: {company}, 회계연도: {target_fy})").font = Font(bold=True, size=13)
+    period_note = f", ~{interim_month}월 중간결산(반기 등)" if interim_month else ""
+    ws.cell(row=1, column=1, value=f"고정자산명세서 (회사: {company}, 회계연도: {target_fy}{period_note})").font = Font(bold=True, size=13)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(df.columns) if not df.empty else 15)
 
     headers = list(df.columns)
@@ -653,8 +668,11 @@ def main():
     parser = argparse.ArgumentParser(description="유형자산/투자부동산 감가상각비 검증앱")
     parser.add_argument("company", nargs="?", default=None, help="처리할 회사명 (생략 시 파일 자동 탐색)")
     parser.add_argument("--file", default=None, help="처리할 특정 입력 파일명 (input_data/ 기준)")
-    parser.add_argument("--fiscal-month", type=int, default=12, help="결산월 (기본 12월). 예: 6월 결산이면 6")
+    parser.add_argument("--fiscal-month", type=int, default=12, help="결산월 (기본 12월). 예: 6월 결산법인(회계연도 7월~익년6월)이면 6")
     parser.add_argument("--fiscal-year", default=None, help="검증 대상 회계연도 (예: 2026). 생략 시 입력파일명의 fy 뒤 숫자 사용")
+    parser.add_argument("--interim-month", type=int, default=None,
+                         help="반기 등 중간결산 검토월 (예: 6 → 회계연도 시작월은 그대로 두고 그 해당월까지만 계산). "
+                              "12월 결산 법인의 상반기(1~6월) 검토처럼, 기초잔액은 전기말 그대로 쓰고 당기 계산기간만 앞당길 때 사용")
     args = parser.parse_args()
 
     input_path = _find_input_file(args.company, args.file)
@@ -676,15 +694,17 @@ def main():
         target_fy = f"20{digits}" if len(digits) == 2 else digits
 
     print(f"[입력] {input_path}")
-    print(f"[대상] 회사={company}, 회계연도={target_fy}, 결산월={args.fiscal_month}")
+    interim_note = f", 중간결산월={args.interim_month}(반기 등)" if args.interim_month else ""
+    print(f"[대상] 회사={company}, 회계연도={target_fy}, 결산월={args.fiscal_month}{interim_note}")
 
     assets = load_assets(input_path)
     print(f"[자산 수] {len(assets)}건")
 
-    df = build_schedule_table(assets, args.fiscal_month, target_fy)
+    df = build_schedule_table(assets, args.fiscal_month, target_fy, args.interim_month)
 
-    output_path = os.path.join(OUTPUT_DIR, f"depreciation_schedule_{company}_{target_fy}.xlsx")
-    save_results(df, output_path, company, target_fy)
+    suffix = f"_interim{args.interim_month:02d}" if args.interim_month else ""
+    output_path = os.path.join(OUTPUT_DIR, f"depreciation_schedule_{company}_{target_fy}{suffix}.xlsx")
+    save_results(df, output_path, company, target_fy, args.interim_month)
     print(f"[완료] {output_path}")
 
 

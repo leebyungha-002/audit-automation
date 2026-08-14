@@ -12,11 +12,15 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QComboBox, QPushButton,
     QTextEdit, QGroupBox, QSplitter, QFrame, QSizePolicy, QLineEdit,
+    QCheckBox,
 )
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
 from PyQt6.QtGui import QFont, QColor, QTextCursor
 
 ROOT = Path(__file__).parent
+
+# 결산월 콤보박스 인덱스 → 결산월 매핑 (addItems 순서와 반드시 일치시킬 것)
+_FY_MONTH_BY_INDEX = {0: 12, 1: 6, 2: 9}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -369,10 +373,21 @@ class Launcher(QMainWindow):
         fy_layout.addWidget(QLabel("결산월:"))
         self._fy_combo = QComboBox()
         self._fy_combo.setFont(QFont("맑은 고딕", 10))
-        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (1월~6월)"])
+        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (7월~익년6월)", "9월 결산 (10월~익년9월)"])
         fy_layout.addWidget(self._fy_combo)
         fy_layout.addStretch()
         right_layout.addWidget(self._fy_row)
+
+        # 반기 등 중간결산 검토 (감가상각 검증 전용) — 12월 결산 법인의 상반기(1~6월) 검토처럼
+        # 회계연도는 그대로 두고 계산기간만 특정월까지로 앞당길 때 사용 (결산월 자체를 바꾸는 위 콤보와는 별개)
+        self._interim_row = QWidget()
+        interim_layout = QHBoxLayout(self._interim_row)
+        interim_layout.setContentsMargins(0, 0, 0, 0)
+        self._interim_check = QCheckBox("반기(1~6월)만 계산 — 12월 결산 법인의 상반기 검토용 (기초잔액은 전기말 그대로, 당기는 1~6월만)")
+        self._interim_check.setFont(QFont("맑은 고딕", 9))
+        interim_layout.addWidget(self._interim_check)
+        interim_layout.addStretch()
+        right_layout.addWidget(self._interim_row)
 
         right_layout.addStretch()
 
@@ -505,6 +520,11 @@ class Launcher(QMainWindow):
         # 결산월 선택 (리스 스케줄·감가상각 검증 전용)
         self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file"))
 
+        # 반기 등 중간결산 검토 (감가상각 검증 전용)
+        self._interim_row.setVisible(t["company"] == "dep_file")
+        if t["company"] != "dep_file":
+            self._interim_check.setChecked(False)
+
     # ── 실행 ─────────────────────────────────────────────────────────────────
 
     def _run(self):
@@ -536,7 +556,7 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._lease_input_files[file_idx]
             cmd += ["--file", fname]
-            fy_month = 6 if self._fy_combo.currentIndex() == 1 else 12
+            fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
             cmd += ["--fiscal-month", str(fy_month)]
         elif t["company"] == "dep_file":
             file_idx = self._company_combo.currentIndex()
@@ -545,8 +565,12 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._dep_input_files[file_idx]
             cmd += ["--file", fname]
-            fy_month = 6 if self._fy_combo.currentIndex() == 1 else 12
-            cmd += ["--fiscal-month", str(fy_month)]
+            if self._interim_check.isChecked():
+                # 반기(1~6월) 검토: 결산월은 12월 그대로, 계산기간만 6월까지로 앞당김
+                cmd += ["--fiscal-month", "12", "--interim-month", "6"]
+            else:
+                fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
+                cmd += ["--fiscal-month", str(fy_month)]
 
         # 시트 필터 인자 추가 (JS 자동화 전용)
         if t["company"] == "js":
