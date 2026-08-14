@@ -306,6 +306,160 @@ def _deposit_annual_summary(sched: pd.DataFrame, deposit: float, fiscal_month: i
     return pd.DataFrame(rows)
 
 
+# ── 기초자산분류별 요약표 ────────────────────────────────────────────────────
+
+SUMMARY_METRIC_COLS = [
+    '계약수', '최초리스부채', '최초사용권자산', '당기이자비용', '당기감가상각비',
+    '당기리스료지급', '기말리스부채', '유동성리스부채', '비유동성리스부채', '기말사용권자산',
+]
+
+
+def build_lease_class_summary(summary_df: pd.DataFrame) -> dict:
+    """기초자산분류(건물등)별 요약 지표 + 기초자산분류×원가구분 감가상각비 피벗 계산.
+    (depreciation_schedule.py의 계정과목별 요약표와 동일한 취지)"""
+    if summary_df.empty:
+        return {}
+
+    d = summary_df.copy()
+    d['기초자산분류'] = d.get('기초자산분류', '(미분류)')
+    d['기초자산분류'] = d['기초자산분류'].astype(str).str.strip().replace({'': '(미분류)', 'nan': '(미분류)', 'None': '(미분류)'})
+    d['원가구분'] = d['원가구분'].astype(str).str.strip().replace({'': '(미분류)', 'nan': '(미분류)', 'None': '(미분류)'})
+
+    # 당기 이자비용/감가상각비/리스료지급/기말리스부채/기말사용권자산 컬럼명은 연도·반기 여부에 따라 동적으로 바뀜
+    # (예: "2026년 이자비용" 또는 "2026년(1~6월) 이자비용")
+    int_col    = next((c for c in d.columns if c.endswith('이자비용')), None)
+    dep_col    = next((c for c in d.columns if c.endswith('감가상각비')), None)
+    cash_col   = next((c for c in d.columns if c.endswith('리스료지급')), None)
+    endlb_col  = next((c for c in d.columns if c.endswith('년말 리스부채')), None)
+    endrou_col = next((c for c in d.columns if c.endswith('년말 사용권자산')), None)
+
+    def _agg(sub: pd.DataFrame) -> dict:
+        return {
+            '계약수':        int(len(sub)),
+            '최초리스부채':    sub['최초 리스부채'].sum(),
+            '최초사용권자산':  sub['사용권자산(최초)'].sum(),
+            '당기이자비용':    sub[int_col].sum() if int_col else 0.0,
+            '당기감가상각비':  sub[dep_col].sum() if dep_col else 0.0,
+            '당기리스료지급':  sub[cash_col].sum() if cash_col else 0.0,
+            '기말리스부채':    sub[endlb_col].sum() if endlb_col else 0.0,
+            '유동성리스부채':  sub['유동성대체대상액'].sum(),
+            '비유동성리스부채': sub['비유동성리스부채잔액'].sum(),
+            '기말사용권자산':  sub[endrou_col].sum() if endrou_col else 0.0,
+        }
+
+    total = _agg(d)
+
+    by_class = []
+    for cls in dict.fromkeys(d['기초자산분류']):
+        by_class.append({'기초자산분류': cls, **_agg(d[d['기초자산분류'] == cls])})
+
+    pivot = d.pivot_table(
+        index='기초자산분류', columns='원가구분', values=dep_col,
+        aggfunc='sum', fill_value=0.0,
+    ) if dep_col else pd.DataFrame()
+    if not pivot.empty:
+        pivot['소계'] = pivot.sum(axis=1)
+        grand = pivot.sum(axis=0)
+        grand.name = '총계'
+        pivot = pd.concat([pivot, grand.to_frame().T])
+
+    return {'total': total, 'by_class': by_class, 'pivot': pivot,
+            'int_col': int_col, 'dep_col': dep_col, 'cash_col': cash_col}
+
+
+def write_lease_summary_sheet(ws, summary: dict, company: str, year: str, fiscal_month: int, interim: bool = False):
+    total_fill = PatternFill('solid', fgColor='9DC3E6')
+    bold = Font(bold=True)
+    center = Alignment(horizontal='center', vertical='center')
+
+    for col in 'ABCDEFGHIJK':
+        ws.column_dimensions[col].width = 16
+
+    period_note = f', 반기검토(1~{fiscal_month}월)' if interim else ''
+    ws.cell(row=1, column=1, value=f'리스 요약표 (회사: {company}, 연도: {year}{period_note})').font = Font(bold=True, size=13)
+
+    r = 3
+    if not summary:
+        ws.cell(row=r, column=1, value='(계약 데이터 없음)')
+        return
+
+    for i, h in enumerate(SUMMARY_METRIC_COLS, start=1):
+        cell = ws.cell(row=r, column=i, value=h)
+        cell.fill = _HDR_FILL
+        cell.font = _HDR_FONT
+        cell.alignment = center
+        cell.border = _BORDER
+    r += 1
+    t = summary['total']
+    for i, h in enumerate(SUMMARY_METRIC_COLS, start=1):
+        cell = ws.cell(row=r, column=i, value=t[h])
+        cell.border = _BORDER
+        if h != '계약수':
+            cell.number_format = MONEY_FMT
+    r += 2
+
+    ws.cell(row=r, column=1, value='기초자산분류별 내역').font = bold
+    r += 1
+    acct_headers = ['기초자산분류'] + SUMMARY_METRIC_COLS
+    for i, h in enumerate(acct_headers, start=1):
+        cell = ws.cell(row=r, column=i, value=h)
+        cell.fill = _HDR_FILL
+        cell.font = _HDR_FONT
+        cell.alignment = center
+        cell.border = _BORDER
+    r += 1
+    for row in summary['by_class']:
+        cell = ws.cell(row=r, column=1, value=row['기초자산분류'])
+        cell.border = _BORDER
+        for i, h in enumerate(SUMMARY_METRIC_COLS, start=2):
+            cell = ws.cell(row=r, column=i, value=row[h])
+            cell.border = _BORDER
+            if h != '계약수':
+                cell.number_format = MONEY_FMT
+        r += 1
+    cell = ws.cell(row=r, column=1, value='합계')
+    cell.font = bold
+    cell.fill = total_fill
+    cell.border = _BORDER
+    for i, h in enumerate(SUMMARY_METRIC_COLS, start=2):
+        cell = ws.cell(row=r, column=i, value=t[h])
+        cell.border = _BORDER
+        cell.font = bold
+        cell.fill = total_fill
+        if h != '계약수':
+            cell.number_format = MONEY_FMT
+    r += 2
+
+    pivot = summary['pivot']
+    if not pivot.empty:
+        ws.cell(row=r, column=1, value='원가구분별 순 당기감가상각비 (기초자산분류별)').font = bold
+        r += 1
+        cost_cols = list(pivot.columns)
+        headers = ['기초자산분류'] + cost_cols
+        for i, h in enumerate(headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = _HDR_FILL
+            cell.font = _HDR_FONT
+            cell.alignment = center
+            cell.border = _BORDER
+        r += 1
+        for cls, row in pivot.iterrows():
+            is_total = cls == '총계'
+            cell = ws.cell(row=r, column=1, value=cls)
+            cell.border = _BORDER
+            if is_total:
+                cell.font = bold
+                cell.fill = total_fill
+            for i, c in enumerate(cost_cols, start=2):
+                cell = ws.cell(row=r, column=i, value=row[c])
+                cell.number_format = MONEY_FMT
+                cell.border = _BORDER
+                if is_total:
+                    cell.font = bold
+                    cell.fill = total_fill
+            r += 1
+
+
 # ── Excel 저장 ────────────────────────────────────────────────────────────────
 
 _HDR_FILL   = PatternFill('solid', fgColor='1F497D')
@@ -593,7 +747,7 @@ def _write_subtotal_rows(ws, summary_df: pd.DataFrame, data_end_row: int):
     RGT      = Alignment(horizontal='right',  vertical='center')
 
     # 숫자 합산 대상 컬럼 (텍스트·날짜·비율 제외)
-    SKIP_COLS = {'리스계약번호', '원가구분', '리스개시일', '리스종료일',
+    SKIP_COLS = {'리스계약번호', '기초자산분류', '원가구분', '리스개시일', '리스종료일',
                  '리스기간(월)', '지급주기', '지급시점', '할인율(연)'}
     sum_cols = [c for c in cols if c not in SKIP_COLS]
 
@@ -661,16 +815,21 @@ def _write_subtotal_rows(ws, summary_df: pd.DataFrame, data_end_row: int):
             cell.alignment = CTR
 
 
-def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fiscal_month: int = 12):
+def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fiscal_month: int = 12,
+                  company: str = '', year: str = '', interim: bool = False):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+
+        # ── Sheet 0: 요약표 ──────────────────────────────────────────────────
+        ws0 = writer.book.create_sheet('요약표', 0)
+        write_lease_summary_sheet(ws0, build_lease_class_summary(summary_df), company, year, fiscal_month, interim)
 
         # ── Sheet 1: 계약별 요약 ─────────────────────────────────────────────
         summary_df.to_excel(writer, sheet_name='계약별 요약', index=False)
         ws1 = writer.sheets['계약별 요약']
         _set_header(ws1)
-        _money_cols(ws1, summary_df, exclude=('리스계약번호', '원가구분', '리스개시일', '리스종료일',
+        _money_cols(ws1, summary_df, exclude=('리스계약번호', '기초자산분류', '원가구분', '리스개시일', '리스종료일',
                                                '리스기간(월)', '지급주기', '지급시점', '할인율(연)'))
         rate_ci = summary_df.columns.get_loc('할인율(연)') + 1 if '할인율(연)' in summary_df.columns else None
         if rate_ci:
@@ -691,7 +850,7 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fi
         _write_subtotal_rows(ws1, summary_df, data_end_row)
 
         s_widths = {
-            '리스계약번호': 18, '원가구분': 12, '리스개시일': 12, '리스종료일': 12,
+            '리스계약번호': 18, '기초자산분류': 14, '원가구분': 12, '리스개시일': 12, '리스종료일': 12,
             '리스기간(월)': 10, '정기리스료': 14, '지급주기': 8, '지급시점': 8, '할인율(연)': 10,
             '최초 리스부채': 16, '사용권자산(최초)': 16,
             '지급보증금': 14, '보증금PV': 14, '보증금할인차금': 14,
@@ -810,6 +969,7 @@ def main():
                 annual_r /= 100
 
             cost_type = str(_col(row_d, '원가구분') or '판관비').strip()
+            asset_class = str(_col(row_d, '기초자산분류(건물등)', '기초자산분류', '자산분류') or '(미분류)').strip()
 
             # 계약 정보 dict (계약별 시트 상단 표시용)
             info = {
@@ -834,6 +994,7 @@ def main():
             period_label = f'{year}년(1~{fiscal_month}월)' if interim else f'{year}년'
             summary_row = {
                 '리스계약번호':          cid,
+                '기초자산분류':          asset_class,
                 '원가구분':             cost_type,
                 '리스개시일':           pd.Timestamp(row['리스개시일']).date(),
                 '리스종료일':           pd.Timestamp(row['리스종료일']).date(),
@@ -866,7 +1027,7 @@ def main():
         summary_df  = pd.DataFrame(summary_rows)
         out_suffix  = f'_interim{fiscal_month:02d}' if interim else ''
         output_path = os.path.join(OUTPUT_DIR, f'lease_schedule_{company}_{year}{out_suffix}.xlsx')
-        save_results(summary_df, contracts, output_path, fiscal_month)
+        save_results(summary_df, contracts, output_path, fiscal_month, company=company, year=year, interim=interim)
 
         # 회사별 results/ 폴더에도 복사
         company_results = os.path.join(PROJECT_DIR, company, 'results')
