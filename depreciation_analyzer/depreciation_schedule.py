@@ -442,6 +442,21 @@ def build_category_summary(df: pd.DataFrame) -> dict:
         grand.name = "총계"
         pivot = pd.concat([pivot, grand.to_frame().T])
 
+        # 계정과목별 내역(토지/건물/기계장치 등) — 최초 등장 순서 그대로 유지
+        by_account = []
+        for acct in dict.fromkeys(cdf["계정과목"]):
+            adf = cdf[cdf["계정과목"] == acct]
+            by_account.append({
+                "계정과목": acct,
+                "자산수": int(len(adf)),
+                "기초장부금액": adf["기초장부금액"].sum(),
+                "당기감가상각비": adf["당기감가상각비(계산)"].sum(),
+                "당기정부보조금환입액": adf["당기 정부보조금환입액(계산)"].sum(),
+                "순감가상각비": adf["순 감가상각비(보조금차감후)(계산)"].sum(),
+                "당기손상차손": adf["당기 손상차손인식액(계산)"].sum(),
+                "기말장부금액": adf["기말장부가액(계산)"].sum(),
+            })
+
         summaries[cat] = {
             "자산수": int(len(cdf)),
             "기초장부금액": cdf["기초장부금액"].sum(),
@@ -451,6 +466,7 @@ def build_category_summary(df: pd.DataFrame) -> dict:
             "당기손상차손": cdf["당기 손상차손인식액(계산)"].sum(),
             "기말장부금액": cdf["기말장부가액(계산)"].sum(),
             "pivot": pivot,
+            "by_account": by_account,
         }
     return summaries
 
@@ -501,6 +517,40 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str, inter
             cell.border = border
             if i > 1:
                 cell.number_format = "#,##0"
+        r += 2
+
+        # 계정과목별 내역(토지/건물/기계장치 등 — 소계 대신 계정별 1행씩 + 합계행)
+        ws.cell(row=r, column=1, value=f"{cat} 계정과목별 내역").font = bold
+        r += 1
+        acct_headers = ["계정과목"] + METRIC_COLS
+        for i, h in enumerate(acct_headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        for acct_row in s["by_account"]:
+            cell = ws.cell(row=r, column=1, value=acct_row["계정과목"])
+            cell.border = border
+            acct_values = [acct_row["자산수"], acct_row["기초장부금액"], acct_row["당기감가상각비"],
+                           acct_row["당기정부보조금환입액"], acct_row["순감가상각비"],
+                           acct_row["당기손상차손"], acct_row["기말장부금액"]]
+            for i, v in enumerate(acct_values, start=2):
+                cell = ws.cell(row=r, column=i, value=v)
+                cell.border = border
+                cell.number_format = "#,##0"
+            r += 1
+        cell = ws.cell(row=r, column=1, value="합계")
+        cell.font = bold
+        cell.fill = total_fill
+        cell.border = border
+        for i, v in enumerate(values, start=2):
+            cell = ws.cell(row=r, column=i, value=v)
+            cell.border = border
+            cell.font = bold
+            cell.fill = total_fill
+            cell.number_format = "#,##0"
         r += 2
 
         ws.cell(row=r, column=1, value="사업장별 순 당기감가상각비 (원가구분별, 정부보조금환입액 차감후)").font = bold
