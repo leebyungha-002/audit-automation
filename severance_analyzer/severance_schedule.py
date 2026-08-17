@@ -233,6 +233,7 @@ def match_periods(당기_employees: list, 전기_employees: list) -> dict:
         "신규입사자": [당기_by_key[k] for k in 신규입사_keys],
         "퇴사자": [전기_by_key[k] for k in 퇴사_keys],
         "전기_by_key": 전기_by_key,
+        "당기_by_key": 당기_by_key,
         "전기인원수": len(전기_by_key),
         "당기인원수": len(당기_by_key),
     }
@@ -260,6 +261,41 @@ def _to_display_df(records: list) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=DISPLAY_COLS)
     return pd.DataFrame(rows)[DISPLAY_COLS]
+
+
+LEAVER_LIST_COLS = DISPLAY_COLS + ["비고"]
+
+MIN_TENURE_DAYS = 365  # 근로기준법상 퇴직금 지급 요건(계속근로기간 1년 이상) 판정 기준
+
+
+def _build_leaver_list_df(퇴사자_recs: list, 전기결산일: date, leaver_payment_keys: set) -> pd.DataFrame:
+    """'퇴사자 명단' 표에 표시할 인원별 비고를 계산한다.
+    - 전기결산일 기준 근속기간이 1년 미만이면(입사일이 최근 1년 이내) 애초에 전기 퇴직급여충당부채
+      설정 대상이 아니었을 수 있음을 안내(근로기준법상 계속근로기간 1년 미만은 퇴직금 지급 요건 미충족).
+    - '당기퇴사자' 시트(실제지급액 입력분)에 대응 항목이 없으면, 두 명단(자동 산출 vs 사용자 입력) 간
+      차이가 있다는 것을 안내."""
+    rows = []
+    for e in 퇴사자_recs:
+        입사일 = _safe_date(e.get("입사일"))
+        notes = []
+        if 입사일 is not None and (전기결산일 - 입사일).days < MIN_TENURE_DAYS:
+            notes.append("전기 퇴직급여설정대상 아님(근속기간 1년 미만으로 추정)")
+        if _employee_key(e) not in leaver_payment_keys:
+            notes.append("⚠ '당기퇴사자' 시트에 지급액 입력 없음 — 명단 비교 시 차이 있음")
+        rows.append({
+            "사업장": e.get("사업장") or "",
+            "부서": e.get("부서") or "",
+            "사번": e.get("사번"),
+            "성명": e.get("성명"),
+            "직급": e.get("직급"),
+            "원가구분": _cost_type(e),
+            "입사일": e.get("입사일"),
+            "중간정산일": e.get("중간정산일"),
+            "비고": " / ".join(notes),
+        })
+    if not rows:
+        return pd.DataFrame(columns=LEAVER_LIST_COLS)
+    return pd.DataFrame(rows)[LEAVER_LIST_COLS]
 
 
 # ── 인원별 퇴직금 추계액 계산 ('당기정보' 시트 기준) ──────────────────────
@@ -408,7 +444,8 @@ def build_schedule_table(employees: list, 당기결산일: date, 신규입사_ke
 
 def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
                    신규입사자_recs: list, 퇴사자_recs: list, basis: dict,
-                   전기_by_key: dict, 전기말_balances: dict, leaver_payments: list) -> dict:
+                   전기_by_key: dict, 전기말_balances: dict, leaver_payments: list,
+                   전기결산일: date, 당기_by_key: dict) -> dict:
     if 당기_df.empty and not 전기_employees and not 신규입사자_recs and not 퇴사자_recs:
         return {}
 
@@ -469,9 +506,14 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         "대사차이(재계산-회사계상)": None if 총_당기회사계상 is None else 총_당기재계산 - 총_당기회사계상,
     }
 
+    leaver_payment_keys = {
+        _employee_key(rec) for rec in leaver_payments
+        if rec.get("실제지급액(원)") not in (None, "") and _employee_key(rec) is not None
+    }
+
     전기_df = _to_display_df(전기_employees)
     신규입사자_df = _to_display_df(신규입사자_recs)
-    퇴사자_df = _to_display_df(퇴사자_recs)
+    퇴사자_df = _build_leaver_list_df(퇴사자_recs, 전기결산일, leaver_payment_keys)
 
     headcount = {
         "전기말인원수": int(len(전기_df)),
@@ -505,6 +547,15 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         }
 
     # 퇴사자 실제지급액 대사 ('당기퇴사자' 시트에 입력된 경우만) — 전기말 추계액과 인별 비교
+    # 동일 인원이 '당기퇴사자' 시트에 여러 번 입력됐는지(동명이인 가능성 포함) 미리 집계해둔다.
+    key_counts = {}
+    for rec in leaver_payments:
+        if rec.get("실제지급액(원)") in (None, ""):
+            continue
+        k = _employee_key(rec)
+        if k is not None:
+            key_counts[k] = key_counts.get(k, 0) + 1
+
     leaver_recon_rows = []
     for rec in leaver_payments:
         실제지급액_raw = rec.get("실제지급액(원)")
@@ -514,6 +565,17 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         실제지급액 = _safe_float(실제지급액_raw)
         전기말추계액 = 전기말_balances.get(key)
         전기레코드 = 전기_by_key.get(key)
+
+        tags = []
+        if key_counts.get(key, 0) > 1:
+            tags.append("⚠ 이중기입의심(동일 인원으로 보이는 항목이 '당기퇴사자' 시트에 여러 번 입력됨 — 동명이인 여부 확인 필요)")
+        if 전기레코드 is None:
+            tags.append("⚠ '전기정보'에서 매칭되는 인원을 찾지 못함")
+        elif key in 당기_by_key:
+            tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
+        base_note = rec.get("비고") or ""
+        비고 = f"{base_note} / {' / '.join(tags)}".strip(" /") if tags else base_note
+
         leaver_recon_rows.append({
             "사업장": (전기레코드 or {}).get("사업장") or "",
             "부서": (전기레코드 or {}).get("부서") or "",
@@ -524,7 +586,7 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
             "전기말 추계액(계산)": 전기말추계액,
             "실제지급액(입력)": 실제지급액,
             "차이(추계액-실제지급액)": None if 전기말추계액 is None else 전기말추계액 - 실제지급액,
-            "비고": rec.get("비고") or ("" if key in 전기_by_key else "⚠ '전기정보'에서 매칭되는 인원을 찾지 못함"),
+            "비고": 비고,
         })
     leaver_recon_df = pd.DataFrame(leaver_recon_rows) if leaver_recon_rows else pd.DataFrame(
         columns=["사업장", "부서", "사번", "성명", "직급", "원가구분",
@@ -709,7 +771,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
     ws.cell(row=r, column=1,
             value="■ 퇴사자 명단 ('전기정보'에는 있으나 '당기정보'에는 없음)").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
-    for c in range(2, 9):
+    for c in range(2, 10):
         ws.cell(row=r, column=c).fill = section_fill
     r += 1
     ws.cell(row=r, column=1,
@@ -717,28 +779,32 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                   "전기 시점 입사일/중간정산일만 참고로 표시합니다.").font = Font(italic=True, color="808080", size=9)
     r += 1
 
-    left_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
+    left_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일", "비고"]
     for i, h in enumerate(left_headers, start=1):
         cell = ws.cell(row=r, column=i, value=h)
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = center
         cell.border = border
+        if h == "비고":
+            ws.column_dimensions[get_column_letter(i)].width = 46
     r += 1
     퇴사자 = summary["퇴사자"]
     if 퇴사자.empty:
         ws.cell(row=r, column=1, value="(해당 없음)")
-        for c in range(1, 9):
+        for c in range(1, 10):
             ws.cell(row=r, column=c).border = border
         r += 1
     else:
         for _, row in 퇴사자.iterrows():
             for i, h in enumerate(left_headers, start=1):
                 val = row[h]
-                cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
+                cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) or val == "" else val))
                 cell.border = border
                 if h in ("입사일", "중간정산일") and val is not None and not pd.isna(val):
                     cell.number_format = "yyyy-mm-dd"
+                if h == "비고" and val:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
             r += 1
     r += 2
 
@@ -760,16 +826,20 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
             cell.font = header_font
             cell.alignment = center
             cell.border = border
+            if h == "비고":
+                ws.column_dimensions[get_column_letter(i)].width = 46
         r += 1
         for _, row in leaver_recon.iterrows():
             for i, h in enumerate(recon_headers, start=1):
                 val = row[h]
-                cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
+                cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) or val == "" else val))
                 cell.border = border
                 if h in ("전기말 추계액(계산)", "실제지급액(입력)", "차이(추계액-실제지급액)") and val is not None and not pd.isna(val):
                     cell.number_format = "#,##0"
                     if h == "차이(추계액-실제지급액)" and _is_significant(val, row["전기말 추계액(계산)"]):
                         cell.fill = sig_fill
+                if h == "비고" and val:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
             r += 1
 
 
@@ -784,12 +854,12 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                   당기결산일: date, 전기결산일: date, 전기_employees: list,
                   신규입사자_recs: list, 퇴사자_recs: list, basis: dict,
                   전기_by_key: dict, 전기말_balances: dict, leaver_payments: list,
-                  interim_month: int = None):
+                  당기_by_key: dict, interim_month: int = None):
     wb = openpyxl.Workbook()
     ws_summary = wb.active
     ws_summary.title = "요약표"
     summary = build_summary(df, 전기_employees, 신규입사자_recs, 퇴사자_recs, basis,
-                             전기_by_key, 전기말_balances, leaver_payments)
+                             전기_by_key, 전기말_balances, leaver_payments, 전기결산일, 당기_by_key)
     write_summary_sheet(ws_summary, summary, company, target_fy, 당기결산일, 전기결산일, interim_month)
 
     ws = wb.create_sheet("인원별추계명세")
@@ -936,7 +1006,8 @@ def main():
     output_path = os.path.join(OUTPUT_DIR, f"severance_schedule_{company}_{target_fy}{suffix}.xlsx")
     save_results(df, output_path, company, target_fy, 당기결산일, 전기결산일,
                  전기_employees, matched["신규입사자"], matched["퇴사자"], basis,
-                 matched["전기_by_key"], 전기말_balances, leaver_payments, args.interim_month)
+                 matched["전기_by_key"], 전기말_balances, leaver_payments,
+                 matched["당기_by_key"], args.interim_month)
     print(f"[완료] {output_path}")
 
 
