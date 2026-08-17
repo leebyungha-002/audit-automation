@@ -229,9 +229,16 @@ def match_periods(당기_employees: list, 전기_employees: list) -> dict:
         "신규입사_keys": 신규입사_keys,
         "신규입사자": [당기_by_key[k] for k in 신규입사_keys],
         "퇴사자": [전기_by_key[k] for k in 퇴사_keys],
+        "전기_by_key": 전기_by_key,
         "전기인원수": len(전기_by_key),
         "당기인원수": len(당기_by_key),
     }
+
+
+def compute_prior_balances(전기_by_key: dict, 전기결산일: date) -> dict:
+    """'전기정보' 인원 각각의 전기 결산기준일 시점 퇴직금 추계액을 사번(없으면 성명) 키로 반환.
+    당기 인원별 표에서 '당기말 - 전기말' 차이를 인별로 계산하는 데 쓰인다."""
+    return {k: compute_employee(e, 전기결산일)["퇴직금추계액"] for k, e in 전기_by_key.items()}
 
 
 def _to_display_df(records: list) -> pd.DataFrame:
@@ -254,7 +261,10 @@ def _to_display_df(records: list) -> pd.DataFrame:
 
 # ── 인원별 퇴직금 추계액 계산 ('당기정보' 시트 기준) ──────────────────────
 
-def compute_employee(emp: dict, 당기결산일: date) -> dict:
+def compute_employee(emp: dict, 기준일: date) -> dict:
+    """지정한 기준일(당기 결산기준일 또는 전기 결산기준일) 현재의 퇴직금 추계액을 계산한다.
+    '당기정보'/'전기정보' 두 시트 어느 쪽 인원이든 동일 로직으로 계산할 수 있도록
+    기준일을 매개변수로 받는다(전기말 재계산에도 재사용)."""
     입사일 = _safe_date(emp.get("입사일"))
     중간정산일 = _safe_date(emp.get("중간정산일"))
     월평균급여 = _safe_float(emp.get("월평균급여(원)"))
@@ -295,16 +305,16 @@ def compute_employee(emp: dict, 당기결산일: date) -> dict:
     if 중간정산일 is not None:
         if 중간정산일 < 입사일:
             _add_warning("중간정산일이 입사일보다 이전 — 확인 필요(입사일 기준으로 계산)")
-        elif 중간정산일 > 당기결산일:
+        elif 중간정산일 > 기준일:
             _add_warning("중간정산일이 결산기준일 이후 — 확인 필요(입사일 기준으로 계산)")
         else:
             기산일 = 중간정산일
 
-    if 입사일 > 당기결산일:
-        _add_warning("입사일이 결산기준일 이후 — 확인 필요('당기정보'에 등재된 인원임)")
+    if 입사일 > 기준일:
+        _add_warning("입사일이 결산기준일 이후 — 확인 필요(해당 기준일 시점에 아직 미입사)")
         return result
 
-    재직일수 = (당기결산일 - 기산일).days
+    재직일수 = (기준일 - 기산일).days
     result["재직일수"] = 재직일수
     result["기산일"] = 기산일
 
@@ -312,7 +322,7 @@ def compute_employee(emp: dict, 당기결산일: date) -> dict:
         # 소득세법상 임원 퇴직금 한도 산식(근로기준법 평균임금 방식과 별개).
         # 근속연수 = 결산기준연도 - 기산연도(입사연도, 중간정산 이력이 있으면 중간정산연도)
         # 근속월(1년 미만 잔여월 보정항) = 13 - 기산월
-        근속연수 = 당기결산일.year - 기산일.year
+        근속연수 = 기준일.year - 기산일.year
         근속월 = 13 - 기산일.month
         result["근속연수"] = 근속연수
         result["근속월"] = 근속월
@@ -330,12 +340,17 @@ def compute_employee(emp: dict, 당기결산일: date) -> dict:
 
 # ── 명세서 구성 ('당기정보' 시트 기준) ────────────────────────────────────
 
-def build_schedule_table(employees: list, 당기결산일: date, 신규입사_keys: set) -> pd.DataFrame:
+def build_schedule_table(employees: list, 당기결산일: date, 신규입사_keys: set, 전기말_balances: dict) -> pd.DataFrame:
+    """전기말_balances: {사번(또는 성명) 키: 전기 결산기준일 시점 추계액}. compute_prior_balances()로 생성.
+    신규입사자 등 전기 대응값이 없는 인원은 전기말 추계액을 0으로 본다(전기 시점 미재직)."""
     rows = []
     for e in employees:
         r = compute_employee(e, 당기결산일)
         원가구분 = _cost_type(e)
-        신규입사 = _employee_key(e) in 신규입사_keys
+        key = _employee_key(e)
+        신규입사 = key in 신규입사_keys
+        전기말추계액 = 전기말_balances.get(key, 0.0)
+        당기퇴직급여 = r["퇴직금추계액"] - 전기말추계액
         중간정산일_raw = _safe_date(e.get("중간정산일"))
         중간정산반영 = r["기산일"] is not None and 중간정산일_raw is not None and r["기산일"] == 중간정산일_raw
 
@@ -372,7 +387,9 @@ def build_schedule_table(employees: list, 당기결산일: date, 신규입사_ke
             "1일평균임금(계산)": r["1일평균임금"],
             "근속연수(임원계산용)": r["근속연수"],
             "근속월보정(임원계산용)": r["근속월"],
-            "퇴직금추계액(계산)": r["퇴직금추계액"],
+            "전기말 퇴직금추계액(계산)": 전기말추계액,
+            "당기말 퇴직금추계액(계산)": r["퇴직금추계액"],
+            "당기 퇴직급여(계산)": 당기퇴직급여,
             "당기신규입사": 신규입사,
             "중간정산반영": 중간정산반영,
             "비고": 비고,
@@ -394,46 +411,57 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
     d = 당기_df.copy()
 
     by_cost = []
+    총_전기재계산 = 0.0
     총_당기재계산 = 0.0
-    총_전기입력 = 0.0
+    총_전기입력 = None
     총_당기회사계상 = None
     for cost in COST_TYPES:
         cdf = d[d["원가구분"] == cost] if not d.empty else d
-        당기재계산 = float(cdf["퇴직금추계액(계산)"].sum()) if not cdf.empty else 0.0
+        전기재계산 = float(cdf["전기말 퇴직금추계액(계산)"].sum()) if not cdf.empty else 0.0
+        당기재계산 = float(cdf["당기말 퇴직금추계액(계산)"].sum()) if not cdf.empty else 0.0
+        당기퇴직급여 = float(cdf["당기 퇴직급여(계산)"].sum()) if not cdf.empty else 0.0
         전기입력 = basis.get(BASIS_KEYS[cost]["전기"])
         당기회사계상 = basis.get(BASIS_KEYS[cost]["당기"])
         by_cost.append({
             "구분": cost,
+            "전기말(재계산)": 전기재계산,
             "전기말(회사계상)": 전기입력,
             "당기말(재계산)": 당기재계산,
             "당기말(회사계상)": 당기회사계상,
-            "증감(재계산-전기)": 당기재계산 - (전기입력 or 0.0),
+            "당기 퇴직급여(재계산, 인별차이합계)": 당기퇴직급여,
             "대사차이(재계산-회사계상)": None if 당기회사계상 is None else 당기재계산 - 당기회사계상,
         })
+        총_전기재계산 += 전기재계산
         총_당기재계산 += 당기재계산
-        총_전기입력 += (전기입력 or 0.0)
+        if 전기입력 is not None:
+            총_전기입력 = (총_전기입력 or 0.0) + 전기입력
         if 당기회사계상 is not None:
             총_당기회사계상 = (총_당기회사계상 or 0.0) + 당기회사계상
 
     미분류 = d[~d["원가구분"].isin(COST_TYPES)] if not d.empty else d
     if not 미분류.empty:
-        미분류_재계산 = float(미분류["퇴직금추계액(계산)"].sum())
+        미분류_전기재계산 = float(미분류["전기말 퇴직금추계액(계산)"].sum())
+        미분류_당기재계산 = float(미분류["당기말 퇴직금추계액(계산)"].sum())
+        미분류_당기퇴직급여 = float(미분류["당기 퇴직급여(계산)"].sum())
         by_cost.append({
             "구분": "(미분류)",
+            "전기말(재계산)": 미분류_전기재계산,
             "전기말(회사계상)": None,
-            "당기말(재계산)": 미분류_재계산,
+            "당기말(재계산)": 미분류_당기재계산,
             "당기말(회사계상)": None,
-            "증감(재계산-전기)": 미분류_재계산,
+            "당기 퇴직급여(재계산, 인별차이합계)": 미분류_당기퇴직급여,
             "대사차이(재계산-회사계상)": None,
         })
-        총_당기재계산 += 미분류_재계산
+        총_전기재계산 += 미분류_전기재계산
+        총_당기재계산 += 미분류_당기재계산
 
     total_row = {
         "구분": "합계",
+        "전기말(재계산)": 총_전기재계산,
         "전기말(회사계상)": 총_전기입력,
         "당기말(재계산)": 총_당기재계산,
         "당기말(회사계상)": 총_당기회사계상,
-        "증감(재계산-전기)": 총_당기재계산 - 총_전기입력,
+        "당기 퇴직급여(재계산, 인별차이합계)": 총_당기재계산 - 총_전기재계산,
         "대사차이(재계산-회사계상)": None if 총_당기회사계상 is None else 총_당기재계산 - 총_당기회사계상,
     }
 
@@ -492,15 +520,15 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         ws.cell(row=r, column=1, value="(인원 데이터 없음)")
         return
 
-    # 1) 원가구분별 전기·당기 비교 + 대사
+    # 1) 원가구분별 전기·당기 비교 + 대사 (전기말/당기말 모두 인별 재계산 기준)
     ws.cell(row=r, column=1, value="■ 퇴직급여충당부채 원가구분별 전기·당기 비교 (대사)").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
-    for c in range(2, 7):
+    for c in range(2, 8):
         ws.cell(row=r, column=c).fill = section_fill
     r += 2
 
-    cost_headers = ["구분", "전기말(회사계상)", "당기말(재계산)", "당기말(회사계상)",
-                     "증감(재계산-전기)", "대사차이(재계산-회사계상)"]
+    cost_headers = ["구분", "전기말(재계산)", "전기말(회사계상)", "당기말(재계산)", "당기말(회사계상)",
+                     "당기 퇴직급여(재계산, 인별차이합계)", "대사차이(재계산-회사계상)"]
     for i, h in enumerate(cost_headers, start=1):
         cell = ws.cell(row=r, column=i, value=h)
         cell.fill = header_fill
@@ -513,8 +541,8 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         is_total = row_data["구분"] == "합계"
         cell = ws.cell(row=r, column=1, value=row_data["구분"])
         cell.border = border
-        vals = [row_data["전기말(회사계상)"], row_data["당기말(재계산)"],
-                row_data["당기말(회사계상)"], row_data["증감(재계산-전기)"],
+        vals = [row_data["전기말(재계산)"], row_data["전기말(회사계상)"], row_data["당기말(재계산)"],
+                row_data["당기말(회사계상)"], row_data["당기 퇴직급여(재계산, 인별차이합계)"],
                 row_data["대사차이(재계산-회사계상)"]]
         if is_total:
             cell.font = bold
@@ -527,7 +555,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
             if is_total:
                 cell.font = bold
                 cell.fill = total_fill
-            elif i == 6 and _is_significant(v, row_data["당기말(회사계상)"]):
+            elif i == 7 and _is_significant(v, row_data["당기말(회사계상)"]):
                 cell.fill = sig_fill
         r += 1
     r += 2
@@ -639,7 +667,8 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
 
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
 
-MONEY_COLS = ["월평균급여(원)", "상여금(연간, 원)", "월평균급여(상여금가산후)(계산)", "1일평균임금(계산)", "퇴직금추계액(계산)"]
+MONEY_COLS = ["월평균급여(원)", "상여금(연간, 원)", "월평균급여(상여금가산후)(계산)", "1일평균임금(계산)",
+              "전기말 퇴직금추계액(계산)", "당기말 퇴직금추계액(계산)", "당기 퇴직급여(계산)"]
 DATE_COLS = ["입사일", "중간정산일"]
 
 
@@ -788,7 +817,8 @@ def main():
     print(f"[인원 수] 당기={len(당기_employees)}건, 전기={len(전기_employees)}건")
 
     matched = match_periods(당기_employees, 전기_employees)
-    df = build_schedule_table(당기_employees, 당기결산일, matched["신규입사_keys"])
+    전기말_balances = compute_prior_balances(matched["전기_by_key"], 전기결산일)
+    df = build_schedule_table(당기_employees, 당기결산일, matched["신규입사_keys"], 전기말_balances)
 
     suffix = f"_interim{args.interim_month:02d}" if args.interim_month else ""
     output_path = os.path.join(OUTPUT_DIR, f"severance_schedule_{company}_{target_fy}{suffix}.xlsx")
