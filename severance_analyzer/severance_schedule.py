@@ -292,9 +292,16 @@ def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_r
         in_actual = len(당기퇴사자_recs) > 0
         source = 전기레코드 or 당기_by_key.get(key)
 
+        # 지급사유가 하나라도 '중간정산'이면 이 인원은 진짜 퇴사자가 아니다(재직 중 중간정산은
+        # '당기정보'에 그대로 남아있는 게 정상) — "당기정보에도 존재함" 경고 대신 사유만 표시한다.
+        사유들 = {str(rec.get("지급사유(실제퇴사/중간정산)") or "").strip() for rec in 당기퇴사자_recs}
+        is_중간정산 = "중간정산" in 사유들
+
         tags = []
         if in_auto and in_actual:
-            if key in 당기_by_key:
+            if is_중간정산:
+                tags.append("중간정산")
+            elif key in 당기_by_key:
                 tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
             if len(당기퇴사자_recs) > 1:
                 tags.append("⚠ 이중기입의심(동일 인원으로 보이는 항목이 '당기퇴사자' 시트에 여러 번 입력됨 — 동명이인 여부 확인 필요)")
@@ -303,7 +310,9 @@ def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_r
         elif in_auto and not in_actual:
             tags.append("⚠ '당기퇴사자' 시트에 지급액 입력 없음")
         else:  # in_actual and not in_auto
-            if 전기레코드 is not None:
+            if is_중간정산:
+                tags.append("중간정산")
+            elif 전기레코드 is not None:
                 tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
             else:
                 입사일 = _safe_date(당기퇴사자_recs[0].get("입사일(선택)")) if 당기퇴사자_recs else None
