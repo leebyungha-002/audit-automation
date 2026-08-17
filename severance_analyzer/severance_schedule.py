@@ -9,7 +9,13 @@ input_data/severance_<company>_information_fy<year>.xlsx 를 읽어
 잔액은 오직 대사(비교)용 참고값으로만 쓰인다. 결산기준일은 입력파일에 직접 적지 않고
 파일명(fy<연도>)과 --fiscal-month 로 depreciation_analyzer와 동일한 규칙으로 계산한다.
 
-퇴직금 추계액 산식(근로기준법 간편 산식):
+전기/당기 인원은 회사별로 별도 파일을 만드는 대신, 한 파일 안에 '전기인원정보'/'당기인원정보'
+두 시트로 나눠 입력받는다(회사가 매년 스냅샷 형태로 제공하는 인원현황을 그대로 붙여넣는 것을 전제).
+당기 계산(추계액)은 '당기인원정보' 시트만 사용하고, '전기인원정보'는 사번(없으면 성명) 기준으로
+당기 시트와 매칭해 신규입사자/퇴사자 명단을 산출하는 데에만 쓰인다 — 실제 퇴사일 필드가 없어도
+"전기에는 있었는데 당기에는 없는 사번"으로 진짜 퇴사자를 식별할 수 있다.
+
+퇴직금 추계액 산식(근로기준법 간편 산식, '당기인원정보' 시트 기준):
   급여기준액 = 월평균급여 + 상여금(연간) × 3 / 12   (상여금 최근 3개월분 상당액을 월평균급여에 가산)
   1일평균임금 = 급여기준액 × 12 / 365
   퇴직금 추계액 = 1일평균임금 × 30일 × (재직일수 / 365) × 배수
@@ -17,7 +23,7 @@ input_data/severance_<company>_information_fy<year>.xlsx 를 읽어
   재직일수 = 당기 결산기준일 − 기산일
   기산일 = 중간정산일(퇴직금 중간정산 이력이 있는 경우) 있으면 그 날짜, 없으면 입사일
     ※ 중간정산은 재직 상태를 유지한 채 근속기간만 새로 기산되는 것이므로(퇴사가 아님),
-      전기/당기 재직여부 판정에는 영향을 주지 않고 재직일수 계산 기산일에만 반영한다.
+      재직일수 계산 기산일에만 반영한다.
 
 실행 예:
     python severance_schedule.py kyungnam --fiscal-month 12
@@ -53,6 +59,13 @@ BASIS_KEYS = {
     },
 }
 
+EXECUTIVE_DEPT = "임원"  # 부서명이 정확히 이 값일 때만 배수를 적용한다.
+
+CURRENT_SHEET = "당기인원정보"
+PRIOR_SHEET = "전기인원정보"
+
+DISPLAY_COLS = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
+
 
 # ── 공용 헬퍼 ────────────────────────────────────────────────────────────────
 
@@ -80,6 +93,21 @@ def _safe_date(v):
         pass
     ts = pd.Timestamp(v)
     return ts.date() if not pd.isna(ts) else None
+
+
+def _cost_type(emp: dict) -> str:
+    return str(emp.get("원가구분(제조원가/판관비)") or "").strip() or "(미분류)"
+
+
+def _employee_key(emp: dict):
+    """전기/당기 인원 매칭 키. 사번이 있으면 사번, 없으면 성명으로 매칭한다."""
+    사번 = emp.get("사번")
+    if 사번 not in (None, ""):
+        return f"ID::{str(사번).strip()}"
+    성명 = emp.get("성명")
+    if 성명 not in (None, ""):
+        return f"NAME::{str(성명).strip()}"
+    return None
 
 
 def _fy_bounds(target_fy: str, fiscal_month: int) -> tuple:
@@ -134,10 +162,13 @@ def _is_significant(diff, base) -> bool:
 
 # ── 입력 로딩 ────────────────────────────────────────────────────────────────
 
-def load_employees(path: str) -> list:
-    """'인원정보' 시트(1~2행 헤더, 3행부터 데이터)를 읽어 dict 목록으로 반환."""
+def load_employees(path: str, sheet_name: str) -> list:
+    """지정한 인원 시트(1~2행 헤더, 3행부터 데이터)를 읽어 dict 목록으로 반환.
+    시트가 없으면 빈 목록을 반환한다(예: '전기인원정보' 미작성 시 인원변동 명단만 생략됨)."""
     wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb["인원정보"] if "인원정보" in wb.sheetnames else wb.worksheets[0]
+    if sheet_name not in wb.sheetnames:
+        return []
+    ws = wb[sheet_name]
     headers = [c.value for c in ws[2]]
     employees = []
     for row in ws.iter_rows(min_row=3, values_only=True):
@@ -170,12 +201,53 @@ def load_basis(path: str) -> dict:
     return basis
 
 
-# ── 인원별 재직여부 판정 및 퇴직금 추계액 계산 ────────────────────────────────
+# ── 전기/당기 인원 매칭 (신규입사자/퇴사자 판정) ──────────────────────────────
 
-EXECUTIVE_DEPT = "임원"  # 부서명이 정확히 이 값일 때만 배수를 적용한다.
+def match_periods(당기_employees: list, 전기_employees: list) -> dict:
+    """당기/전기 인원을 사번(없으면 성명) 기준으로 매칭해 신규입사자/퇴사자를 산출한다."""
+    당기_by_key, 전기_by_key = {}, {}
+    for e in 당기_employees:
+        k = _employee_key(e)
+        if k is not None:
+            당기_by_key.setdefault(k, e)
+    for e in 전기_employees:
+        k = _employee_key(e)
+        if k is not None:
+            전기_by_key.setdefault(k, e)
+
+    신규입사_keys = set(당기_by_key) - set(전기_by_key)
+    퇴사_keys = set(전기_by_key) - set(당기_by_key)
+
+    return {
+        "신규입사_keys": 신규입사_keys,
+        "신규입사자": [당기_by_key[k] for k in 신규입사_keys],
+        "퇴사자": [전기_by_key[k] for k in 퇴사_keys],
+        "전기인원수": len(전기_by_key),
+        "당기인원수": len(당기_by_key),
+    }
 
 
-def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) -> dict:
+def _to_display_df(records: list) -> pd.DataFrame:
+    rows = []
+    for e in records:
+        rows.append({
+            "사업장": e.get("사업장") or "",
+            "부서": e.get("부서") or "",
+            "사번": e.get("사번"),
+            "성명": e.get("성명"),
+            "직급": e.get("직급"),
+            "원가구분": _cost_type(e),
+            "입사일": e.get("입사일"),
+            "중간정산일": e.get("중간정산일"),
+        })
+    if not rows:
+        return pd.DataFrame(columns=DISPLAY_COLS)
+    return pd.DataFrame(rows)[DISPLAY_COLS]
+
+
+# ── 인원별 퇴직금 추계액 계산 ('당기인원정보' 시트 기준) ──────────────────────
+
+def compute_employee(emp: dict, 당기결산일: date) -> dict:
     입사일 = _safe_date(emp.get("입사일"))
     중간정산일 = _safe_date(emp.get("중간정산일"))
     월평균급여 = _safe_float(emp.get("월평균급여(원)"))
@@ -186,72 +258,64 @@ def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) ->
     급여기준액 = 월평균급여 + 연간상여금 * 3 / 12
 
     result = {
-        "전기재직여부": False, "당기재직여부": False,
         "재직일수": None, "1일평균임금": None, "퇴직금추계액": 0.0,
         "기산일": None, "급여기준액": 급여기준액, "배수": 1.0, "임원배수적용": False,
         "warning": None,
     }
+
+    def _add_warning(w):
+        result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
 
     # 임원 퇴직금 규정상 배수(예: 정관·임원퇴직금지급규정상 2배, 3배 등)는
     # 부서명이 정확히 '임원'인 인원에만 적용한다(일반 직원은 입력값이 있어도 무시).
     if 부서 == EXECUTIVE_DEPT:
         배수_raw = emp.get("배수(임원)")
         배수 = _safe_float(배수_raw, default=1.0)
-        if 배수_raw in (None, "") :
-            result["warning"] = "임원 배수 미입력 — 1배로 계산됨"
+        if 배수_raw in (None, ""):
+            _add_warning("임원 배수 미입력 — 1배로 계산됨")
         elif 배수 <= 0:
-            result["warning"] = "임원 배수 값 오류(0 이하) — 1배로 계산됨"
+            _add_warning("임원 배수 값 오류(0 이하) — 1배로 계산됨")
             배수 = 1.0
         result["배수"] = 배수
         result["임원배수적용"] = True
 
     if 입사일 is None:
-        w = "입사일 미입력 — 재직여부/추계액 계산 불가"
-        result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
+        _add_warning("입사일 미입력 — 재직일수/추계액 계산 불가")
         return result
-
-    # 중간정산은 재직 상태를 유지한 채 근속기간만 재기산되는 것이므로(퇴사가 아님),
-    # 재직여부 판정은 순수하게 입사일만 기준으로 한다.
-    result["전기재직여부"] = 입사일 <= 전기결산일
-    result["당기재직여부"] = 입사일 <= 당기결산일
 
     기산일 = 입사일
     if 중간정산일 is not None:
-        w = None
         if 중간정산일 < 입사일:
-            w = "중간정산일이 입사일보다 이전 — 확인 필요(입사일 기준으로 계산)"
+            _add_warning("중간정산일이 입사일보다 이전 — 확인 필요(입사일 기준으로 계산)")
         elif 중간정산일 > 당기결산일:
-            w = "중간정산일이 결산기준일 이후 — 확인 필요(입사일 기준으로 계산)"
+            _add_warning("중간정산일이 결산기준일 이후 — 확인 필요(입사일 기준으로 계산)")
         else:
             기산일 = 중간정산일
-        if w:
-            result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
 
-    if result["당기재직여부"]:
-        재직일수 = (당기결산일 - 기산일).days
-        result["재직일수"] = 재직일수
-        result["기산일"] = 기산일
-        일평균임금 = 급여기준액 * 12 / 365
-        result["1일평균임금"] = 일평균임금
-        result["퇴직금추계액"] = 일평균임금 * 30 * (재직일수 / 365) * result["배수"]
-        if 급여기준액 <= 0:
-            w = "월평균급여(상여금 포함) 미입력 — 추계액 0으로 계산됨"
-            result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
-    elif 입사일 > 당기결산일:
-        w = "입사일이 결산기준일 이후 — 당기 재직 대상 아님(확인 필요)"
-        result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
+    if 입사일 > 당기결산일:
+        _add_warning("입사일이 결산기준일 이후 — 확인 필요('당기인원정보'에 등재된 인원임)")
+        return result
+
+    재직일수 = (당기결산일 - 기산일).days
+    result["재직일수"] = 재직일수
+    result["기산일"] = 기산일
+    일평균임금 = 급여기준액 * 12 / 365
+    result["1일평균임금"] = 일평균임금
+    result["퇴직금추계액"] = 일평균임금 * 30 * (재직일수 / 365) * result["배수"]
+    if 급여기준액 <= 0:
+        _add_warning("월평균급여(상여금 포함) 미입력 — 추계액 0으로 계산됨")
 
     return result
 
 
-# ── 명세서 구성 ──────────────────────────────────────────────────────────────
+# ── 명세서 구성 ('당기인원정보' 시트 기준) ────────────────────────────────────
 
-def build_schedule_table(employees: list, 당기결산일: date, 전기결산일: date) -> pd.DataFrame:
+def build_schedule_table(employees: list, 당기결산일: date, 신규입사_keys: set) -> pd.DataFrame:
     rows = []
     for e in employees:
-        r = compute_employee(e, 당기결산일, 전기결산일)
-        원가구분 = str(e.get("원가구분(제조원가/판관비)") or "").strip() or "(미분류)"
-        신규입사 = r["당기재직여부"] and not r["전기재직여부"]
+        r = compute_employee(e, 당기결산일)
+        원가구분 = _cost_type(e)
+        신규입사 = _employee_key(e) in 신규입사_keys
         중간정산일_raw = _safe_date(e.get("중간정산일"))
         중간정산반영 = r["기산일"] is not None and 중간정산일_raw is not None and r["기산일"] == 중간정산일_raw
 
@@ -260,7 +324,7 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
         if r["warning"]:
             tags.append(r["warning"])
         if 신규입사:
-            tags.append("당기 신규입사")
+            tags.append("당기 신규입사(전기인원정보에는 없음)")
         if 중간정산반영:
             tags.append(f"퇴직금 중간정산 이력 있음(재직일수는 {중간정산일_raw}부터 기산)")
         if r["임원배수적용"]:
@@ -281,8 +345,6 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
             "상여금(연간, 원)": _safe_float(e.get("상여금(연간, 원)")),
             "월평균급여(상여금가산후)(계산)": r["급여기준액"],
             "배수(임원)": r["배수"] if r["임원배수적용"] else None,
-            "전기재직여부": r["전기재직여부"],
-            "당기재직여부": r["당기재직여부"],
             "재직일수(당기말기준)": r["재직일수"],
             "1일평균임금(계산)": r["1일평균임금"],
             "퇴직금추계액(계산)": r["퇴직금추계액"],
@@ -299,21 +361,20 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
 
 # ── 요약(원가구분별 대사 + 인원변동) ──────────────────────────────────────────
 
-def build_summary(df: pd.DataFrame, basis: dict) -> dict:
-    if df.empty:
+def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
+                   신규입사자_recs: list, 퇴사자_recs: list, basis: dict) -> dict:
+    if 당기_df.empty and not 전기_employees and not 신규입사자_recs and not 퇴사자_recs:
         return {}
 
-    d = df.copy()
-    당기재직 = d[d["당기재직여부"]]
-    전기재직 = d[d["전기재직여부"]]
+    d = 당기_df.copy()
 
     by_cost = []
     총_당기재계산 = 0.0
     총_전기입력 = 0.0
     총_당기회사계상 = None
     for cost in COST_TYPES:
-        cdf = 당기재직[당기재직["원가구분"] == cost]
-        당기재계산 = float(cdf["퇴직금추계액(계산)"].sum())
+        cdf = d[d["원가구분"] == cost] if not d.empty else d
+        당기재계산 = float(cdf["퇴직금추계액(계산)"].sum()) if not cdf.empty else 0.0
         전기입력 = basis.get(BASIS_KEYS[cost]["전기"])
         당기회사계상 = basis.get(BASIS_KEYS[cost]["당기"])
         by_cost.append({
@@ -329,7 +390,7 @@ def build_summary(df: pd.DataFrame, basis: dict) -> dict:
         if 당기회사계상 is not None:
             총_당기회사계상 = (총_당기회사계상 or 0.0) + 당기회사계상
 
-    미분류 = 당기재직[~당기재직["원가구분"].isin(COST_TYPES)]
+    미분류 = d[~d["원가구분"].isin(COST_TYPES)] if not d.empty else d
     if not 미분류.empty:
         미분류_재계산 = float(미분류["퇴직금추계액(계산)"].sum())
         by_cost.append({
@@ -351,35 +412,31 @@ def build_summary(df: pd.DataFrame, basis: dict) -> dict:
         "대사차이(재계산-회사계상)": None if 총_당기회사계상 is None else 총_당기재계산 - 총_당기회사계상,
     }
 
-    신규입사자 = d[d["당기신규입사"]][["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일"]].copy()
-    # 현재 '인원정보'에는 실제 퇴사일 필드가 없다(중간정산일은 재직 유지 상태에서의 근속 재기산일일 뿐 퇴사가 아님).
-    # 전기재직여부/당기재직여부가 모두 입사일만으로 판정되므로 이 조건은 항상 비어 있다 —
-    # 실제 퇴사자 추적이 필요해지면 별도의 '퇴사일' 필드를 추가해 이 조건을 교체할 것.
-    퇴사자 = d[d["전기재직여부"] & ~d["당기재직여부"]][
-        ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
-    ].copy()
+    전기_df = _to_display_df(전기_employees)
+    신규입사자_df = _to_display_df(신규입사자_recs)
+    퇴사자_df = _to_display_df(퇴사자_recs)
 
     headcount = {
-        "전기말인원수": int(len(전기재직)),
-        "신규입사인원수": int(len(신규입사자)),
-        "퇴사인원수": int(len(퇴사자)),
-        "당기말인원수": int(len(당기재직)),
+        "전기말인원수": int(len(전기_df)),
+        "신규입사인원수": int(len(신규입사자_df)),
+        "퇴사인원수": int(len(퇴사자_df)),
+        "당기말인원수": int(len(d)),
     }
     headcount_by_cost = []
     for cost in COST_TYPES:
         headcount_by_cost.append({
             "원가구분": cost,
-            "전기말인원수": int(len(전기재직[전기재직["원가구분"] == cost])),
-            "신규입사인원수": int(len(신규입사자[신규입사자["원가구분"] == cost])),
-            "퇴사인원수": int(len(퇴사자[퇴사자["원가구분"] == cost])),
-            "당기말인원수": int(len(당기재직[당기재직["원가구분"] == cost])),
+            "전기말인원수": int(len(전기_df[전기_df["원가구분"] == cost])) if not 전기_df.empty else 0,
+            "신규입사인원수": int(len(신규입사자_df[신규입사자_df["원가구분"] == cost])) if not 신규입사자_df.empty else 0,
+            "퇴사인원수": int(len(퇴사자_df[퇴사자_df["원가구분"] == cost])) if not 퇴사자_df.empty else 0,
+            "당기말인원수": int(len(d[d["원가구분"] == cost])) if not d.empty else 0,
         })
 
     return {
         "by_cost": by_cost,
         "total_row": total_row,
-        "신규입사자": 신규입사자,
-        "퇴사자": 퇴사자,
+        "신규입사자": 신규입사자_df[["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일"]],
+        "퇴사자": 퇴사자_df,
         "headcount": headcount,
         "headcount_by_cost": headcount_by_cost,
     }
@@ -487,7 +544,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
 
     # 3) 신규입사자 명단
     ws.cell(row=r, column=1,
-            value="■ 신규입사자 명단 (당기 중 입사 — 전기 인원명단에는 없음)").fill = section_fill
+            value="■ 신규입사자 명단 ('당기인원정보'에는 있으나 '전기인원정보'에는 없음)").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
     for c in range(2, 8):
         ws.cell(row=r, column=c).fill = section_fill
@@ -520,13 +577,14 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
 
     # 4) 퇴사자 명단
     ws.cell(row=r, column=1,
-            value="■ 퇴사자 명단 (전기 인원명단에 있었으나 당기 중 퇴사)").fill = section_fill
+            value="■ 퇴사자 명단 ('전기인원정보'에는 있으나 '당기인원정보'에는 없음)").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
     for c in range(2, 9):
         ws.cell(row=r, column=c).fill = section_fill
     r += 1
     ws.cell(row=r, column=1,
-            value="※ 현재 '인원정보'에는 실제 퇴사일 필드가 없어(중간정산일은 재직 유지 상태의 근속 재기산일이며 퇴사가 아님) 이 명단은 항상 비어 있습니다. 실제 퇴사자 추적이 필요하면 별도 '퇴사일' 필드 추가를 요청하세요.").font = Font(italic=True, color="808080", size=9)
+            value="※ 사번(없으면 성명) 기준 매칭 결과이며, 정확한 퇴사일은 별도 자료가 없는 한 알 수 없어 "
+                  "전기 시점 입사일/중간정산일만 참고로 표시합니다.").font = Font(italic=True, color="808080", size=9)
     r += 1
 
     left_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
@@ -561,12 +619,13 @@ DATE_COLS = ["입사일", "중간정산일"]
 
 
 def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str,
-                  당기결산일: date, 전기결산일: date, basis: dict, interim_month: int = None):
+                  당기결산일: date, 전기결산일: date, 전기_employees: list,
+                  신규입사자_recs: list, 퇴사자_recs: list, basis: dict, interim_month: int = None):
     wb = openpyxl.Workbook()
     ws_summary = wb.active
     ws_summary.title = "요약표"
-    write_summary_sheet(ws_summary, build_summary(df, basis), company, target_fy,
-                         당기결산일, 전기결산일, interim_month)
+    write_summary_sheet(ws_summary, build_summary(df, 전기_employees, 신규입사자_recs, 퇴사자_recs, basis),
+                         company, target_fy, 당기결산일, 전기결산일, interim_month)
 
     ws = wb.create_sheet("인원별추계명세")
 
@@ -617,7 +676,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                     cell.number_format = "yyyy-mm-dd"
                 if h in MONEY_COLS:
                     cell.number_format = "#,##0"
-                if h in ("전기재직여부", "당기재직여부", "당기신규입사", "중간정산반영"):
+                if h in ("당기신규입사", "중간정산반영"):
                     cell.value = "O" if val is True else None
                     cell.alignment = center
                 if is_settled and h not in ("비고",):
@@ -698,15 +757,18 @@ def main():
     print(f"[대상] 회사={company}, 회계연도={target_fy}, 결산월={args.fiscal_month}{interim_note}")
     print(f"[기준일] 당기말={당기결산일}, 전기말={전기결산일}")
 
-    employees = load_employees(input_path)
+    당기_employees = load_employees(input_path, CURRENT_SHEET)
+    전기_employees = load_employees(input_path, PRIOR_SHEET)
     basis = load_basis(input_path)
-    print(f"[인원 수] {len(employees)}건")
+    print(f"[인원 수] 당기={len(당기_employees)}건, 전기={len(전기_employees)}건")
 
-    df = build_schedule_table(employees, 당기결산일, 전기결산일)
+    matched = match_periods(당기_employees, 전기_employees)
+    df = build_schedule_table(당기_employees, 당기결산일, matched["신규입사_keys"])
 
     suffix = f"_interim{args.interim_month:02d}" if args.interim_month else ""
     output_path = os.path.join(OUTPUT_DIR, f"severance_schedule_{company}_{target_fy}{suffix}.xlsx")
-    save_results(df, output_path, company, target_fy, 당기결산일, 전기결산일, basis, args.interim_month)
+    save_results(df, output_path, company, target_fy, 당기결산일, 전기결산일,
+                 전기_employees, matched["신규입사자"], matched["퇴사자"], basis, args.interim_month)
     print(f"[완료] {output_path}")
 
 
