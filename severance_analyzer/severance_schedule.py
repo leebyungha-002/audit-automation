@@ -726,9 +726,6 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
 
     # 퇴사자 명단 대사 — 자동 산출(전기정보-당기정보 차이) vs '당기퇴사자' 시트(사용자 입력) 통합 비교표
     leaver_match_df = _build_leaver_match_df(전기_by_key, 당기_by_key, 퇴사자_recs, leaver_payments, 전기결산일)
-    # 인원 변동 요약 표 아래에 함께 보여줄 두 명단의 인원수(leaver_match_df 기준 — 두 컬럼 각각 값이 채워진 행 수)
-    headcount["전기정보있으나당기없음인원수"] = int((leaver_match_df["전기정보 있으나 당기정보 없음"] != "").sum()) if not leaver_match_df.empty else 0
-    headcount["실제퇴사자인원수"] = int((leaver_match_df["실제 퇴사자"] != "").sum()) if not leaver_match_df.empty else 0
 
     # 퇴사자 금액차이 분석 — '당기퇴사자' 시트에 입력된 경우만, 전기말 추계액과 실제지급액을 금액으로만 비교
     # (품질 경고성 비고는 위 leaver_match_df 쪽으로 일원화하고, 이 표는 순수 금액 비교로 남긴다)
@@ -948,19 +945,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         cell.border = border
         cell.font = bold
         cell.fill = total_fill
-    r += 1
-
-    # '퇴사자 명단 대사' 표(아래 6번)의 두 명단 각각 인원수도 바로 아래 참고용으로 표시
-    for label, key in (
-        ("'전기정보 있으나 당기정보 없음' 인원수", "전기정보있으나당기없음인원수"),
-        ("'실제 퇴사자'(당기퇴사자 시트 입력) 인원수", "실제퇴사자인원수"),
-    ):
-        ws.cell(row=r, column=1, value=label).font = Font(italic=True)
-        cell = ws.cell(row=r, column=2, value=hc[key])
-        cell.border = border
-        cell.alignment = center
-        r += 1
-    r += 2
+    r += 3
 
     # 3) 신규입사자 명단
     ws.cell(row=r, column=1,
@@ -1035,6 +1020,24 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                     if val != "이상없음":
                         cell.fill = sig_fill
             r += 1
+
+        # 마지막 데이터 행 바로 아래에 두 명단(전기정보 있으나 당기정보 없음 / 실제 퇴사자) 각각의 인원수 합계
+        전기없음_인원수 = int((leaver_match["전기정보 있으나 당기정보 없음"] != "").sum())
+        실제퇴사_인원수 = int((leaver_match["실제 퇴사자"] != "").sum())
+        cell = ws.cell(row=r, column=1, value="합계(인원수)")
+        cell.font = bold
+        cell.fill = total_fill
+        cell.border = border
+        for c in range(2, 9):
+            ws.cell(row=r, column=c).fill = total_fill
+            ws.cell(row=r, column=c).border = border
+        cell = ws.cell(row=r, column=6, value=전기없음_인원수)
+        cell.font = bold
+        cell.alignment = center
+        cell = ws.cell(row=r, column=7, value=실제퇴사_인원수)
+        cell.font = bold
+        cell.alignment = center
+        r += 1
     r += 2
 
     # 5) 퇴사자 금액차이 분석 ('당기퇴사자' 시트에 입력된 경우만 표시) — 순수 금액 비교, 품질 경고는 4)번 표 참고
@@ -1066,6 +1069,21 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                     if h == "차이(추계액-실제지급액)" and _is_significant(val, row["전기말 추계액(계산)"]):
                         cell.fill = sig_fill
             r += 1
+
+        # 전기말 추계액(계산)/실제지급액(입력)/차이 합계
+        총전기말추계액 = float(leaver_recon["전기말 추계액(계산)"].sum(skipna=True))
+        총실제지급액 = float(leaver_recon["실제지급액(입력)"].sum(skipna=True))
+        cell = ws.cell(row=r, column=1, value="합계")
+        cell.font = bold
+        cell.fill = total_fill
+        cell.border = border
+        for c in range(2, 10):
+            ws.cell(row=r, column=c).fill = total_fill
+            ws.cell(row=r, column=c).border = border
+        for col, v in ((7, 총전기말추계액), (8, 총실제지급액), (9, 총전기말추계액 - 총실제지급액)):
+            cell = ws.cell(row=r, column=col, value=v)
+            cell.font = bold
+            cell.number_format = "#,##0"
 
 
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
