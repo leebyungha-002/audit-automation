@@ -474,6 +474,9 @@ def build_schedule_table(employees: list, 당기결산일: date, 신규입사_ke
         신규입사 = key in 신규입사_keys
         전기말추계액 = 전기말_balances.get(key, 0.0)
         당기퇴직급여 = r["퇴직금추계액"] - 전기말추계액
+        회사계상_raw = e.get("회사계상 퇴직금추계액(원)")
+        당기회사계상 = _safe_float(회사계상_raw) if 회사계상_raw not in (None, "") else None
+        당기말차이 = None if 당기회사계상 is None else r["퇴직금추계액"] - 당기회사계상
         중간정산일_raw = _safe_date(e.get("중간정산일"))
         중간정산반영 = r["기산일"] is not None and 중간정산일_raw is not None and r["기산일"] == 중간정산일_raw
 
@@ -512,8 +515,68 @@ def build_schedule_table(employees: list, 당기결산일: date, 신규입사_ke
             "근속월보정(임원계산용)": r["근속월"],
             "전기말 퇴직금추계액(계산)": 전기말추계액,
             "당기말 퇴직금추계액(계산)": r["퇴직금추계액"],
+            "당기말 회사계상 퇴직금추계액(원)": 당기회사계상,
+            "당기말 차이(계산-회사계상)": 당기말차이,
             "당기 퇴직급여(계산)": 당기퇴직급여,
             "당기신규입사": 신규입사,
+            "중간정산반영": 중간정산반영,
+            "비고": 비고,
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values(["사업장", "부서", "원가구분", "사번"], na_position="last").reset_index(drop=True)
+
+
+def build_prior_schedule_table(전기_employees: list, 전기결산일: date) -> pd.DataFrame:
+    """'전기정보' 시트 인원별 전기 결산기준일 시점 추계액과, 입력된 '회사계상 퇴직금추계액(원)'을
+    인별로 대사한 명세를 만든다. build_schedule_table()의 전기(당기 대신) 버전 —
+    당기 재직 여부·신규입사 태그 등 당기 전용 로직은 없고 순수 전기 시점 계산+대사만 수행한다."""
+    rows = []
+    for e in 전기_employees:
+        r = compute_employee(e, 전기결산일)
+        원가구분 = _cost_type(e)
+        회사계상_raw = e.get("회사계상 퇴직금추계액(원)")
+        회사계상 = _safe_float(회사계상_raw) if 회사계상_raw not in (None, "") else None
+        차이 = None if 회사계상 is None else r["퇴직금추계액"] - 회사계상
+        중간정산일_raw = _safe_date(e.get("중간정산일"))
+        중간정산반영 = r["기산일"] is not None and 중간정산일_raw is not None and r["기산일"] == 중간정산일_raw
+
+        비고 = e.get("비고") or ""
+        tags = []
+        if r["warning"]:
+            tags.append(r["warning"])
+        if 중간정산반영:
+            tags.append(f"퇴직금 중간정산 이력 있음(재직일수는 {중간정산일_raw}부터 기산)")
+        if r["임원배수적용"]:
+            tags.append(
+                f"임원 배수 {r['배수']:g}배 적용 — 소득세법상 임원 퇴직금 한도 산식으로 계산"
+                f"(근속연수 {r['근속연수']}년, 근속월 보정 {r['근속월']}/10)"
+            )
+        if tags:
+            비고 = f"{비고} / {' / '.join(tags)}".strip(" /")
+
+        rows.append({
+            "사업장": e.get("사업장") or "",
+            "부서": e.get("부서") or "",
+            "사번": e.get("사번"),
+            "성명": e.get("성명"),
+            "직급": e.get("직급"),
+            "원가구분": 원가구분,
+            "입사일": e.get("입사일"),
+            "중간정산일": e.get("중간정산일"),
+            "월평균급여(원)": _safe_float(e.get("월평균급여(원)")),
+            "상여금(연간, 원)": _safe_float(e.get("상여금(연간, 원)")),
+            "월평균급여(상여금가산후)(계산)": r["급여기준액"],
+            "배수(임원)": r["배수"] if r["임원배수적용"] else None,
+            "재직일수(전기말기준)": r["재직일수"],
+            "1일평균임금(계산)": r["1일평균임금"],
+            "근속연수(임원계산용)": r["근속연수"],
+            "근속월보정(임원계산용)": r["근속월"],
+            "전기말 퇴직금추계액(계산)": r["퇴직금추계액"],
+            "전기말 회사계상 퇴직금추계액(원)": 회사계상,
+            "전기말 차이(계산-회사계상)": 차이,
             "중간정산반영": 중간정산반영,
             "비고": 비고,
         })
@@ -976,8 +1039,15 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
 
 MONEY_COLS = ["월평균급여(원)", "상여금(연간, 원)", "월평균급여(상여금가산후)(계산)", "1일평균임금(계산)",
-              "전기말 퇴직금추계액(계산)", "당기말 퇴직금추계액(계산)", "당기 퇴직급여(계산)"]
+              "전기말 퇴직금추계액(계산)", "당기말 퇴직금추계액(계산)",
+              "당기말 회사계상 퇴직금추계액(원)", "당기말 차이(계산-회사계상)", "당기 퇴직급여(계산)"]
 DATE_COLS = ["입사일", "중간정산일"]
+# 대사 차이 컬럼 → 유의성 판단 기준(분모)이 되는 회사계상액 컬럼 (depreciation_analyzer와 동일 패턴)
+DIFF_BASE_COLS = {"당기말 차이(계산-회사계상)": "당기말 회사계상 퇴직금추계액(원)"}
+
+PRIOR_MONEY_COLS = ["월평균급여(원)", "상여금(연간, 원)", "월평균급여(상여금가산후)(계산)", "1일평균임금(계산)",
+                     "전기말 퇴직금추계액(계산)", "전기말 회사계상 퇴직금추계액(원)", "전기말 차이(계산-회사계상)"]
+PRIOR_DIFF_BASE_COLS = {"전기말 차이(계산-회사계상)": "전기말 회사계상 퇴직금추계액(원)"}
 
 
 def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str,
@@ -999,6 +1069,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
     subtotal_fill = PatternFill("solid", fgColor="D9E1F2")
     total_fill = PatternFill("solid", fgColor="9DC3E6")
     settle_fill = PatternFill("solid", fgColor="FCE4D6")
+    sig_fill = PatternFill("solid", fgColor="FFFF00")
     bold = Font(bold=True)
     thin = Side(style="thin", color="B7B7B7")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -1044,6 +1115,8 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                 if h in ("당기신규입사", "중간정산반영"):
                     cell.value = "O" if val is True else None
                     cell.alignment = center
+                if h in DIFF_BASE_COLS and _is_significant(val, row.get(DIFF_BASE_COLS[h])):
+                    cell.fill = sig_fill
                 if is_settled and h not in ("비고",):
                     cell.fill = settle_fill
             for c in MONEY_COLS:
@@ -1074,6 +1147,76 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
             cell.value = grand_totals[h]
             cell.number_format = "#,##0"
             cell.font = bold
+
+    # 전기인원별추계명세 — '전기정보' 인원별 전기말 재계산액과 '회사계상 퇴직금추계액(원)' 대사
+    prior_df = build_prior_schedule_table(전기_employees, 전기결산일)
+    ws_prior = wb.create_sheet("전기인원별추계명세")
+    ws_prior.cell(row=1, column=1,
+                  value=(f"전기인원별 퇴직금 추계 명세서 (회사: {company}, 회계연도: {target_fy}, "
+                         f"전기말 결산기준일: {전기결산일})")).font = Font(bold=True, size=13)
+
+    prior_headers = list(prior_df.columns) if not prior_df.empty else []
+    for i, h in enumerate(prior_headers, start=1):
+        c = ws_prior.cell(row=header_row, column=i, value=h)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = center
+        c.border = border
+        ws_prior.column_dimensions[get_column_letter(i)].width = 16 if h != "비고" else 40
+    ws_prior.freeze_panes = f"A{header_row + 1}"
+
+    pr = header_row + 1
+    if prior_df.empty:
+        ws_prior.cell(row=pr, column=1, value="(인원 데이터 없음)")
+    else:
+        p_totals = {c: 0.0 for c in PRIOR_MONEY_COLS}
+        p_grand_totals = {c: 0.0 for c in PRIOR_MONEY_COLS}
+        for cost, gdf in prior_df.groupby("원가구분", sort=False):
+            for _, row in gdf.iterrows():
+                is_settled = bool(row.get("중간정산반영"))
+                for i, h in enumerate(prior_headers, start=1):
+                    val = row[h]
+                    cell = ws_prior.cell(row=pr, column=i, value=(None if pd.isna(val) else val))
+                    cell.border = border
+                    if h in DATE_COLS and val is not None and not pd.isna(val):
+                        cell.number_format = "yyyy-mm-dd"
+                    if h in PRIOR_MONEY_COLS:
+                        cell.number_format = "#,##0"
+                    if h == "중간정산반영":
+                        cell.value = "O" if val is True else None
+                        cell.alignment = center
+                    if h in PRIOR_DIFF_BASE_COLS and _is_significant(val, row.get(PRIOR_DIFF_BASE_COLS[h])):
+                        cell.fill = sig_fill
+                    if is_settled and h not in ("비고",):
+                        cell.fill = settle_fill
+                for c in PRIOR_MONEY_COLS:
+                    v = row.get(c)
+                    if v is not None and not pd.isna(v):
+                        p_totals[c] += v
+                        p_grand_totals[c] += v
+                pr += 1
+
+            ws_prior.cell(row=pr, column=1, value=f"[{cost} 소계]").font = bold
+            for i, h in enumerate(prior_headers, start=1):
+                cell = ws_prior.cell(row=pr, column=i)
+                cell.fill = subtotal_fill
+                cell.border = border
+                if h in PRIOR_MONEY_COLS:
+                    cell.value = p_totals[h]
+                    cell.number_format = "#,##0"
+                    cell.font = bold
+            pr += 1
+            p_totals = {c: 0.0 for c in PRIOR_MONEY_COLS}
+
+        ws_prior.cell(row=pr, column=1, value="총계").font = Font(bold=True, size=11)
+        for i, h in enumerate(prior_headers, start=1):
+            cell = ws_prior.cell(row=pr, column=i)
+            cell.fill = total_fill
+            cell.border = border
+            if h in PRIOR_MONEY_COLS:
+                cell.value = p_grand_totals[h]
+                cell.number_format = "#,##0"
+                cell.font = bold
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     wb.save(output_path)
