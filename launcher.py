@@ -105,6 +105,22 @@ def detect_dep_input_files() -> list[tuple[str, str]]:
                 files.append((f'{company}  [{year}]', f.name))
     return files
 
+
+def detect_sev_input_files() -> list[tuple[str, str]]:
+    """severance_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
+    in_dir = ROOT / 'severance_analyzer' / 'input_data'
+    if not in_dir.exists():
+        return []
+    _pat = re.compile(r'^severance_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
+    files = []
+    for f in sorted(in_dir.iterdir()):
+        if f.is_file() and f.suffix.lower() == '.xlsx' and not f.name.startswith('~$') and 'template' not in f.name.lower():
+            m = _pat.match(f.name)
+            if m:
+                company, year = m.group(1), m.group(2)
+                files.append((f'{company}  [{year}]', f.name))
+    return files
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 도구 정의
 # ──────────────────────────────────────────────────────────────────────────────
@@ -183,6 +199,15 @@ TOOLS = [
         "extra": None,
     },
     {
+        "category": "퇴직급여충당부채 검증",
+        "name": "퇴직급여충당부채 검증 (severance_schedule)",
+        "desc": "⚠ 실행 전 severance_analyzer/input_data/ 폴더에 severance_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n일반기업회계기준 퇴직금 추계액 방식 — 인원별 재직일수·급여로 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출",
+        "cmd": ["python", str(ROOT / "severance_analyzer" / "severance_schedule.py")],
+        "cwd": str(ROOT / "severance_analyzer"),
+        "company": "sev_file",
+        "extra": None,
+    },
+    {
         "category": "시트 분리",
         "name": "엑셀 시트 분리 (sheet_splitter)",
         "desc": "시트명 기준(sheet) 또는 컬럼값 기준(col)으로 엑셀 파일을 분리",
@@ -256,6 +281,7 @@ class Launcher(QMainWindow):
         self._lease_companies = detect_lease_companies()
         self._lease_input_files: list[tuple[str, str]] = detect_lease_input_files()
         self._dep_input_files: list[tuple[str, str]] = detect_dep_input_files()
+        self._sev_input_files: list[tuple[str, str]] = detect_sev_input_files()
 
         self._build_ui()
         self._tool_list.setCurrentRow(0)
@@ -500,6 +526,10 @@ class Launcher(QMainWindow):
             self._company_row.setVisible(True)
             self._dep_input_files = detect_dep_input_files()
             self._company_combo.addItems([d for d, _ in self._dep_input_files])
+        elif t["company"] == "sev_file":
+            self._company_row.setVisible(True)
+            self._sev_input_files = detect_sev_input_files()
+            self._company_combo.addItems([d for d, _ in self._sev_input_files])
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -517,12 +547,12 @@ class Launcher(QMainWindow):
         # 모드 선택 (sheet_splitter 전용)
         self._mode_row.setVisible(t["extra"] == "sheet_mode")
 
-        # 결산월 선택 (리스 스케줄·감가상각 검증 전용)
-        self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file"))
+        # 결산월 선택 (리스 스케줄·감가상각 검증·퇴충 검증 전용)
+        self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file"))
 
-        # 반기 등 중간결산 검토 (리스 스케줄·감가상각 검증 전용)
-        self._interim_row.setVisible(t["company"] in ("lease_file", "dep_file"))
-        if t["company"] not in ("lease_file", "dep_file"):
+        # 반기 등 중간결산 검토 (리스 스케줄·감가상각 검증·퇴충 검증 전용)
+        self._interim_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file"))
+        if t["company"] not in ("lease_file", "dep_file", "sev_file"):
             self._interim_check.setChecked(False)
 
     # ── 실행 ─────────────────────────────────────────────────────────────────
@@ -580,6 +610,22 @@ class Launcher(QMainWindow):
             elif fy_month in (6, 9):
                 # 결산월 콤보에서 "6월/9월 결산" 선택 — 모두 12월 결산 법인의 중간결산 검토용
                 # (결산월은 12월 그대로, 계산기간만 해당월까지로 앞당김 → 파일명에 _interim06/_interim09 부여)
+                cmd += ["--fiscal-month", "12", "--interim-month", str(fy_month)]
+            else:
+                cmd += ["--fiscal-month", str(fy_month)]
+        elif t["company"] == "sev_file":
+            file_idx = self._company_combo.currentIndex()
+            if file_idx < 0 or not self._sev_input_files:
+                self._log_line("⚠  처리할 파일을 선택하세요.", "#FBBF24")
+                return
+            _, fname = self._sev_input_files[file_idx]
+            cmd += ["--file", fname]
+            fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
+            if self._interim_check.isChecked():
+                # 반기(1~6월) 검토: 결산월은 12월 그대로, 당기말 결산기준일만 6월말로 앞당김
+                cmd += ["--fiscal-month", "12", "--interim-month", "6"]
+            elif fy_month in (6, 9):
+                # 결산월 콤보에서 "6월/9월 결산" 선택 — 모두 12월 결산 법인의 중간결산 검토용
                 cmd += ["--fiscal-month", "12", "--interim-month", str(fy_month)]
             else:
                 cmd += ["--fiscal-month", str(fy_month)]
