@@ -242,6 +242,14 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
                     f"— 취득원가/내용연수 고정월상각률로 계속 상각"
                 )
                 result["warning"] = f"{result['warning']} / {over_warning}".strip(" /") if result["warning"] else over_warning
+            else:
+                # 경과월수 기준 정액법 예상 누계액과 입력된 기초 감가상각누계액을 비교해
+                # 과거 상각 이력이 내용연수와 어긋나 있는지(오상각·내용연수 변경 등) 점검한다.
+                expected_accum = elapsed * (cost - 잔존가치) / n_months if n_months > 0 else 0.0
+                accum_diff = 기초누계 - expected_accum
+                if _is_significant(accum_diff, expected_accum):
+                    base_warning = "⚠ 기초잔액 확인필요(경과월수 기준 예상 감가상각누계액과 차이)"
+                    result["warning"] = f"{result['warning']} / {base_warning}".strip(" /") if result["warning"] else base_warning
         else:
             remaining_total_months = n_months  # 취득일 미입력 시 근사치(정확한 잔여내용연수 계산 불가)
         grant_ratio = (기초보조금 / base_book_before_grant) if base_book_before_grant > 0 else 0.0
@@ -252,9 +260,11 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
             result["warning"] = "당기취득원가가 있는 자산은 취득일이 필요합니다"
             return result
         기초누계 = 0.0
-        기초손상 = 0.0
+        # 건설중인자산 등에서 대체된 당기취득 자산은 전기 이전에 이미 인식된 손상차손누계액을
+        # 그대로 넘겨받는 경우가 있으므로(기초취득원가=0이어도) 입력값을 그대로 반영한다.
+        기초손상 = _safe_float(a.get("기초 손상차손누계액"))
         기초보조금 = 0.0
-        base_book_before_grant = cost
+        base_book_before_grant = cost - 기초손상
         held_start = (acquire + relativedelta(months=offset)).strftime("%Y-%m")
         if held_start < fy_start:
             held_start = fy_start
@@ -315,6 +325,16 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
 
     당기정부보조금환입액 = 당기감가상각비 * grant_ratio
 
+    # 잔존가치를 0으로 입력한 자산이 당기 중 장부가액을 전액(잔존가치까지) 소진하는 경우,
+    # 법인세법상 최소 잔존가액(1,000원) 관행과 어긋나므로 회사계상액 입력 여부와 무관하게 안내한다.
+    if (
+        not impair_in_period and not disposed_in_fy and 잔존가치 == 0
+        and 당기감가상각비 > 0
+        and abs(당기감가상각비 - (base_book_before_grant - 잔존가치)) < 1
+    ):
+        tax_residual_warning = "법인세법상 잔존가액(1,000원) 차이로 추정"
+        result["warning"] = f"{result['warning']} / {tax_residual_warning}".strip(" /") if result["warning"] else tax_residual_warning
+
     처분시감소_누계액 = (기초누계 + 당기감가상각비) if disposed_in_fy else 0.0
     기말감가상각누계액 = 기초누계 + 당기감가상각비 - 처분시감소_누계액
     처분시감소_손상 = (기초손상 + 당기손상) if disposed_in_fy else 0.0
@@ -362,6 +382,8 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str, interi
         dispose_ym = dispose.strftime("%Y-%m") if dispose else None
         disposed_in_fy = dispose_ym is not None and fy_start <= dispose_ym <= fy_end
 
+        당기상각비_차이 = None if company_dep_f is None else r["당기감가상각비"] - company_dep_f
+
         비고 = a.get("비고") or ""
         if r["warning"]:
             비고 = f"{비고} / {r['warning']}".strip(" /")
@@ -395,7 +417,7 @@ def build_schedule_table(assets: list, fiscal_month: int, target_fy: str, interi
             "순 감가상각비(보조금차감후)(계산)": 순감가상각비,
             "기말장부가액(계산)": 기말장부가액,
             "당기 회사계상 상각비": company_dep_f,
-            "당기상각비 차이": (None if company_dep_f is None else r["당기감가상각비"] - company_dep_f),
+            "당기상각비 차이": 당기상각비_차이,
             "당기 회사계상 보조금환입액": company_grant_amort_f,
             "당기환입액 차이": (None if company_grant_amort_f is None else r["당기정부보조금환입액"] - company_grant_amort_f),
             "원가구분": a.get("원가구분"),
@@ -425,6 +447,9 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     d["기초장부금액"] = (
         d["기초취득원가"] - d["기초감가상각누계액"] - d["기초손상차손누계액"] - d["기초정부보조금잔액"]
     )
+    # 회사계상 순감가상각비(회사계상 상각비 - 회사계상 보조금환입액). 회사계상 상각비 미입력 자산은 NaN으로 남겨
+    # 합계 시 자동 제외되도록 한다(0으로 채우면 "회사가 0으로 보고"한 것과 구분이 안 됨).
+    d["순 감가상각비(회사계상)"] = d["당기 회사계상 상각비"] - d["당기 회사계상 보조금환입액"].fillna(0)
 
     present = list(dict.fromkeys(d["자산분류"]))
     ordered = [c for c in CATEGORY_ORDER if c in present] + [c for c in present if c not in CATEGORY_ORDER]
@@ -432,7 +457,7 @@ def build_category_summary(df: pd.DataFrame) -> dict:
     summaries = {}
     for cat in ordered:
         cdf = d[d["자산분류"] == cat]
-        # 사업장×원가구분 피벗은 정부보조금 환입액을 이미 차감한 순액 기준(실제 P&L 반영액)
+        # 사업장×원가구분 피벗: 계산값/회사계상값 각각, 그리고 그 차이(계산-회사계상)
         pivot = cdf.pivot_table(
             index="사업장", columns="원가구분", values="순 감가상각비(보조금차감후)(계산)",
             aggfunc="sum", fill_value=0.0,
@@ -442,11 +467,23 @@ def build_category_summary(df: pd.DataFrame) -> dict:
         grand.name = "총계"
         pivot = pd.concat([pivot, grand.to_frame().T])
 
+        pivot_company = cdf.pivot_table(
+            index="사업장", columns="원가구분", values="순 감가상각비(회사계상)",
+            aggfunc="sum", fill_value=0.0,
+        )
+        pivot_company["소계"] = pivot_company.sum(axis=1)
+        grand_c = pivot_company.sum(axis=0)
+        grand_c.name = "총계"
+        pivot_company = pd.concat([pivot_company, grand_c.to_frame().T])
+        pivot_company = pivot_company.reindex(index=pivot.index, columns=pivot.columns, fill_value=0.0)
+
+        pivot_diff = pivot - pivot_company
+
         # 계정과목별 내역(토지/건물/기계장치 등) — 최초 등장 순서 그대로 유지
         by_account = []
         for acct in dict.fromkeys(cdf["계정과목"]):
             adf = cdf[cdf["계정과목"] == acct]
-            by_account.append({
+            calc = {
                 "계정과목": acct,
                 "자산수": int(len(adf)),
                 "기초장부금액": adf["기초장부금액"].sum(),
@@ -455,6 +492,29 @@ def build_category_summary(df: pd.DataFrame) -> dict:
                 "순감가상각비": adf["순 감가상각비(보조금차감후)(계산)"].sum(),
                 "당기손상차손": adf["당기 손상차손인식액(계산)"].sum(),
                 "기말장부금액": adf["기말장부가액(계산)"].sum(),
+            }
+            by_account.append(calc)
+
+        # 회사계상분 계정과목별 내역(계산표와 동일한 계정과목 순서·행 구성 유지)
+        by_account_company = []
+        for acct in dict.fromkeys(cdf["계정과목"]):
+            adf = cdf[cdf["계정과목"] == acct]
+            by_account_company.append({
+                "계정과목": acct,
+                "회사계상 입력자산수": int(adf["당기 회사계상 상각비"].notna().sum()),
+                "당기감가상각비(회사계상)": adf["당기 회사계상 상각비"].sum(),
+                "정부보조금환입액(회사계상)": adf["당기 회사계상 보조금환입액"].sum(),
+                "순감가상각비(회사계상)": adf["순 감가상각비(회사계상)"].sum(),
+            })
+
+        # 계산 vs 회사계상 차이(계정과목별)
+        by_account_diff = []
+        for calc_row, comp_row in zip(by_account, by_account_company):
+            by_account_diff.append({
+                "계정과목": calc_row["계정과목"],
+                "당기감가상각비 차이": calc_row["당기감가상각비"] - comp_row["당기감가상각비(회사계상)"],
+                "정부보조금환입액 차이": calc_row["당기정부보조금환입액"] - comp_row["정부보조금환입액(회사계상)"],
+                "순감가상각비 차이": calc_row["순감가상각비"] - comp_row["순감가상각비(회사계상)"],
             })
 
         summaries[cat] = {
@@ -465,8 +525,16 @@ def build_category_summary(df: pd.DataFrame) -> dict:
             "순감가상각비": cdf["순 감가상각비(보조금차감후)(계산)"].sum(),
             "당기손상차손": cdf["당기 손상차손인식액(계산)"].sum(),
             "기말장부금액": cdf["기말장부가액(계산)"].sum(),
+            "회사계상 입력자산수": int(cdf["당기 회사계상 상각비"].notna().sum()),
+            "당기감가상각비(회사계상)": cdf["당기 회사계상 상각비"].sum(),
+            "정부보조금환입액(회사계상)": cdf["당기 회사계상 보조금환입액"].sum(),
+            "순감가상각비(회사계상)": cdf["순 감가상각비(회사계상)"].sum(),
             "pivot": pivot,
+            "pivot_company": pivot_company,
+            "pivot_diff": pivot_diff,
             "by_account": by_account,
+            "by_account_company": by_account_company,
+            "by_account_diff": by_account_diff,
         }
     return summaries
 
@@ -477,6 +545,7 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str, inter
     section_fill = PatternFill("solid", fgColor="203864")
     section_font = Font(bold=True, color="FFFFFF", size=12)
     total_fill = PatternFill("solid", fgColor="9DC3E6")
+    sig_fill = PatternFill("solid", fgColor="FFFF00")
     bold = Font(bold=True)
     thin = Side(style="thin", color="B7B7B7")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -553,6 +622,80 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str, inter
             cell.number_format = "#,##0"
         r += 2
 
+        # 계정과목별 내역(회사계상) — 계산표와 동일한 계정과목 순서
+        ws.cell(row=r, column=1, value=f"{cat} 계정과목별 내역 (회사계상)").font = bold
+        r += 1
+        comp_headers = ["계정과목", "회사계상 입력자산수", "당기감가상각비(회사계상)",
+                         "정부보조금환입액(회사계상)", "순감가상각비(회사계상)"]
+        for i, h in enumerate(comp_headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        comp_totals = [0, 0.0, 0.0, 0.0]
+        for crow in s["by_account_company"]:
+            cell = ws.cell(row=r, column=1, value=crow["계정과목"])
+            cell.border = border
+            cvals = [crow["회사계상 입력자산수"], crow["당기감가상각비(회사계상)"],
+                     crow["정부보조금환입액(회사계상)"], crow["순감가상각비(회사계상)"]]
+            for i, v in enumerate(cvals, start=2):
+                cell = ws.cell(row=r, column=i, value=v)
+                cell.border = border
+                cell.number_format = "#,##0"
+            for i, v in enumerate(cvals):
+                comp_totals[i] += v
+            r += 1
+        cell = ws.cell(row=r, column=1, value="합계")
+        cell.font = bold
+        cell.fill = total_fill
+        cell.border = border
+        for i, v in enumerate(comp_totals, start=2):
+            cell = ws.cell(row=r, column=i, value=v)
+            cell.border = border
+            cell.font = bold
+            cell.fill = total_fill
+            cell.number_format = "#,##0"
+        r += 2
+
+        # 계정과목별 차이(계산 - 회사계상) — 유의차이(SIG_THRESHOLD_ABS 이상)는 노란색 강조
+        ws.cell(row=r, column=1, value=f"{cat} 계정과목별 차이 (계산 - 회사계상)").font = bold
+        r += 1
+        diff_headers = ["계정과목", "당기감가상각비 차이", "정부보조금환입액 차이", "순감가상각비 차이"]
+        for i, h in enumerate(diff_headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        diff_totals = [0.0, 0.0, 0.0]
+        for drow in s["by_account_diff"]:
+            cell = ws.cell(row=r, column=1, value=drow["계정과목"])
+            cell.border = border
+            dvals = [drow["당기감가상각비 차이"], drow["정부보조금환입액 차이"], drow["순감가상각비 차이"]]
+            for i, v in enumerate(dvals, start=2):
+                cell = ws.cell(row=r, column=i, value=v)
+                cell.border = border
+                cell.number_format = "#,##0"
+                if abs(v) >= SIG_THRESHOLD_ABS:
+                    cell.fill = sig_fill
+            for i, v in enumerate(dvals):
+                diff_totals[i] += v
+            r += 1
+        cell = ws.cell(row=r, column=1, value="합계")
+        cell.font = bold
+        cell.fill = total_fill
+        cell.border = border
+        for i, v in enumerate(diff_totals, start=2):
+            cell = ws.cell(row=r, column=i, value=v)
+            cell.border = border
+            cell.font = bold
+            cell.fill = total_fill
+            cell.number_format = "#,##0"
+        r += 2
+
         ws.cell(row=r, column=1, value="사업장별 순 당기감가상각비 (원가구분별, 정부보조금환입액 차감후)").font = bold
         r += 1
         pivot = s["pivot"]
@@ -579,6 +722,63 @@ def write_summary_sheet(ws, summaries: dict, company: str, target_fy: str, inter
                 if is_total:
                     cell.font = bold
                     cell.fill = total_fill
+            r += 1
+        r += 2
+
+        ws.cell(row=r, column=1, value="사업장별 순 당기감가상각비 (회사계상, 원가구분별)").font = bold
+        r += 1
+        pivot_company = s["pivot_company"]
+        for i, h in enumerate(headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        for site, row in pivot_company.iterrows():
+            is_total = site == "총계"
+            cell = ws.cell(row=r, column=1, value=site)
+            cell.border = border
+            if is_total:
+                cell.font = bold
+                cell.fill = total_fill
+            for i, c in enumerate(cost_cols, start=2):
+                cell = ws.cell(row=r, column=i, value=row[c])
+                cell.number_format = "#,##0"
+                cell.border = border
+                if is_total:
+                    cell.font = bold
+                    cell.fill = total_fill
+            r += 1
+        r += 2
+
+        ws.cell(row=r, column=1, value="사업장별 순 당기감가상각비 차이 (계산 - 회사계상, 원가구분별, 유의차이 강조)").font = bold
+        r += 1
+        pivot_diff = s["pivot_diff"]
+        for i, h in enumerate(headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        for site, row in pivot_diff.iterrows():
+            is_total = site == "총계"
+            cell = ws.cell(row=r, column=1, value=site)
+            cell.border = border
+            if is_total:
+                cell.font = bold
+                cell.fill = total_fill
+            for i, c in enumerate(cost_cols, start=2):
+                v = row[c]
+                cell = ws.cell(row=r, column=i, value=v)
+                cell.number_format = "#,##0"
+                cell.border = border
+                if is_total:
+                    cell.font = bold
+                    cell.fill = total_fill
+                elif abs(v) >= SIG_THRESHOLD_ABS:
+                    cell.fill = sig_fill
             r += 1
         r += 2
 

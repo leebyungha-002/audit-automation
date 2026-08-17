@@ -373,7 +373,7 @@ class Launcher(QMainWindow):
         fy_layout.addWidget(QLabel("결산월:"))
         self._fy_combo = QComboBox()
         self._fy_combo.setFont(QFont("맑은 고딕", 10))
-        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (7월~익년6월)", "9월 결산 (10월~익년9월)"])
+        self._fy_combo.addItems(["12월 결산 (1월~12월)", "6월 결산 (반기, 1월~6월)", "9월 결산 (1월~9월)"])
         fy_layout.addWidget(self._fy_combo)
         fy_layout.addStretch()
         right_layout.addWidget(self._fy_row)
@@ -556,11 +556,15 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._lease_input_files[file_idx]
             cmd += ["--file", fname]
+            fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
             if self._interim_check.isChecked():
                 # 반기(1~6월) 검토: 결산월 6월 기준 스냅샷은 유지하되 당기 집계는 1~6월로 제한
                 cmd += ["--fiscal-month", "6", "--interim"]
+            elif fy_month in (6, 9):
+                # 결산월 콤보에서 "6월/9월 결산" 선택 — 모두 12월 결산 법인의 중간결산 검토용
+                # (같은 캘린더 연도의 1월~fy_month월 누적)이므로 동일하게 --interim으로 처리
+                cmd += ["--fiscal-month", str(fy_month), "--interim"]
             else:
-                fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
                 cmd += ["--fiscal-month", str(fy_month)]
         elif t["company"] == "dep_file":
             file_idx = self._company_combo.currentIndex()
@@ -569,11 +573,15 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._dep_input_files[file_idx]
             cmd += ["--file", fname]
+            fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
             if self._interim_check.isChecked():
                 # 반기(1~6월) 검토: 결산월은 12월 그대로, 계산기간만 6월까지로 앞당김
                 cmd += ["--fiscal-month", "12", "--interim-month", "6"]
+            elif fy_month in (6, 9):
+                # 결산월 콤보에서 "6월/9월 결산" 선택 — 모두 12월 결산 법인의 중간결산 검토용
+                # (결산월은 12월 그대로, 계산기간만 해당월까지로 앞당김 → 파일명에 _interim06/_interim09 부여)
+                cmd += ["--fiscal-month", "12", "--interim-month", str(fy_month)]
             else:
-                fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
                 cmd += ["--fiscal-month", str(fy_month)]
 
         # 시트 필터 인자 추가 (JS 자동화 전용)
