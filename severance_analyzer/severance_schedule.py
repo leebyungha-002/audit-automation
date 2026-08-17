@@ -263,39 +263,100 @@ def _to_display_df(records: list) -> pd.DataFrame:
     return pd.DataFrame(rows)[DISPLAY_COLS]
 
 
-LEAVER_LIST_COLS = DISPLAY_COLS + ["비고"]
-
 MIN_TENURE_DAYS = 365  # 근로기준법상 퇴직금 지급 요건(계속근로기간 1년 이상) 판정 기준
 
+LEAVER_MATCH_COLS = ["사업장", "부서", "사번", "직급", "원가구분",
+                      "전기정보 있으나 당기정보 없음", "실제 퇴사자", "비고"]
 
-def _build_leaver_list_df(퇴사자_recs: list, 전기결산일: date, leaver_payment_keys: set) -> pd.DataFrame:
-    """'퇴사자 명단' 표에 표시할 인원별 비고를 계산한다.
-    - 전기결산일 기준 근속기간이 1년 미만이면(입사일이 최근 1년 이내) 애초에 전기 퇴직급여충당부채
-      설정 대상이 아니었을 수 있음을 안내(근로기준법상 계속근로기간 1년 미만은 퇴직금 지급 요건 미충족).
-    - '당기퇴사자' 시트(실제지급액 입력분)에 대응 항목이 없으면, 두 명단(자동 산출 vs 사용자 입력) 간
-      차이가 있다는 것을 안내."""
+
+def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_recs: list,
+                            leaver_payments: list, 전기결산일: date) -> pd.DataFrame:
+    """'전기정보-당기정보 자동 비교로 산출된 퇴사자 명단'과 '당기퇴사자' 시트(사용자 입력) 두 명단을
+    사번(없으면 성명) 기준으로 나란히 비교하는 통합 표. 양쪽에 모두 있으면 '이상없음',
+    한쪽에만 있으면 그 원인을 비고에 표시한다(전기말 재직 1년 미만·당기정보에 여전히 존재·이중기입 등)."""
+    퇴사_keys = {_employee_key(e) for e in 퇴사자_recs if _employee_key(e) is not None}
+
+    당기퇴사자_by_key: dict = {}
+    for rec in leaver_payments:
+        if rec.get("실제지급액(원)") in (None, ""):
+            continue
+        k = _employee_key(rec)
+        if k is not None:
+            당기퇴사자_by_key.setdefault(k, []).append(rec)
+
     rows = []
-    for e in 퇴사자_recs:
-        입사일 = _safe_date(e.get("입사일"))
-        notes = []
-        if 입사일 is not None and (전기결산일 - 입사일).days < MIN_TENURE_DAYS:
-            notes.append("전기 퇴직급여설정대상 아님(근속기간 1년 미만으로 추정)")
-        if _employee_key(e) not in leaver_payment_keys:
-            notes.append("⚠ '당기퇴사자' 시트에 지급액 입력 없음 — 명단 비교 시 차이 있음")
+    for key in 퇴사_keys | set(당기퇴사자_by_key.keys()):
+        전기레코드 = 전기_by_key.get(key)
+        당기퇴사자_recs = 당기퇴사자_by_key.get(key, [])
+        in_auto = key in 퇴사_keys
+        in_actual = len(당기퇴사자_recs) > 0
+        source = 전기레코드 or 당기_by_key.get(key)
+
+        tags = []
+        if in_auto and in_actual:
+            if key in 당기_by_key:
+                tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
+            if len(당기퇴사자_recs) > 1:
+                tags.append("⚠ 이중기입의심(동일 인원으로 보이는 항목이 '당기퇴사자' 시트에 여러 번 입력됨 — 동명이인 여부 확인 필요)")
+            if not tags:
+                tags.append("이상없음")
+        elif in_auto and not in_actual:
+            tags.append("⚠ '당기퇴사자' 시트에 지급액 입력 없음")
+        else:  # in_actual and not in_auto
+            if 전기레코드 is not None:
+                tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
+            else:
+                입사일 = _safe_date(당기퇴사자_recs[0].get("입사일(선택)")) if 당기퇴사자_recs else None
+                if 입사일 is not None and (전기결산일 - 입사일).days < MIN_TENURE_DAYS:
+                    tags.append("전기 결산기준일 기준 근속 1년 미만 — 전기말 퇴충설정대상 아님")
+                else:
+                    tags.append("⚠ '전기정보'에서 매칭되는 인원을 찾지 못함(확인 필요)")
+            if len(당기퇴사자_recs) > 1:
+                tags.append("⚠ 이중기입의심(동일 인원으로 보이는 항목이 '당기퇴사자' 시트에 여러 번 입력됨 — 동명이인 여부 확인 필요)")
+
+        성명_auto = ((전기레코드 or {}).get("성명") or (전기레코드 or {}).get("사번") or "") if in_auto else ""
+        성명_actual = ((당기퇴사자_recs[0].get("성명") or 당기퇴사자_recs[0].get("사번") or "") if 당기퇴사자_recs else "")
+        사번 = (전기레코드 or {}).get("사번") or (당기퇴사자_recs[0].get("사번") if 당기퇴사자_recs else None)
+
         rows.append({
-            "사업장": e.get("사업장") or "",
-            "부서": e.get("부서") or "",
-            "사번": e.get("사번"),
-            "성명": e.get("성명"),
-            "직급": e.get("직급"),
-            "원가구분": _cost_type(e),
-            "입사일": e.get("입사일"),
-            "중간정산일": e.get("중간정산일"),
-            "비고": " / ".join(notes),
+            "사업장": (source or {}).get("사업장") or "",
+            "부서": (source or {}).get("부서") or "",
+            "사번": 사번,
+            "직급": (source or {}).get("직급") or "",
+            "원가구분": _cost_type(source) if source else "(미상)",
+            "전기정보 있으나 당기정보 없음": 성명_auto,
+            "실제 퇴사자": 성명_actual,
+            "비고": " / ".join(tags),
         })
+
     if not rows:
-        return pd.DataFrame(columns=LEAVER_LIST_COLS)
-    return pd.DataFrame(rows)[LEAVER_LIST_COLS]
+        return pd.DataFrame(columns=LEAVER_MATCH_COLS)
+    df = pd.DataFrame(rows)[LEAVER_MATCH_COLS]
+    return df.sort_values(
+        ["사업장", "부서", "전기정보 있으나 당기정보 없음", "실제 퇴사자"], na_position="last"
+    ).reset_index(drop=True)
+
+
+def _build_group_summary(d: pd.DataFrame, group_col: str) -> list:
+    """사업장별/부서별 요약표. 해당 그룹 컬럼에 실제 값이 하나도 없으면 빈 리스트를 반환해
+    (요약표에서) 그 섹션 자체를 생략하도록 한다."""
+    if d.empty or group_col not in d.columns:
+        return []
+    d2 = d.copy()
+    d2[group_col] = d2[group_col].astype(str).str.strip()
+    d2 = d2[d2[group_col] != ""]
+    if d2.empty:
+        return []
+    rows = []
+    for g, gdf in d2.groupby(group_col, sort=False):
+        rows.append({
+            group_col: g,
+            "인원수": int(len(gdf)),
+            "전기말(재계산)": float(gdf["전기말 퇴직금추계액(계산)"].sum()),
+            "당기말(재계산)": float(gdf["당기말 퇴직금추계액(계산)"].sum()),
+            "당기 퇴직급여(재계산)": float(gdf["당기 퇴직급여(계산)"].sum()),
+        })
+    return rows
 
 
 # ── 인원별 퇴직금 추계액 계산 ('당기정보' 시트 기준) ──────────────────────
@@ -511,19 +572,13 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         "대사차이(재계산-회사계상)": None if 총_당기회사계상 is None else 총_당기재계산 - 총_당기회사계상,
     }
 
-    leaver_payment_keys = {
-        _employee_key(rec) for rec in leaver_payments
-        if rec.get("실제지급액(원)") not in (None, "") and _employee_key(rec) is not None
-    }
-
     전기_df = _to_display_df(전기_employees)
     신규입사자_df = _to_display_df(신규입사자_recs)
-    퇴사자_df = _build_leaver_list_df(퇴사자_recs, 전기결산일, leaver_payment_keys)
 
     headcount = {
         "전기말인원수": int(len(전기_df)),
         "신규입사인원수": int(len(신규입사자_df)),
-        "퇴사인원수": int(len(퇴사자_df)),
+        "퇴사인원수": len(퇴사자_recs),
         "당기말인원수": int(len(d)),
     }
     headcount_by_cost = []
@@ -532,9 +587,13 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
             "원가구분": cost,
             "전기말인원수": int(len(전기_df[전기_df["원가구분"] == cost])) if not 전기_df.empty else 0,
             "신규입사인원수": int(len(신규입사자_df[신규입사자_df["원가구분"] == cost])) if not 신규입사자_df.empty else 0,
-            "퇴사인원수": int(len(퇴사자_df[퇴사자_df["원가구분"] == cost])) if not 퇴사자_df.empty else 0,
+            "퇴사인원수": sum(1 for e in 퇴사자_recs if _cost_type(e) == cost),
             "당기말인원수": int(len(d[d["원가구분"] == cost])) if not d.empty else 0,
         })
+
+    # 사업장별/부서별 요약(해당 컬럼에 실제 값이 있을 때만 생성 — 없으면 write_summary_sheet에서 섹션 생략)
+    site_summary = _build_group_summary(d, "사업장")
+    dept_summary = _build_group_summary(d, "부서")
 
     # T계정 검증(tie-out): 전기말(회사계상) + 당기 퇴직급여(재계산) - 당기지급액(분개장, 입력) =? 당기말(회사계상)
     # 전액 회사가 실제 보고/기표한 값(전기말·당기말·지급액)에 우리 재계산 전입액만 얹어보는 교차검증.
@@ -551,16 +610,11 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
             "차이(계산상당기말-회사계상)": 계산상기말 - 총_당기회사계상,
         }
 
-    # 퇴사자 실제지급액 대사 ('당기퇴사자' 시트에 입력된 경우만) — 전기말 추계액과 인별 비교
-    # 동일 인원이 '당기퇴사자' 시트에 여러 번 입력됐는지(동명이인 가능성 포함) 미리 집계해둔다.
-    key_counts = {}
-    for rec in leaver_payments:
-        if rec.get("실제지급액(원)") in (None, ""):
-            continue
-        k = _employee_key(rec)
-        if k is not None:
-            key_counts[k] = key_counts.get(k, 0) + 1
+    # 퇴사자 명단 대사 — 자동 산출(전기정보-당기정보 차이) vs '당기퇴사자' 시트(사용자 입력) 통합 비교표
+    leaver_match_df = _build_leaver_match_df(전기_by_key, 당기_by_key, 퇴사자_recs, leaver_payments, 전기결산일)
 
+    # 퇴사자 금액차이 분석 — '당기퇴사자' 시트에 입력된 경우만, 전기말 추계액과 실제지급액을 금액으로만 비교
+    # (품질 경고성 비고는 위 leaver_match_df 쪽으로 일원화하고, 이 표는 순수 금액 비교로 남긴다)
     leaver_recon_rows = []
     for rec in leaver_payments:
         실제지급액_raw = rec.get("실제지급액(원)")
@@ -570,17 +624,6 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         실제지급액 = _safe_float(실제지급액_raw)
         전기말추계액 = 전기말_balances.get(key)
         전기레코드 = 전기_by_key.get(key)
-
-        tags = []
-        if key_counts.get(key, 0) > 1:
-            tags.append("⚠ 이중기입의심(동일 인원으로 보이는 항목이 '당기퇴사자' 시트에 여러 번 입력됨 — 동명이인 여부 확인 필요)")
-        if 전기레코드 is None:
-            tags.append("⚠ '전기정보'에서 매칭되는 인원을 찾지 못함")
-        elif key in 당기_by_key:
-            tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
-        base_note = rec.get("비고") or ""
-        비고 = f"{base_note} / {' / '.join(tags)}".strip(" /") if tags else base_note
-
         leaver_recon_rows.append({
             "사업장": (전기레코드 or {}).get("사업장") or "",
             "부서": (전기레코드 or {}).get("부서") or "",
@@ -591,20 +634,21 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
             "전기말 추계액(계산)": 전기말추계액,
             "실제지급액(입력)": 실제지급액,
             "차이(추계액-실제지급액)": None if 전기말추계액 is None else 전기말추계액 - 실제지급액,
-            "비고": 비고,
         })
     leaver_recon_df = pd.DataFrame(leaver_recon_rows) if leaver_recon_rows else pd.DataFrame(
         columns=["사업장", "부서", "사번", "성명", "직급", "원가구분",
-                 "전기말 추계액(계산)", "실제지급액(입력)", "차이(추계액-실제지급액)", "비고"]
+                 "전기말 추계액(계산)", "실제지급액(입력)", "차이(추계액-실제지급액)"]
     )
 
     return {
         "by_cost": by_cost,
         "total_row": total_row,
+        "site_summary": site_summary,
+        "dept_summary": dept_summary,
         "tie_out": tie_out,
+        "leaver_match": leaver_match_df,
         "leaver_recon": leaver_recon_df,
         "신규입사자": 신규입사자_df[["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일"]],
-        "퇴사자": 퇴사자_df,
         "headcount": headcount,
         "headcount_by_cost": headcount_by_cost,
     }
@@ -704,6 +748,56 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                 cell.fill = sig_fill
         r += 2
 
+    # 1-2)/1-3) 사업장별/부서별 요약 (해당 컬럼에 실제 값이 있는 경우에만 표시)
+    for group_col, section_title in (("사업장", "■ 사업장별 요약"), ("부서", "■ 부서별 요약")):
+        rows_data = summary.get("site_summary" if group_col == "사업장" else "dept_summary") or []
+        if not rows_data:
+            continue
+
+        ws.cell(row=r, column=1, value=section_title).fill = section_fill
+        ws.cell(row=r, column=1).font = section_font
+        for c in range(2, 6):
+            ws.cell(row=r, column=c).fill = section_fill
+        r += 2
+
+        grp_headers = [group_col, "인원수", "전기말(재계산)", "당기말(재계산)", "당기 퇴직급여(재계산)"]
+        for i, h in enumerate(grp_headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+
+        총인원수 = 총전기말 = 총당기말 = 총퇴직급여 = 0
+        for row_data in rows_data:
+            cell = ws.cell(row=r, column=1, value=row_data[group_col])
+            cell.border = border
+            vals = [row_data["인원수"], row_data["전기말(재계산)"], row_data["당기말(재계산)"], row_data["당기 퇴직급여(재계산)"]]
+            for i, v in enumerate(vals, start=2):
+                cell = ws.cell(row=r, column=i, value=v)
+                cell.border = border
+                if i > 2:
+                    cell.number_format = "#,##0"
+            총인원수 += row_data["인원수"]
+            총전기말 += row_data["전기말(재계산)"]
+            총당기말 += row_data["당기말(재계산)"]
+            총퇴직급여 += row_data["당기 퇴직급여(재계산)"]
+            r += 1
+
+        cell = ws.cell(row=r, column=1, value="합계")
+        cell.font = bold
+        cell.fill = total_fill
+        cell.border = border
+        for i, v in enumerate([총인원수, 총전기말, 총당기말, 총퇴직급여], start=2):
+            cell = ws.cell(row=r, column=i, value=v)
+            cell.border = border
+            cell.font = bold
+            cell.fill = total_fill
+            if i > 2:
+                cell.number_format = "#,##0"
+        r += 3
+
     # 2) 인원 변동 요약
     ws.cell(row=r, column=1, value="■ 인원 변동 요약").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
@@ -772,20 +866,21 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
             r += 1
     r += 2
 
-    # 4) 퇴사자 명단
+    # 4) 퇴사자 명단 대사 — 자동 산출('전기정보'에는 있으나 '당기정보'에는 없음) vs '당기퇴사자' 시트(실제 퇴사자) 비교
     ws.cell(row=r, column=1,
-            value="■ 퇴사자 명단 ('전기정보'에는 있으나 '당기정보'에는 없음)").fill = section_fill
+            value="■ 퇴사자 명단 대사 (자동 산출 명단 vs '당기퇴사자' 시트 입력 명단 비교)").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
-    for c in range(2, 10):
+    for c in range(2, 9):
         ws.cell(row=r, column=c).fill = section_fill
     r += 1
     ws.cell(row=r, column=1,
-            value="※ 사번(없으면 성명) 기준 매칭 결과이며, 정확한 퇴사일은 별도 자료가 없는 한 알 수 없어 "
-                  "전기 시점 입사일/중간정산일만 참고로 표시합니다.").font = Font(italic=True, color="808080", size=9)
+            value="※ 양쪽 명단에 모두 있으면 '이상없음', 한쪽에만 있으면 비고에 원인을 표시합니다. "
+                  "사번(없으면 성명) 기준 매칭입니다.").font = Font(italic=True, color="808080", size=9)
     r += 1
 
-    left_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일", "비고"]
-    for i, h in enumerate(left_headers, start=1):
+    match_headers = ["사업장", "부서", "사번", "직급", "원가구분",
+                      "전기정보 있으나 당기정보 없음", "실제 퇴사자", "비고"]
+    for i, h in enumerate(match_headers, start=1):
         cell = ws.cell(row=r, column=i, value=h)
         cell.fill = header_fill
         cell.font = header_font
@@ -794,45 +889,43 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         if h == "비고":
             ws.column_dimensions[get_column_letter(i)].width = 46
     r += 1
-    퇴사자 = summary["퇴사자"]
-    if 퇴사자.empty:
+    leaver_match = summary.get("leaver_match")
+    if leaver_match is None or leaver_match.empty:
         ws.cell(row=r, column=1, value="(해당 없음)")
-        for c in range(1, 10):
+        for c in range(1, 9):
             ws.cell(row=r, column=c).border = border
         r += 1
     else:
-        for _, row in 퇴사자.iterrows():
-            for i, h in enumerate(left_headers, start=1):
+        for _, row in leaver_match.iterrows():
+            for i, h in enumerate(match_headers, start=1):
                 val = row[h]
                 cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) or val == "" else val))
                 cell.border = border
-                if h in ("입사일", "중간정산일") and val is not None and not pd.isna(val):
-                    cell.number_format = "yyyy-mm-dd"
                 if h == "비고" and val:
                     cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    if val != "이상없음":
+                        cell.fill = sig_fill
             r += 1
     r += 2
 
-    # 5) 퇴사자 실제지급액 대사 ('당기퇴사자' 시트에 입력된 경우만 표시)
+    # 5) 퇴사자 금액차이 분석 ('당기퇴사자' 시트에 입력된 경우만 표시) — 순수 금액 비교, 품질 경고는 4)번 표 참고
     leaver_recon = summary.get("leaver_recon")
     if leaver_recon is not None and not leaver_recon.empty:
         ws.cell(row=r, column=1,
-                value="■ 퇴사자 실제지급액 대사 ('당기퇴사자' 시트 입력분 — 전기말 추계액 vs 실제지급액)").fill = section_fill
+                value="■ 퇴사자 금액차이 분석 ('당기퇴사자' 시트 입력분 — 전기말 추계액 vs 실제지급액)").fill = section_fill
         ws.cell(row=r, column=1).font = section_font
         for c in range(2, 10):
             ws.cell(row=r, column=c).fill = section_fill
         r += 2
 
         recon_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분",
-                          "전기말 추계액(계산)", "실제지급액(입력)", "차이(추계액-실제지급액)", "비고"]
+                          "전기말 추계액(계산)", "실제지급액(입력)", "차이(추계액-실제지급액)"]
         for i, h in enumerate(recon_headers, start=1):
             cell = ws.cell(row=r, column=i, value=h)
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = center
             cell.border = border
-            if h == "비고":
-                ws.column_dimensions[get_column_letter(i)].width = 46
         r += 1
         for _, row in leaver_recon.iterrows():
             for i, h in enumerate(recon_headers, start=1):
@@ -843,8 +936,6 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                     cell.number_format = "#,##0"
                     if h == "차이(추계액-실제지급액)" and _is_significant(val, row["전기말 추계액(계산)"]):
                         cell.fill = sig_fill
-                if h == "비고" and val:
-                    cell.alignment = Alignment(wrap_text=True, vertical="top")
             r += 1
 
 
