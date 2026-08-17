@@ -1,0 +1,227 @@
+"""표준 입력 템플릿(severance_template.xlsx) 생성 스크립트.
+
+실행: python build_template.py
+input_data/severance_template.xlsx 를 새로 만든다(이미 있으면 덮어씀).
+회사별 파일은 이 템플릿을 복사해 severance_<company>_information_fy<year>.xlsx 로 저장해서 사용한다.
+
+설계 원칙: 일반기업회계기준 퇴직급여충당부채(퇴직금 추계액 방식) 검증.
+  - 결산기준일(당기말/전기말)은 셀에 직접 입력하지 않고, 파일명(fy<연도>)과 실행 시 --fiscal-month로
+    depreciation_analyzer/lease_analyzer와 동일한 규칙으로 앱이 계산한다.
+  - 전기말/당기말 회사계상 퇴직급여충당부채(제조원가분/판관비분)만 '기준정보' 시트에 입력받아
+    앱의 재계산액과 대사(차이 표시)한다 — 감가상각비 앱의 "기초잔액은 입력값 신뢰" 원칙과 동일한 방식.
+  - 인원별 전기/당기 재직여부는 입사일·중도퇴사일과 결산기준일을 비교해 앱이 자동 판정한다.
+"""
+import os
+import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import get_column_letter
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT_PATH = os.path.join(HERE, "input_data", "severance_template.xlsx")
+
+# (그룹헤더, 상세헤더, 열너비)
+COLUMNS = [
+    ("인적사항", "사업장", 14),
+    ("인적사항", "부서", 14),
+    ("인적사항", "사번", 12),
+    ("인적사항", "성명", 12),
+    ("인적사항", "직급", 10),
+    ("재직정보", "원가구분(제조원가/판관비)", 14),
+    ("재직정보", "입사일", 12),
+    ("재직정보", "중도퇴사일", 12),
+    ("임금정보", "월평균급여(원)", 14),
+    ("기타", "비고", 30),
+]
+
+COST_TYPE_OPTIONS = ["제조원가", "판관비"]
+
+BASIS_ROWS = [
+    "전기말 회사계상 퇴직급여충당부채(제조원가분)",
+    "전기말 회사계상 퇴직급여충당부채(판관비분)",
+    "당기말 회사계상 퇴직급여충당부채(제조원가분)",
+    "당기말 회사계상 퇴직급여충당부채(판관비분)",
+]
+
+
+def build():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "인원정보"
+
+    group_fill = PatternFill("solid", fgColor="D9E1F2")
+    header_fill = PatternFill("solid", fgColor="4472C4")
+    header_font = Font(bold=True, color="FFFFFF")
+    group_font = Font(bold=True)
+    thin = Side(style="thin", color="B7B7B7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # 1행: 그룹 헤더 (병합)
+    start = 1
+    prev_group = COLUMNS[0][0]
+    for i, (group, _, _) in enumerate(COLUMNS, start=1):
+        if group != prev_group:
+            ws.merge_cells(start_row=1, start_column=start, end_row=1, end_column=i - 1)
+            start = i
+            prev_group = group
+    ws.merge_cells(start_row=1, start_column=start, end_row=1, end_column=len(COLUMNS))
+
+    for i, (group, name, width) in enumerate(COLUMNS, start=1):
+        c1 = ws.cell(row=1, column=i, value=group if i == 1 or COLUMNS[i - 2][0] != group else None)
+        c1.fill = group_fill
+        c1.font = group_font
+        c1.alignment = center
+        c1.border = border
+
+        c2 = ws.cell(row=2, column=i, value=name)
+        c2.fill = header_fill
+        c2.font = header_font
+        c2.alignment = center
+        c2.border = border
+
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    ws.row_dimensions[1].height = 20
+    ws.row_dimensions[2].height = 32
+    ws.freeze_panes = "A3"
+
+    MONEY_FIELDS = ("월평균급여(원)",)
+    DATE_FIELDS = ("입사일", "중도퇴사일")
+
+    # 예시행: 기존재직자(제조/판관), 당기 신규입사자, 당기 중도퇴사자
+    examples = [
+        [
+            "본사", "생산1팀", "EMP-1001", "예시)홍길동", "과장",
+            "제조원가", "2019-03-02", None,
+            4200000, "예시 행 — 실제 인원으로 교체(기존 재직자)",
+        ],
+        [
+            "본사", "경영지원팀", "EMP-1002", "예시)김영희", "대리",
+            "판관비", "2021-11-15", None,
+            3800000, "예시 행 — 기존 재직자",
+        ],
+        [
+            "본사", "영업팀", "EMP-1003", "예시)이철수", "사원",
+            "판관비", "2026-04-01", None,
+            3200000, "예시) 당기 중 신규입사 — 전기 인원명단에는 없어 요약표의 '신규입사자 명단'에 자동 표시됨",
+        ],
+        [
+            "제2공장", "생산2팀", "EMP-1004", "예시)박민수", "사원",
+            "제조원가", "2018-06-01", "2026-08-31",
+            3500000, "예시) 당기 중 중도퇴사 — 당기말 충당부채 대상에서 제외되고 요약표의 '퇴사자 명단'에 표시됨",
+        ],
+    ]
+    for r, row in enumerate(examples, start=3):
+        for c, val in enumerate(row, start=1):
+            cell = ws.cell(row=r, column=c, value=val)
+            cell.border = border
+            field = COLUMNS[c - 1][1]
+            if field in DATE_FIELDS and val:
+                cell.number_format = "yyyy-mm-dd"
+            if field in MONEY_FIELDS:
+                cell.number_format = "#,##0"
+
+    # 데이터 유효성 검사 (300행까지)
+    last_row = 300
+
+    def _col_letter(header_name: str) -> str:
+        idx = next(i for i, (_, name, _) in enumerate(COLUMNS, start=1) if name == header_name)
+        return get_column_letter(idx)
+
+    dv_cost = DataValidation(
+        type="list", formula1=f'"{",".join(COST_TYPE_OPTIONS)}"',
+        allow_blank=True, showErrorMessage=True,
+    )
+    dv_cost.error = "제조원가 또는 판관비 중 선택하세요."
+    ws.add_data_validation(dv_cost)
+    col = _col_letter("원가구분(제조원가/판관비)")
+    dv_cost.add(f"{col}3:{col}{last_row}")
+
+    # 기준정보 시트 — 전기말/당기말 회사계상 충당부채(대사용)
+    basis = wb.create_sheet("기준정보")
+    basis.column_dimensions["A"].width = 42
+    basis.column_dimensions["B"].width = 18
+    basis.column_dimensions["C"].width = 46
+
+    basis.cell(row=1, column=1, value="퇴직급여충당부채 기준정보 (회사계상액 — 대사용)").font = Font(bold=True, size=13)
+    header_row = 3
+    for i, h in enumerate(["항목", "금액(원)", "설명"], start=1):
+        cell = basis.cell(row=header_row, column=i, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = border
+
+    notes = [
+        "전기말 재무제표(또는 결산정산표)상 실제 계상액. 인원별 전기 추계액을 다시 계산하지 않고 이 값을 그대로 신뢰함",
+        "전기말 재무제표(또는 결산정산표)상 실제 계상액",
+        "당기말 재무제표상 회사 계상액 — 앱의 인원별 재계산 합계와 비교해 차이(대사)를 표시함",
+        "당기말 재무제표상 회사 계상액",
+    ]
+    for i, (label, note) in enumerate(zip(BASIS_ROWS, notes), start=header_row + 1):
+        c1 = basis.cell(row=i, column=1, value=label)
+        c1.border = border
+        c2 = basis.cell(row=i, column=2)
+        c2.border = border
+        c2.number_format = "#,##0"
+        c2.fill = PatternFill("solid", fgColor="FFF2CC")
+        c3 = basis.cell(row=i, column=3, value=note)
+        c3.border = border
+        c3.alignment = Alignment(wrap_text=True, vertical="top")
+
+    basis.cell(row=header_row + len(BASIS_ROWS) + 2, column=1,
+               value="※ 결산기준일(당기말/전기말)은 이 시트에 입력하지 않습니다 — 실행 시 파일명(fy<연도>)과 --fiscal-month 옵션으로 자동 결정됩니다.").font = Font(italic=True, color="808080")
+
+    # 안내 시트
+    guide = wb.create_sheet("작성안내")
+    guide.column_dimensions["A"].width = 100
+    lines = [
+        "퇴직급여충당부채 검증앱(일반기업회계기준·퇴직금 추계액 방식) — 입력 템플릿 작성 안내",
+        "",
+        "핵심 원칙: 결산기준일 현재 재직 중인 임직원을 대상으로, 근로기준법상 퇴직금 산정 방식(간편식)으로",
+        "  개인별 퇴직금 추계액을 계산해 합산한 값을 '재계산된 퇴직급여충당부채'로 봅니다.",
+        "  전기말 잔액과 당기말 회사계상액은 회사가 보고한 값을 그대로 입력받아(신뢰) 재계산액과 대사합니다.",
+        "",
+        "1. 인원 1명 = 1행. '인원정보' 시트에 전기·당기 재직 여부와 무관하게 계속 추가하면 됩니다",
+        "   (전기에만 있었거나 당기에만 있는 사람도 모두 이 한 시트에 함께 입력 — 앱이 입사일/중도퇴사일로 자동 구분합니다).",
+        "",
+        "2. 재직정보",
+        "   '원가구분': 급여를 제조원가(생산직 등)로 처리하는지 판관비(관리직 등)로 처리하는지 선택.",
+        "   '입사일': 필수. 재직여부·근속일수 판정의 기준이 됩니다.",
+        "   '중도퇴사일': 당기 중(또는 그 이전) 퇴사한 인원만 입력. 재직 중이면 비워둡니다.",
+        "",
+        "3. 임금정보 — '월평균급여(원)'에 결산기준일 현재(또는 최근 급여 수준)의 월 급여를 입력합니다.",
+        "   앱은 이 값을 연간환산해 1일평균임금 = 월평균급여 × 12 / 365 로 추정한 뒤,",
+        "   퇴직금 추계액 = 1일평균임금 × 30일 × (재직일수 / 365) 로 인원별 추계액을 계산합니다.",
+        "   재직일수 = 당기 결산기준일 − 입사일. 당기 결산기준일 이후에 퇴사한 인원은 재직 중으로 간주해 정상 계산됩니다.",
+        "",
+        "4. 전기/당기 인원 자동 판정 (요약표 '인원 변동 명단'에 사용)",
+        "   전기 재직자 = 입사일 ≤ 전기말 AND (중도퇴사일 없음 OR 중도퇴사일 > 전기말)",
+        "   당기 재직자 = 입사일 ≤ 당기말 AND (중도퇴사일 없음 OR 중도퇴사일 > 당기말)",
+        "   신규입사자 = 당기 재직자 중 전기 재직자가 아니었던 사람 / 퇴사자 = 전기 재직자 중 당기 재직자가 아닌 사람.",
+        "",
+        "5. '기준정보' 시트 — 전기말/당기말 회사계상 퇴직급여충당부채(제조원가분/판관비분) 4칸만 입력합니다.",
+        "   전기말 값은 '기초잔액'으로 신뢰해 그대로 쓰고, 당기말 값은 앱 재계산액과 비교해 차이(대사)를 표시합니다.",
+        "   모르면 비워둬도 앱 실행에는 문제 없습니다(해당 대사만 생략됨).",
+        "",
+        "6. 결산기준일은 이 파일에 입력하지 않습니다. 실행 시 파일명의 'fy<연도>'와 --fiscal-month 옵션(기본 12월)으로",
+        "   depreciation_analyzer/lease_analyzer와 동일한 규칙으로 당기말·전기말 결산기준일을 자동 계산합니다.",
+        "   예) --fiscal-month 12 --fiscal-year 2026 → 당기말 2026-12-31, 전기말 2025-12-31.",
+        "",
+        "7. 파일명 규칙: 이 템플릿을 복사해 'severance_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
+        "   예) severance_kyungnam_information_fy2026.xlsx",
+    ]
+    for i, line in enumerate(lines, start=1):
+        cell = guide.cell(row=i, column=1, value=line)
+        if i == 1:
+            cell.font = Font(bold=True, size=13)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    os.makedirs(os.path.join(HERE, "input_data"), exist_ok=True)
+    wb.save(OUT_PATH)
+    print(f"템플릿 생성 완료: {OUT_PATH}")
+
+
+if __name__ == "__main__":
+    build()
