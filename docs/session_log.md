@@ -1312,3 +1312,22 @@
 2. (이월) 런처앱 메뉴 추가 여부, K-IFRS 계리보고서 검증앱 착수 여부
 
 ---
+
+## 2026-08-17 (9차) — 런처앱에 퇴직급여충당부채 검증 메뉴 추가
+
+**완료 작업**: blue sky 요청으로 severance_analyzer를 런처앱(`launcher.py`)에 연동 — 감가상각비 검증(`dep_file`)과 완전히 동일한 패턴 재사용.
+- `detect_sev_input_files()` 추가(`severance_analyzer/input_data/` 내 `severance_<회사>_information_<연도>.xlsx` 자동 감지, template 제외).
+- TOOLS에 "퇴직급여충당부채 검증" 카테고리 항목 추가(`company: "sev_file"`).
+- `_on_tool_selected`/`_run`에 `sev_file` 분기 추가: 파일 선택 콤보, 결산월 콤보(12/6/9월)·반기 등 중간결산 체크박스를 리스·감가상각 검증과 공유(`--fiscal-month`/`--interim-month` 그대로 재사용 — severance_schedule.py의 CLI 인자가 depreciation_schedule.py와 동일 구조라 로직 그대로 복붙 가능했음).
+- `py_compile`로 문법 확인 + `detect_sev_input_files()` 단독 호출해 blue sky가 이미 만들어둔 `severance_대일개발_information_fy2025.xlsx` 인식되는 것 확인.
+
+**변경 파일**:
+- `launcher.py`
+
+**미해결 이슈**: 없음
+
+**다음 할 일**:
+1. blue sky가 런처앱 실행 → 퇴직급여충당부채 검증 메뉴로 대일개발 fy2025 파일 1차 실행 결과 확인
+2. (이월) K-IFRS 계리보고서 검증앱 착수 여부
+
+---
