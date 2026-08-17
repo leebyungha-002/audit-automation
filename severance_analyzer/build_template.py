@@ -56,6 +56,15 @@ BASIS_ROWS = [
     "전기말 회사계상 퇴직급여충당부채(판관비분)",
     "당기말 회사계상 퇴직급여충당부채(제조원가분)",
     "당기말 회사계상 퇴직급여충당부채(판관비분)",
+    "당기 퇴직급여충당부채 차변(당기지급액, 분개장 기준)",
+]
+
+# '당기퇴사자' 시트 — 선택 입력. 퇴사자 실제 지급액을 알면 전기말 추계액과 인별 대사까지 가능하다.
+LEAVER_COLUMNS = [("퇴사자 지급정보", "사번", 14), ("퇴사자 지급정보", "성명", 14),
+                   ("퇴사자 지급정보", "실제지급액(원)", 16), ("퇴사자 지급정보", "비고", 30)]
+LEAVER_EXAMPLES = [
+    ["EMP-0999", "예시)최과장", 38500000,
+     "예시) 전기정보에 있는 사번으로 매칭 — 전기말 추계액과 자동 대사됨. 사번 없으면 성명으로 매칭."],
 ]
 
 # 예시행: 기존재직자(제조/판관, 상여금 있는 경우 포함), 당기 신규입사자, 중간정산 이력자, 임원(배수 적용)
@@ -198,6 +207,31 @@ def build():
     build_sheet(ws_current, EXAMPLES_CURRENT)
     build_sheet(ws_prior, EXAMPLES_PRIOR)
 
+    # 당기퇴사자 시트 — 선택 입력. 채우면 퇴사자별 전기말 추계액 vs 실제지급액 대사가 요약표에 추가된다.
+    ws_leaver = wb.create_sheet("당기퇴사자")
+    ws_leaver.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(LEAVER_COLUMNS))
+    c1 = ws_leaver.cell(row=1, column=1, value=LEAVER_COLUMNS[0][0])
+    c1.fill = group_fill
+    c1.font = group_font
+    c1.alignment = center
+    c1.border = border
+    for i, (_, name, width) in enumerate(LEAVER_COLUMNS, start=1):
+        c2 = ws_leaver.cell(row=2, column=i, value=name)
+        c2.fill = header_fill
+        c2.font = header_font
+        c2.alignment = center
+        c2.border = border
+        ws_leaver.column_dimensions[get_column_letter(i)].width = width
+    ws_leaver.row_dimensions[1].height = 20
+    ws_leaver.row_dimensions[2].height = 32
+    ws_leaver.freeze_panes = "A3"
+    for r, row in enumerate(LEAVER_EXAMPLES, start=3):
+        for c, val in enumerate(row, start=1):
+            cell = ws_leaver.cell(row=r, column=c, value=val)
+            cell.border = border
+            if LEAVER_COLUMNS[c - 1][1] == "실제지급액(원)":
+                cell.number_format = "#,##0"
+
     # 기준정보 시트 — 전기말/당기말 회사계상 충당부채(대사용)
     basis = wb.create_sheet("기준정보")
     basis.column_dimensions["A"].width = 42
@@ -218,6 +252,8 @@ def build():
         "전기말 재무제표(또는 결산정산표)상 실제 계상액 — 위와 동일",
         "당기말 재무제표상 회사 계상액 — 앱의 인원별 재계산 합계와 비교해 차이(대사)를 표시함",
         "당기말 재무제표상 회사 계상액",
+        "분개장분석(journal_analyzer)에서 '퇴직급여충당부채' 계정의 당기 차변(퇴직금 지급으로 인한 감소) 합계를 뽑아 입력. "
+        "전기말(회사계상)+당기 퇴직급여(재계산)-이 값이 당기말(회사계상)과 맞는지 요약표에서 자동 검증(T계정 tie-out). 모르면 비워둬도 됨(해당 검증만 생략).",
     ]
     for i, (label, note) in enumerate(zip(BASIS_ROWS, notes), start=header_row + 1):
         c1 = basis.cell(row=i, column=1, value=label)
@@ -287,15 +323,24 @@ def build():
         "   퇴사자 = '전기정보'에는 있으나 '당기정보'에는 없는 사번(또는 성명).",
         "   '전기정보' 시트를 비워두면(또는 시트 자체를 지우면) 인원변동 명단만 생략되고 당기 계산은 정상 진행됩니다.",
         "",
-        "5. '기준정보' 시트 — 전기말/당기말 회사계상 퇴직급여충당부채(제조원가분/판관비분) 4칸만 입력합니다.",
-        "   네 값 모두 인별 재계산액과의 대사(비교)용 참고값일 뿐, 재계산 자체(전기말·당기말·당기 퇴직급여)에는",
-        "   반영되지 않습니다. 모르면 비워둬도 앱 실행에는 문제 없습니다(해당 대사만 생략됨).",
+        "5. '당기퇴사자' 시트 (선택) — 퇴사자의 실제 지급액을 알면 채워서 인별 대사를 추가로 받을 수 있습니다.",
+        "   '사번'(없으면 성명) + '실제지급액(원)'만 입력하면, 앱이 '전기정보' 시트에서 같은 사번(성명)을 찾아",
+        "   그 사람의 전기말 추계액과 자동으로 비교(대사)해 요약표에 표시합니다. 사업장/부서/직급 등은",
+        "   '전기정보'에서 그대로 가져오므로 다시 입력할 필요가 없습니다. 모르는 퇴사자는 행을 비워두면 됩니다",
+        "   (해당 인원만 대사가 생략되고, 나머지 재계산·집계에는 영향이 없습니다).",
         "",
-        "6. 결산기준일은 이 파일에 입력하지 않습니다. 실행 시 파일명의 'fy<연도>'와 --fiscal-month 옵션(기본 12월)으로",
+        "6. '기준정보' 시트 — 전기말/당기말 회사계상 퇴직급여충당부채(제조원가분/판관비분) 4칸과,",
+        "   당기 퇴직급여충당부채 차변(당기지급액) 1칸을 입력합니다. 다섯 값 모두 인별 재계산액과의 대사(비교)용",
+        "   참고값일 뿐, 재계산 자체(전기말·당기말·당기 퇴직급여)에는 반영되지 않습니다.",
+        "   '당기지급액'은 journal_analyzer(분개장분석) 메뉴에서 '퇴직급여충당부채' 계정의 당기 차변 합계를",
+        "   뽑아 입력하면 됩니다 — 전기말(회사계상)+당기 퇴직급여(재계산)-당기지급액이 당기말(회사계상)과",
+        "   맞는지 요약표에서 자동으로 T계정 검증(tie-out)합니다. 모르면 비워둬도 됩니다(해당 검증만 생략).",
+        "",
+        "7. 결산기준일은 이 파일에 입력하지 않습니다. 실행 시 파일명의 'fy<연도>'와 --fiscal-month 옵션(기본 12월)으로",
         "   depreciation_analyzer/lease_analyzer와 동일한 규칙으로 당기말·전기말 결산기준일을 자동 계산합니다.",
         "   예) --fiscal-month 12 --fiscal-year 2026 → 당기말 2026-12-31, 전기말 2025-12-31.",
         "",
-        "7. 파일명 규칙: 이 템플릿을 복사해 'severance_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
+        "8. 파일명 규칙: 이 템플릿을 복사해 'severance_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
         "   예) severance_kyungnam_information_fy2026.xlsx (전기·당기 데이터가 모두 이 한 파일 안에 들어갑니다).",
     ]
     for i, line in enumerate(lines, start=1):
