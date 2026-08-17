@@ -12,7 +12,8 @@ input_data/severance_<company>_information_fy<year>.xlsx 를 읽어
 퇴직금 추계액 산식(근로기준법 간편 산식):
   급여기준액 = 월평균급여 + 상여금(연간) × 3 / 12   (상여금 최근 3개월분 상당액을 월평균급여에 가산)
   1일평균임금 = 급여기준액 × 12 / 365
-  퇴직금 추계액 = 1일평균임금 × 30일 × (재직일수 / 365)
+  퇴직금 추계액 = 1일평균임금 × 30일 × (재직일수 / 365) × 배수
+  배수: 부서명이 정확히 '임원'인 인원에만 적용(임원퇴직금지급규정 등에 따른 배수, 일반 직원은 항상 1배)
   재직일수 = 당기 결산기준일 − 기산일
   기산일 = 중간정산일(퇴직금 중간정산 이력이 있는 경우) 있으면 그 날짜, 없으면 입사일
     ※ 중간정산은 재직 상태를 유지한 채 근속기간만 새로 기산되는 것이므로(퇴사가 아님),
@@ -171,11 +172,15 @@ def load_basis(path: str) -> dict:
 
 # ── 인원별 재직여부 판정 및 퇴직금 추계액 계산 ────────────────────────────────
 
+EXECUTIVE_DEPT = "임원"  # 부서명이 정확히 이 값일 때만 배수를 적용한다.
+
+
 def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) -> dict:
     입사일 = _safe_date(emp.get("입사일"))
     중간정산일 = _safe_date(emp.get("중간정산일"))
     월평균급여 = _safe_float(emp.get("월평균급여(원)"))
     연간상여금 = _safe_float(emp.get("상여금(연간, 원)"))
+    부서 = str(emp.get("부서") or "").strip()
     # 상여금은 연 1회 등 정기 지급을 가정, 근로기준법상 평균임금 산정 관행대로
     # "최근 3개월분 상당액(연간상여금×3/12)"만 월평균급여에 가산한다.
     급여기준액 = 월평균급여 + 연간상여금 * 3 / 12
@@ -183,12 +188,26 @@ def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) ->
     result = {
         "전기재직여부": False, "당기재직여부": False,
         "재직일수": None, "1일평균임금": None, "퇴직금추계액": 0.0,
-        "기산일": None, "급여기준액": 급여기준액,
+        "기산일": None, "급여기준액": 급여기준액, "배수": 1.0, "임원배수적용": False,
         "warning": None,
     }
 
+    # 임원 퇴직금 규정상 배수(예: 정관·임원퇴직금지급규정상 2배, 3배 등)는
+    # 부서명이 정확히 '임원'인 인원에만 적용한다(일반 직원은 입력값이 있어도 무시).
+    if 부서 == EXECUTIVE_DEPT:
+        배수_raw = emp.get("배수(임원)")
+        배수 = _safe_float(배수_raw, default=1.0)
+        if 배수_raw in (None, "") :
+            result["warning"] = "임원 배수 미입력 — 1배로 계산됨"
+        elif 배수 <= 0:
+            result["warning"] = "임원 배수 값 오류(0 이하) — 1배로 계산됨"
+            배수 = 1.0
+        result["배수"] = 배수
+        result["임원배수적용"] = True
+
     if 입사일 is None:
-        result["warning"] = "입사일 미입력 — 재직여부/추계액 계산 불가"
+        w = "입사일 미입력 — 재직여부/추계액 계산 불가"
+        result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
         return result
 
     # 중간정산은 재직 상태를 유지한 채 근속기간만 재기산되는 것이므로(퇴사가 아님),
@@ -198,12 +217,15 @@ def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) ->
 
     기산일 = 입사일
     if 중간정산일 is not None:
+        w = None
         if 중간정산일 < 입사일:
-            result["warning"] = "중간정산일이 입사일보다 이전 — 확인 필요(입사일 기준으로 계산)"
+            w = "중간정산일이 입사일보다 이전 — 확인 필요(입사일 기준으로 계산)"
         elif 중간정산일 > 당기결산일:
-            result["warning"] = "중간정산일이 결산기준일 이후 — 확인 필요(입사일 기준으로 계산)"
+            w = "중간정산일이 결산기준일 이후 — 확인 필요(입사일 기준으로 계산)"
         else:
             기산일 = 중간정산일
+        if w:
+            result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
 
     if result["당기재직여부"]:
         재직일수 = (당기결산일 - 기산일).days
@@ -211,12 +233,13 @@ def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) ->
         result["기산일"] = 기산일
         일평균임금 = 급여기준액 * 12 / 365
         result["1일평균임금"] = 일평균임금
-        result["퇴직금추계액"] = 일평균임금 * 30 * (재직일수 / 365)
+        result["퇴직금추계액"] = 일평균임금 * 30 * (재직일수 / 365) * result["배수"]
         if 급여기준액 <= 0:
             w = "월평균급여(상여금 포함) 미입력 — 추계액 0으로 계산됨"
             result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
     elif 입사일 > 당기결산일:
-        result["warning"] = "입사일이 결산기준일 이후 — 당기 재직 대상 아님(확인 필요)"
+        w = "입사일이 결산기준일 이후 — 당기 재직 대상 아님(확인 필요)"
+        result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
 
     return result
 
@@ -240,6 +263,8 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
             tags.append("당기 신규입사")
         if 중간정산반영:
             tags.append(f"퇴직금 중간정산 이력 있음(재직일수는 {중간정산일_raw}부터 기산)")
+        if r["임원배수적용"]:
+            tags.append(f"임원 배수 {r['배수']:g}배 적용")
         if tags:
             비고 = f"{비고} / {' / '.join(tags)}".strip(" /")
 
@@ -255,6 +280,7 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
             "월평균급여(원)": _safe_float(e.get("월평균급여(원)")),
             "상여금(연간, 원)": _safe_float(e.get("상여금(연간, 원)")),
             "월평균급여(상여금가산후)(계산)": r["급여기준액"],
+            "배수(임원)": r["배수"] if r["임원배수적용"] else None,
             "전기재직여부": r["전기재직여부"],
             "당기재직여부": r["당기재직여부"],
             "재직일수(당기말기준)": r["재직일수"],
