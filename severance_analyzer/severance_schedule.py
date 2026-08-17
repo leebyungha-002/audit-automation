@@ -4,14 +4,18 @@ input_data/severance_<company>_information_fy<year>.xlsx 를 읽어
 결산기준일 현재 재직 중인 임직원별 퇴직금 추계액을 재계산하고,
 전기말/당기말 회사계상 충당부채와 대사하는 output/severance_schedule_<company>_<fy>.xlsx 를 생성한다.
 
-핵심 설계: depreciation_analyzer/lease_analyzer와 동일하게 "전기말 잔액(회사계상값)은 그대로 신뢰하고,
-당기말 잔액만 인원별로 재계산"하는 방식을 따른다. 결산기준일은 입력파일에 직접 적지 않고
+핵심 설계: depreciation_analyzer와 달리 기초(전기말) 잔액을 신뢰하지 않는다. 당기말 퇴충잔액은
+결산기준일 현재 재직 중인 임직원의 재직일수·급여만으로 전액 독립 재계산하며, 회사계상 전기말/당기말
+잔액은 오직 대사(비교)용 참고값으로만 쓰인다. 결산기준일은 입력파일에 직접 적지 않고
 파일명(fy<연도>)과 --fiscal-month 로 depreciation_analyzer와 동일한 규칙으로 계산한다.
 
 퇴직금 추계액 산식(근로기준법 간편 산식):
   1일평균임금 = 월평균급여 × 12 / 365
   퇴직금 추계액 = 1일평균임금 × 30일 × (재직일수 / 365)
-  재직일수 = 당기 결산기준일 − 입사일
+  재직일수 = 당기 결산기준일 − 기산일
+  기산일 = 중간정산일(퇴직금 중간정산 이력이 있는 경우) 있으면 그 날짜, 없으면 입사일
+    ※ 중간정산은 재직 상태를 유지한 채 근속기간만 새로 기산되는 것이므로(퇴사가 아님),
+      전기/당기 재직여부 판정에는 영향을 주지 않고 재직일수 계산 기산일에만 반영한다.
 
 실행 예:
     python severance_schedule.py kyungnam --fiscal-month 12
@@ -168,12 +172,13 @@ def load_basis(path: str) -> dict:
 
 def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) -> dict:
     입사일 = _safe_date(emp.get("입사일"))
-    퇴사일 = _safe_date(emp.get("중도퇴사일"))
+    중간정산일 = _safe_date(emp.get("중간정산일"))
     월평균급여 = _safe_float(emp.get("월평균급여(원)"))
 
     result = {
         "전기재직여부": False, "당기재직여부": False,
         "재직일수": None, "1일평균임금": None, "퇴직금추계액": 0.0,
+        "기산일": None,
         "warning": None,
     }
 
@@ -181,17 +186,30 @@ def compute_employee(emp: dict, 당기결산일: date, 전기결산일: date) ->
         result["warning"] = "입사일 미입력 — 재직여부/추계액 계산 불가"
         return result
 
-    result["전기재직여부"] = 입사일 <= 전기결산일 and (퇴사일 is None or 퇴사일 > 전기결산일)
-    result["당기재직여부"] = 입사일 <= 당기결산일 and (퇴사일 is None or 퇴사일 > 당기결산일)
+    # 중간정산은 재직 상태를 유지한 채 근속기간만 재기산되는 것이므로(퇴사가 아님),
+    # 재직여부 판정은 순수하게 입사일만 기준으로 한다.
+    result["전기재직여부"] = 입사일 <= 전기결산일
+    result["당기재직여부"] = 입사일 <= 당기결산일
+
+    기산일 = 입사일
+    if 중간정산일 is not None:
+        if 중간정산일 < 입사일:
+            result["warning"] = "중간정산일이 입사일보다 이전 — 확인 필요(입사일 기준으로 계산)"
+        elif 중간정산일 > 당기결산일:
+            result["warning"] = "중간정산일이 결산기준일 이후 — 확인 필요(입사일 기준으로 계산)"
+        else:
+            기산일 = 중간정산일
 
     if result["당기재직여부"]:
-        재직일수 = (당기결산일 - 입사일).days
+        재직일수 = (당기결산일 - 기산일).days
         result["재직일수"] = 재직일수
+        result["기산일"] = 기산일
         일평균임금 = 월평균급여 * 12 / 365
         result["1일평균임금"] = 일평균임금
         result["퇴직금추계액"] = 일평균임금 * 30 * (재직일수 / 365)
         if 월평균급여 <= 0:
-            result["warning"] = "월평균급여 미입력 — 추계액 0으로 계산됨"
+            w = "월평균급여 미입력 — 추계액 0으로 계산됨"
+            result["warning"] = f"{result['warning']} / {w}".strip(" /") if result["warning"] else w
     elif 입사일 > 당기결산일:
         result["warning"] = "입사일이 결산기준일 이후 — 당기 재직 대상 아님(확인 필요)"
 
@@ -206,7 +224,8 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
         r = compute_employee(e, 당기결산일, 전기결산일)
         원가구분 = str(e.get("원가구분(제조원가/판관비)") or "").strip() or "(미분류)"
         신규입사 = r["당기재직여부"] and not r["전기재직여부"]
-        퇴사 = r["전기재직여부"] and not r["당기재직여부"]
+        중간정산일_raw = _safe_date(e.get("중간정산일"))
+        중간정산반영 = r["기산일"] is not None and 중간정산일_raw is not None and r["기산일"] == 중간정산일_raw
 
         비고 = e.get("비고") or ""
         tags = []
@@ -214,8 +233,8 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
             tags.append(r["warning"])
         if 신규입사:
             tags.append("당기 신규입사")
-        if 퇴사:
-            tags.append("당기 중 퇴사")
+        if 중간정산반영:
+            tags.append(f"퇴직금 중간정산 이력 있음(재직일수는 {중간정산일_raw}부터 기산)")
         if tags:
             비고 = f"{비고} / {' / '.join(tags)}".strip(" /")
 
@@ -227,7 +246,7 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
             "직급": e.get("직급"),
             "원가구분": 원가구분,
             "입사일": e.get("입사일"),
-            "중도퇴사일": e.get("중도퇴사일"),
+            "중간정산일": e.get("중간정산일"),
             "월평균급여(원)": _safe_float(e.get("월평균급여(원)")),
             "전기재직여부": r["전기재직여부"],
             "당기재직여부": r["당기재직여부"],
@@ -235,7 +254,7 @@ def build_schedule_table(employees: list, 당기결산일: date, 전기결산일
             "1일평균임금(계산)": r["1일평균임금"],
             "퇴직금추계액(계산)": r["퇴직금추계액"],
             "당기신규입사": 신규입사,
-            "당기중퇴사": 퇴사,
+            "중간정산반영": 중간정산반영,
             "비고": 비고,
         })
 
@@ -300,7 +319,12 @@ def build_summary(df: pd.DataFrame, basis: dict) -> dict:
     }
 
     신규입사자 = d[d["당기신규입사"]][["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일"]].copy()
-    퇴사자 = d[d["당기중퇴사"]][["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중도퇴사일"]].copy()
+    # 현재 '인원정보'에는 실제 퇴사일 필드가 없다(중간정산일은 재직 유지 상태에서의 근속 재기산일일 뿐 퇴사가 아님).
+    # 전기재직여부/당기재직여부가 모두 입사일만으로 판정되므로 이 조건은 항상 비어 있다 —
+    # 실제 퇴사자 추적이 필요해지면 별도의 '퇴사일' 필드를 추가해 이 조건을 교체할 것.
+    퇴사자 = d[d["전기재직여부"] & ~d["당기재직여부"]][
+        ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
+    ].copy()
 
     headcount = {
         "전기말인원수": int(len(전기재직)),
@@ -467,9 +491,12 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
     ws.cell(row=r, column=1).font = section_font
     for c in range(2, 9):
         ws.cell(row=r, column=c).fill = section_fill
-    r += 2
+    r += 1
+    ws.cell(row=r, column=1,
+            value="※ 현재 '인원정보'에는 실제 퇴사일 필드가 없어(중간정산일은 재직 유지 상태의 근속 재기산일이며 퇴사가 아님) 이 명단은 항상 비어 있습니다. 실제 퇴사자 추적이 필요하면 별도 '퇴사일' 필드 추가를 요청하세요.").font = Font(italic=True, color="808080", size=9)
+    r += 1
 
-    left_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중도퇴사일"]
+    left_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
     for i, h in enumerate(left_headers, start=1):
         cell = ws.cell(row=r, column=i, value=h)
         cell.fill = header_fill
@@ -489,7 +516,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                 val = row[h]
                 cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
                 cell.border = border
-                if h in ("입사일", "중도퇴사일") and val is not None and not pd.isna(val):
+                if h in ("입사일", "중간정산일") and val is not None and not pd.isna(val):
                     cell.number_format = "yyyy-mm-dd"
             r += 1
 
@@ -497,7 +524,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
 # ── 엑셀 저장 ────────────────────────────────────────────────────────────────
 
 MONEY_COLS = ["월평균급여(원)", "1일평균임금(계산)", "퇴직금추계액(계산)"]
-DATE_COLS = ["입사일", "중도퇴사일"]
+DATE_COLS = ["입사일", "중간정산일"]
 
 
 def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str,
@@ -514,7 +541,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
     header_font = Font(bold=True, color="FFFFFF")
     subtotal_fill = PatternFill("solid", fgColor="D9E1F2")
     total_fill = PatternFill("solid", fgColor="9DC3E6")
-    left_fill = PatternFill("solid", fgColor="FCE4D6")
+    settle_fill = PatternFill("solid", fgColor="FCE4D6")
     bold = Font(bold=True)
     thin = Side(style="thin", color="B7B7B7")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -548,7 +575,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
 
     for cost, gdf in df.groupby("원가구분", sort=False):
         for _, row in gdf.iterrows():
-            is_left = bool(row.get("당기중퇴사"))
+            is_settled = bool(row.get("중간정산반영"))
             for i, h in enumerate(headers, start=1):
                 val = row[h]
                 cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) else val))
@@ -557,11 +584,11 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                     cell.number_format = "yyyy-mm-dd"
                 if h in MONEY_COLS:
                     cell.number_format = "#,##0"
-                if h in ("전기재직여부", "당기재직여부", "당기신규입사", "당기중퇴사"):
+                if h in ("전기재직여부", "당기재직여부", "당기신규입사", "중간정산반영"):
                     cell.value = "O" if val is True else None
                     cell.alignment = center
-                if is_left and h not in ("비고",):
-                    cell.fill = left_fill
+                if is_settled and h not in ("비고",):
+                    cell.fill = settle_fill
             for c in MONEY_COLS:
                 v = row.get(c)
                 if v is not None and not pd.isna(v):
