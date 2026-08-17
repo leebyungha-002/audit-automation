@@ -1291,7 +1291,24 @@
 **미해결 이슈**: 없음
 
 **다음 할 일**:
-1. blue sky가 새 구조('당기인원정보'/'전기인원정보' 두 시트)로 대일개발 등 실제 회사 데이터 재입력 → 1차 실행 결과 확인
+1. blue sky가 새 구조('당기정보'/'전기정보' 두 시트)로 대일개발 등 실제 회사 데이터 재입력 → 1차 실행 결과 확인
+2. (이월) 런처앱 메뉴 추가 여부, K-IFRS 계리보고서 검증앱 착수 여부
+
+---
+
+## 2026-08-17 (8차) — 퇴직급여충당부채앱 시트명 단순화
+
+**완료 작업**: blue sky 요청으로 시트명 '당기인원정보'/'전기인원정보' → '당기정보'/'전기정보'로 단순화(로직 변화 없는 리네이밍). `severance_schedule.py`의 `CURRENT_SHEET`/`PRIOR_SHEET` 상수와 `build_template.py`의 시트 생성·안내문구·예시 비고 문구 전부 갱신 후 testco 예시로 재실행해 정상 동작 확인.
+
+**변경 파일**:
+- `severance_analyzer/severance_schedule.py`
+- `severance_analyzer/build_template.py`
+- `severance_analyzer/input_data/severance_template.xlsx` (재생성)
+
+**미해결 이슈**: 없음
+
+**다음 할 일**:
+1. blue sky가 새 구조('당기정보'/'전기정보' 두 시트)로 대일개발 등 실제 회사 데이터 재입력 → 1차 실행 결과 확인
 2. (이월) 런처앱 메뉴 추가 여부, K-IFRS 계리보고서 검증앱 착수 여부
 
 ---
