@@ -337,24 +337,42 @@ def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_r
     ).reset_index(drop=True)
 
 
-def _build_group_summary(d: pd.DataFrame, group_col: str) -> list:
-    """사업장별/부서별 요약표. 해당 그룹 컬럼에 실제 값이 하나도 없으면 빈 리스트를 반환해
-    (요약표에서) 그 섹션 자체를 생략하도록 한다."""
-    if d.empty or group_col not in d.columns:
-        return []
-    d2 = d.copy()
-    d2[group_col] = d2[group_col].astype(str).str.strip()
-    d2 = d2[d2[group_col] != ""]
-    if d2.empty:
+def _build_group_summary(d: pd.DataFrame, 전기_calc_df: pd.DataFrame, group_col: str) -> list:
+    """사업장별/부서별 요약표. 당기말은 당기_df(d, 당기 재직자)에서, 전기말은 전기_calc_df
+    (전기 결산기준일 현재 재직 중이던 전체 인원 — 당기 중 퇴사한 사람 포함)에서 각각 집계한다.
+    두 시점의 모집단이 다르므로 반드시 서로 다른 소스에서 집계해야 한다(같은 d에서 전기말까지
+    뽑으면 당기 중 퇴사자의 전기말 잔액이 누락됨). 그룹 컬럼에 실제 값이 하나도 없으면 빈 리스트를
+    반환해 요약표에서 그 섹션 자체를 생략하도록 한다."""
+    당기_by_group: dict = {}
+    if not d.empty and group_col in d.columns:
+        d2 = d.copy()
+        d2[group_col] = d2[group_col].astype(str).str.strip()
+        for g, gdf in d2[d2[group_col] != ""].groupby(group_col, sort=False):
+            당기_by_group[g] = {
+                "인원수": int(len(gdf)),
+                "당기말": float(gdf["당기말 퇴직금추계액(계산)"].sum()),
+            }
+
+    전기_by_group: dict = {}
+    if not 전기_calc_df.empty and group_col in 전기_calc_df.columns:
+        p2 = 전기_calc_df.copy()
+        p2[group_col] = p2[group_col].astype(str).str.strip()
+        for g, gdf in p2[p2[group_col] != ""].groupby(group_col, sort=False):
+            전기_by_group[g] = float(gdf["전기말 퇴직금추계액(계산)"].sum())
+
+    all_groups = set(당기_by_group) | set(전기_by_group)
+    if not all_groups:
         return []
     rows = []
-    for g, gdf in d2.groupby(group_col, sort=False):
+    for g in sorted(all_groups):
+        당기말 = 당기_by_group.get(g, {}).get("당기말", 0.0)
+        전기말 = 전기_by_group.get(g, 0.0)
         rows.append({
             group_col: g,
-            "인원수": int(len(gdf)),
-            "전기말(재계산)": float(gdf["전기말 퇴직금추계액(계산)"].sum()),
-            "당기말(재계산)": float(gdf["당기말 퇴직금추계액(계산)"].sum()),
-            "당기 퇴직급여(재계산)": float(gdf["당기 퇴직급여(계산)"].sum()),
+            "당기인원수": 당기_by_group.get(g, {}).get("인원수", 0),
+            "전기말(재계산)": 전기말,
+            "당기말(재계산)": 당기말,
+            "당기 퇴직급여(재계산)": 당기말 - 전기말,
         })
     return rows
 
@@ -517,6 +535,22 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
 
     d = 당기_df.copy()
 
+    # 전기말(재계산)은 반드시 '전기 결산기준일 현재 재직 중이던 전체 인원'(전기_by_key) 기준으로 집계해야 한다.
+    # d(당기_df)는 당기말 재직자만 담고 있어 그 안의 '전기말 퇴직금추계액(계산)' 컬럼만 합산하면
+    # 당기 중 퇴사한 사람의 전기말 잔액이 통째로 빠진다 — 이걸 그대로 쓰면 안 됨(전기말 잔액 과소계상 버그).
+    전기_calc_rows = [
+        {
+            "사업장": e.get("사업장") or "",
+            "부서": e.get("부서") or "",
+            "원가구분": _cost_type(e),
+            "전기말 퇴직금추계액(계산)": 전기말_balances.get(k, 0.0),
+        }
+        for k, e in 전기_by_key.items()
+    ]
+    전기_calc_df = pd.DataFrame(전기_calc_rows) if 전기_calc_rows else pd.DataFrame(
+        columns=["사업장", "부서", "원가구분", "전기말 퇴직금추계액(계산)"]
+    )
+
     by_cost = []
     총_전기재계산 = 0.0
     총_당기재계산 = 0.0
@@ -524,9 +558,9 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
     총_당기회사계상 = None
     for cost in COST_TYPES:
         cdf = d[d["원가구분"] == cost] if not d.empty else d
-        전기재계산 = float(cdf["전기말 퇴직금추계액(계산)"].sum()) if not cdf.empty else 0.0
+        전기_cdf = 전기_calc_df[전기_calc_df["원가구분"] == cost] if not 전기_calc_df.empty else 전기_calc_df
+        전기재계산 = float(전기_cdf["전기말 퇴직금추계액(계산)"].sum()) if not 전기_cdf.empty else 0.0
         당기재계산 = float(cdf["당기말 퇴직금추계액(계산)"].sum()) if not cdf.empty else 0.0
-        당기퇴직급여 = float(cdf["당기 퇴직급여(계산)"].sum()) if not cdf.empty else 0.0
         전기입력 = basis.get(BASIS_KEYS[cost]["전기"])
         당기회사계상 = basis.get(BASIS_KEYS[cost]["당기"])
         by_cost.append({
@@ -535,7 +569,7 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
             "전기말(회사계상)": 전기입력,
             "당기말(재계산)": 당기재계산,
             "당기말(회사계상)": 당기회사계상,
-            "당기 퇴직급여(재계산, 인별차이합계)": 당기퇴직급여,
+            "당기 퇴직급여(재계산, 순증감)": 당기재계산 - 전기재계산,
             "대사차이(재계산-회사계상)": None if 당기회사계상 is None else 당기재계산 - 당기회사계상,
         })
         총_전기재계산 += 전기재계산
@@ -545,18 +579,18 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         if 당기회사계상 is not None:
             총_당기회사계상 = (총_당기회사계상 or 0.0) + 당기회사계상
 
-    미분류 = d[~d["원가구분"].isin(COST_TYPES)] if not d.empty else d
-    if not 미분류.empty:
-        미분류_전기재계산 = float(미분류["전기말 퇴직금추계액(계산)"].sum())
-        미분류_당기재계산 = float(미분류["당기말 퇴직금추계액(계산)"].sum())
-        미분류_당기퇴직급여 = float(미분류["당기 퇴직급여(계산)"].sum())
+    미분류_당기 = d[~d["원가구분"].isin(COST_TYPES)] if not d.empty else d
+    미분류_전기 = 전기_calc_df[~전기_calc_df["원가구분"].isin(COST_TYPES)] if not 전기_calc_df.empty else 전기_calc_df
+    if not 미분류_당기.empty or not 미분류_전기.empty:
+        미분류_전기재계산 = float(미분류_전기["전기말 퇴직금추계액(계산)"].sum()) if not 미분류_전기.empty else 0.0
+        미분류_당기재계산 = float(미분류_당기["당기말 퇴직금추계액(계산)"].sum()) if not 미분류_당기.empty else 0.0
         by_cost.append({
             "구분": "(미분류)",
             "전기말(재계산)": 미분류_전기재계산,
             "전기말(회사계상)": None,
             "당기말(재계산)": 미분류_당기재계산,
             "당기말(회사계상)": None,
-            "당기 퇴직급여(재계산, 인별차이합계)": 미분류_당기퇴직급여,
+            "당기 퇴직급여(재계산, 순증감)": 미분류_당기재계산 - 미분류_전기재계산,
             "대사차이(재계산-회사계상)": None,
         })
         총_전기재계산 += 미분류_전기재계산
@@ -568,7 +602,7 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         "전기말(회사계상)": 총_전기입력,
         "당기말(재계산)": 총_당기재계산,
         "당기말(회사계상)": 총_당기회사계상,
-        "당기 퇴직급여(재계산, 인별차이합계)": 총_당기재계산 - 총_전기재계산,
+        "당기 퇴직급여(재계산, 순증감)": 총_당기재계산 - 총_전기재계산,
         "대사차이(재계산-회사계상)": None if 총_당기회사계상 is None else 총_당기재계산 - 총_당기회사계상,
     }
 
@@ -592,18 +626,18 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         })
 
     # 사업장별/부서별 요약(해당 컬럼에 실제 값이 있을 때만 생성 — 없으면 write_summary_sheet에서 섹션 생략)
-    site_summary = _build_group_summary(d, "사업장")
-    dept_summary = _build_group_summary(d, "부서")
+    site_summary = _build_group_summary(d, 전기_calc_df, "사업장")
+    dept_summary = _build_group_summary(d, 전기_calc_df, "부서")
 
     # T계정 검증(tie-out): 전기말(회사계상) + 당기 퇴직급여(재계산) - 당기지급액(분개장, 입력) =? 당기말(회사계상)
     # 전액 회사가 실제 보고/기표한 값(전기말·당기말·지급액)에 우리 재계산 전입액만 얹어보는 교차검증.
     당기지급액 = basis.get(DEBIT_BASIS_LABEL)
     tie_out = None
     if 총_전기입력 is not None and 당기지급액 is not None and 총_당기회사계상 is not None:
-        계산상기말 = 총_전기입력 + total_row["당기 퇴직급여(재계산, 인별차이합계)"] - 당기지급액
+        계산상기말 = 총_전기입력 + total_row["당기 퇴직급여(재계산, 순증감)"] - 당기지급액
         tie_out = {
             "전기말(회사계상)": 총_전기입력,
-            "당기 퇴직급여(재계산)": total_row["당기 퇴직급여(재계산, 인별차이합계)"],
+            "당기 퇴직급여(재계산)": total_row["당기 퇴직급여(재계산, 순증감)"],
             "당기지급액(분개장)": 당기지급액,
             "계산상 당기말": 계산상기말,
             "당기말(회사계상)": 총_당기회사계상,
@@ -687,7 +721,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
     r += 2
 
     cost_headers = ["구분", "전기말(재계산)", "전기말(회사계상)", "당기말(재계산)", "당기말(회사계상)",
-                     "당기 퇴직급여(재계산, 인별차이합계)", "대사차이(재계산-회사계상)"]
+                     "당기 퇴직급여(재계산, 순증감)", "대사차이(재계산-회사계상)"]
     for i, h in enumerate(cost_headers, start=1):
         cell = ws.cell(row=r, column=i, value=h)
         cell.fill = header_fill
@@ -701,7 +735,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         cell = ws.cell(row=r, column=1, value=row_data["구분"])
         cell.border = border
         vals = [row_data["전기말(재계산)"], row_data["전기말(회사계상)"], row_data["당기말(재계산)"],
-                row_data["당기말(회사계상)"], row_data["당기 퇴직급여(재계산, 인별차이합계)"],
+                row_data["당기말(회사계상)"], row_data["당기 퇴직급여(재계산, 순증감)"],
                 row_data["대사차이(재계산-회사계상)"]]
         if is_total:
             cell.font = bold
@@ -760,7 +794,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
             ws.cell(row=r, column=c).fill = section_fill
         r += 2
 
-        grp_headers = [group_col, "인원수", "전기말(재계산)", "당기말(재계산)", "당기 퇴직급여(재계산)"]
+        grp_headers = [group_col, "당기인원수", "전기말(재계산)", "당기말(재계산)", "당기 퇴직급여(재계산)"]
         for i, h in enumerate(grp_headers, start=1):
             cell = ws.cell(row=r, column=i, value=h)
             cell.fill = header_fill
@@ -773,13 +807,13 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         for row_data in rows_data:
             cell = ws.cell(row=r, column=1, value=row_data[group_col])
             cell.border = border
-            vals = [row_data["인원수"], row_data["전기말(재계산)"], row_data["당기말(재계산)"], row_data["당기 퇴직급여(재계산)"]]
+            vals = [row_data["당기인원수"], row_data["전기말(재계산)"], row_data["당기말(재계산)"], row_data["당기 퇴직급여(재계산)"]]
             for i, v in enumerate(vals, start=2):
                 cell = ws.cell(row=r, column=i, value=v)
                 cell.border = border
                 if i > 2:
                     cell.number_format = "#,##0"
-            총인원수 += row_data["인원수"]
+            총인원수 += row_data["당기인원수"]
             총전기말 += row_data["전기말(재계산)"]
             총당기말 += row_data["당기말(재계산)"]
             총퇴직급여 += row_data["당기 퇴직급여(재계산)"]
