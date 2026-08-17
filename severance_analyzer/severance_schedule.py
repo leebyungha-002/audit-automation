@@ -726,6 +726,9 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
 
     # 퇴사자 명단 대사 — 자동 산출(전기정보-당기정보 차이) vs '당기퇴사자' 시트(사용자 입력) 통합 비교표
     leaver_match_df = _build_leaver_match_df(전기_by_key, 당기_by_key, 퇴사자_recs, leaver_payments, 전기결산일)
+    # 인원 변동 요약 표 아래에 함께 보여줄 두 명단의 인원수(leaver_match_df 기준 — 두 컬럼 각각 값이 채워진 행 수)
+    headcount["전기정보있으나당기없음인원수"] = int((leaver_match_df["전기정보 있으나 당기정보 없음"] != "").sum()) if not leaver_match_df.empty else 0
+    headcount["실제퇴사자인원수"] = int((leaver_match_df["실제 퇴사자"] != "").sum()) if not leaver_match_df.empty else 0
 
     # 퇴사자 금액차이 분석 — '당기퇴사자' 시트에 입력된 경우만, 전기말 추계액과 실제지급액을 금액으로만 비교
     # (품질 경고성 비고는 위 leaver_match_df 쪽으로 일원화하고, 이 표는 순수 금액 비교로 남긴다)
@@ -945,7 +948,19 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         cell.border = border
         cell.font = bold
         cell.fill = total_fill
-    r += 3
+    r += 1
+
+    # '퇴사자 명단 대사' 표(아래 6번)의 두 명단 각각 인원수도 바로 아래 참고용으로 표시
+    for label, key in (
+        ("'전기정보 있으나 당기정보 없음' 인원수", "전기정보있으나당기없음인원수"),
+        ("'실제 퇴사자'(당기퇴사자 시트 입력) 인원수", "실제퇴사자인원수"),
+    ):
+        ws.cell(row=r, column=1, value=label).font = Font(italic=True)
+        cell = ws.cell(row=r, column=2, value=hc[key])
+        cell.border = border
+        cell.alignment = center
+        r += 1
+    r += 2
 
     # 3) 신규입사자 명단
     ws.cell(row=r, column=1,
