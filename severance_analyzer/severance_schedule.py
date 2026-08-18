@@ -1129,6 +1129,8 @@ DIFF_BASE_COLS = {"당기말 차이(계산-회사계상)": "당기말 회사계�
 PRIOR_MONEY_COLS = ["월평균급여(원)", "상여금(연간, 원)", "월평균급여(상여금가산후)(계산)", "1일평균임금(계산)",
                      "전기말 퇴직금추계액(계산)", "전기말 회사계상 퇴직금추계액(원)", "전기말 차이(계산-회사계상)"]
 PRIOR_DIFF_BASE_COLS = {"전기말 차이(계산-회사계상)": "전기말 회사계상 퇴직금추계액(원)"}
+# 인원별추계명세 V/W열(당기신규입사·중간정산반영) — O 표시된 인원수를 소계/총계 행에 합계로 기재
+COUNT_COLS = ["당기신규입사", "중간정산반영"]
 
 
 def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str,
@@ -1181,6 +1183,8 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
 
     totals = {c: 0.0 for c in MONEY_COLS}
     grand_totals = {c: 0.0 for c in MONEY_COLS}
+    counts = {c: 0 for c in COUNT_COLS}
+    grand_counts = {c: 0 for c in COUNT_COLS}
 
     for cost, gdf in df.groupby("원가구분", sort=False):
         for _, row in gdf.iterrows():
@@ -1205,6 +1209,10 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                 if v is not None and not pd.isna(v):
                     totals[c] += v
                     grand_totals[c] += v
+            for c in COUNT_COLS:
+                if row.get(c) is True:
+                    counts[c] += 1
+                    grand_counts[c] += 1
             r += 1
 
         ws.cell(row=r, column=1, value=f"[{cost} 소계]").font = bold
@@ -1216,8 +1224,13 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                 cell.value = totals[h]
                 cell.number_format = "#,##0"
                 cell.font = bold
+            elif h in COUNT_COLS and counts[h] > 0:
+                cell.value = f"{counts[h]}명"
+                cell.font = bold
+                cell.alignment = center
         r += 1
         totals = {c: 0.0 for c in MONEY_COLS}
+        counts = {c: 0 for c in COUNT_COLS}
 
     ws.cell(row=r, column=1, value="총계").font = Font(bold=True, size=11)
     for i, h in enumerate(headers, start=1):
@@ -1228,6 +1241,10 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
             cell.value = grand_totals[h]
             cell.number_format = "#,##0"
             cell.font = bold
+        elif h in COUNT_COLS and grand_counts[h] > 0:
+            cell.value = f"{grand_counts[h]}명"
+            cell.font = Font(bold=True, size=11)
+            cell.alignment = center
 
     # 전기인원별추계명세 — '전기정보' 인원별 전기말 재계산액과 '회사계상 퇴직금추계액(원)' 대사
     prior_df = build_prior_schedule_table(전기_employees, 전기결산일)
