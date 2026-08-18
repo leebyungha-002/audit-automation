@@ -1720,3 +1720,25 @@
 3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
 
 ---
+
+## 2026-08-18 (4차) — leave_analyzer 연차촉진 지급률을 당기/전기 별도 입력으로 분리
+
+**완료 작업**: 3차에서 넣은 전사 공통 단일 지급률을 blue sky가 지적("전기와 당기 사용율이 다를 수 있으니 각각 해당연도의 사용율을 적용할 수 있게 해줘") — 즉시 반영.
+- 기존 `PAYOUT_RATE_LABEL` 1개를 `PAYOUT_RATE_LABEL_CURRENT`("당기 연차사용촉진 반영 지급률(%)")/`PAYOUT_RATE_LABEL_PRIOR`("전기 …")로 분리, '기준정보' 시트에 두 행으로 입력받음.
+- `leave_payout_rate(basis)` → `leave_payout_rate(basis, label)`로 일반화(라벨을 인자로 받아 당기/전기 어느 쪽이든 재사용).
+- `main()`에서 `payout_rate_current`/`payout_rate_prior` 각각 계산 — 당기 지급률은 `build_schedule_table`(당기표)에, 전기 지급률은 `compute_prior_balances`(당기표의 '전기말' 컬럼용)와 `build_prior_schedule_table`(전기인원별추계명세 시트)에 각각 정확히 분리 적용. `compute_employee`/`compute_prior_balances`/`build_schedule_table`/`build_prior_schedule_table` 자체는 여전히 범용 `payout_rate` 매개변수 하나만 받고(어느 기간용인지는 호출부가 결정), `save_results`/`write_summary_sheet`만 두 값을 받아 요약표 제목에 "당기 지급률 N%, 전기 지급률 M%"로 함께 표시.
+- 테스트: 당기 60%/전기 90%로 설정 후 EMP-1001 당기말(20일×120,000×0.6=1,440,000)·전기말(2,006,000×0.9=1,805,400) 모두 정확, `전기인원별추계명세` 시트도 동일 전기 지급률(90%)로 독립 검증 완료.
+
+**변경 파일**:
+- `leave_analyzer/leave_schedule.py`
+- `leave_analyzer/build_template.py` ('기준정보' 지급률 행 2개로 분리, 작성안내 갱신)
+- `leave_analyzer/input_data/leave_template.xlsx` (재생성)
+
+**미해결 이슈**: 없음(leave_analyzer 자체는 여전히 실데이터 미실행 상태)
+
+**다음 할 일**:
+1. blue sky가 leave_analyzer 실제 회사 데이터를 받으면(당기/전기 연차촉진 지급률 추정치 포함) 표준 템플릿에 맞춰 입력 파일 작성 → 1차 실행
+2. (severance, 이월) 대일개발 fy2025 파일 '당기퇴사자' 시트 지급사유 표시 확인 + L열 회사계상액 입력 후 차이 원인 특정
+3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
+
+---

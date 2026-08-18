@@ -14,7 +14,8 @@ depreciation_analyzer의 "기초잔액은 입력값 신뢰, 당기분만 계산"
 연차사용촉진제도(근로기준법 제61조) 반영: 촉진 절차를 적법하게 이행하면 미사용 연차에 대한 금전
 지급의무가 면제된다. 인원별 절차 이행 여부를 확인하기 어려운 경우가 많아, '기준정보' 시트의
 전사 공통 지급률(%)을 잔여연차 금액에 곱하는 방식으로 단순화했다(잔여'일수'는 그대로 두고 금액만
-할인 — 일수 기준 감사 대사는 왜곡하지 않기 위함). 미입력 시 100%(촉진 미적용 가정)로 계산된다.
+할인 — 일수 기준 감사 대사는 왜곡하지 않기 위함). 촉진 이행 여부·실제 사용률은 연도마다 다를 수
+있어 당기/전기 지급률을 각각 별도로 입력받는다(둘 다 미입력 시 100%, 촉진 미적용 가정).
 
 전기/당기 인원은 severance_analyzer와 동일하게 한 파일 안에 '당기정보'/'전기정보' 두 시트로 나눠
 입력받는다. 당기 계산은 '당기정보' 시트만 사용하고, '전기정보'는 사번(없으면 성명) 기준으로
@@ -81,7 +82,9 @@ BASIS_MODE_DEFAULT = "입사기준"
 # 연차사용촉진제도(근로기준법 제61조) 반영 — 촉진 절차를 적법하게 이행하면 미사용 연차에 대한
 # 금전 지급의무가 면제된다. 인원별로 절차 이행 여부를 확인하기 어려운 경우가 많아, 이 앱은
 # 전사 공통 지급률(%)을 잔여연차 금액에 곱하는 방식으로 단순화해 반영한다(미입력 시 100%, 즉 촉진 미적용 가정).
-PAYOUT_RATE_LABEL = "연차사용촉진 반영 지급률(%, 미입력시 100%)"
+# 촉진 이행 여부·실제 사용률은 연도마다 다를 수 있어 당기/전기 지급률을 각각 별도로 입력받는다.
+PAYOUT_RATE_LABEL_CURRENT = "당기 연차사용촉진 반영 지급률(%, 미입력시 100%)"
+PAYOUT_RATE_LABEL_PRIOR = "전기 연차사용촉진 반영 지급률(%, 미입력시 100%)"
 
 CURRENT_SHEET = "당기정보"
 PRIOR_SHEET = "전기정보"
@@ -98,7 +101,8 @@ FORMULA_NOTE_LINES = [
     ("근속연수 1년 이상: 부여일수 = min(15 + (근속연수−1)//2, 25)   (3년 이상부터 매 2년마다 1일 가산, 25일 한도)", False),
     ("근속연수 1년 미만(입사연도): 입사 후 매 1개월 경과 시마다 1일씩 발생(최대 11일, 개근 가정)", False),
     ("당기말 잔여연차일수(계산) = 기초 이월연차잔여일수(입력) + 당기부여일수(계산) − 당기연차사용일수(입력)", False),
-    ("당기말 연차충당부채(계산) = 당기말 잔여연차일수(계산) × 1일 통상임금(입력) × 연차사용촉진 반영 지급률(입력, 미입력시 100%)", False),
+    ("당기말 연차충당부채(계산) = 당기말 잔여연차일수(계산) × 1일 통상임금(입력) × 당기 지급률(입력, 미입력시 100%)", False),
+    ("전기말 연차충당부채(계산)도 동일 산식이되 '전기 지급률'을 곱한다(당기/전기 지급률은 서로 다를 수 있어 별도 입력)", False),
     ("※ 연차사용촉진(근로기준법 제61조) 절차를 적법 이행하면 미사용 연차의 금전 지급의무가 면제되므로, "
      "'기준정보' 시트의 지급률(%)로 잔여일수는 그대로 두고 충당부채 금액만 낮춘다(전사 공통 비율로 단순화)", False),
     ("", False),
@@ -324,9 +328,9 @@ def leave_basis_mode(basis: dict) -> str:
     return raw if raw in BASIS_MODE_OPTIONS else BASIS_MODE_DEFAULT
 
 
-def leave_payout_rate(basis: dict) -> float:
-    """'연차사용촉진 반영 지급률(%)' — 0~100 사이 값을 0~1 배수로 변환. 미입력·범위 밖이면 100%(1.0)."""
-    v = _basis_float(basis, PAYOUT_RATE_LABEL)
+def leave_payout_rate(basis: dict, label: str) -> float:
+    """'당기/전기 연차사용촉진 반영 지급률(%)' — 0~100 사이 값을 0~1 배수로 변환. 미입력·범위 밖이면 100%(1.0)."""
+    v = _basis_float(basis, label)
     if v is None:
         return 1.0
     if v < 0 or v > 100:
@@ -902,7 +906,7 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
 
 def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                          당기결산일: date, 전기결산일: date, mode: str, interim_month: int = None,
-                         payout_rate: float = 1.0):
+                         payout_rate_current: float = 1.0, payout_rate_prior: float = 1.0):
     header_fill = PatternFill("solid", fgColor="4472C4")
     header_font = Font(bold=True, color="FFFFFF")
     section_fill = PatternFill("solid", fgColor="203864")
@@ -915,7 +919,12 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
     center = Alignment(horizontal="center", vertical="center")
 
     period_note = f", ~{interim_month}월 중간결산(반기 등)" if interim_month else ""
-    payout_note = f", 연차사용촉진 반영 지급률: {payout_rate * 100:g}%" if payout_rate != 1.0 else ""
+    rate_parts = []
+    if payout_rate_current != 1.0:
+        rate_parts.append(f"당기 지급률 {payout_rate_current * 100:g}%")
+    if payout_rate_prior != 1.0:
+        rate_parts.append(f"전기 지급률 {payout_rate_prior * 100:g}%")
+    payout_note = ", " + ", ".join(rate_parts) if rate_parts else ""
     ws.cell(row=1, column=1,
             value=(f"연월차충당부채 요약표 (회사: {company}, 회계연도: {target_fy}{period_note}, "
                    f"연차산정기준: {mode}{payout_note}, 전기말: {전기결산일}, 당기말: {당기결산일})")).font = Font(bold=True, size=13)
@@ -1342,13 +1351,15 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                   신규입사자_recs: list, 퇴사자_recs: list, basis: dict,
                   전기_by_key: dict, 전기말_balances: dict, leaver_payments: list,
                   당기_by_key: dict, mode: str, 전기_anchor_start: date, interim_month: int = None,
-                  payroll_employees: list = None, payout_rate: float = 1.0):
+                  payroll_employees: list = None, payout_rate_current: float = 1.0,
+                  payout_rate_prior: float = 1.0):
     wb = openpyxl.Workbook()
     ws_summary = wb.active
     ws_summary.title = "요약표"
     summary = build_summary(df, 전기_employees, 신규입사자_recs, 퇴사자_recs, basis,
                              전기_by_key, 전기말_balances, leaver_payments, 당기_by_key, payroll_employees)
-    write_summary_sheet(ws_summary, summary, company, target_fy, 당기결산일, 전기결산일, mode, interim_month, payout_rate)
+    write_summary_sheet(ws_summary, summary, company, target_fy, 당기결산일, 전기결산일, mode, interim_month,
+                         payout_rate_current, payout_rate_prior)
 
     ws = wb.create_sheet("인원별추계명세")
 
@@ -1458,7 +1469,7 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
             cell.alignment = center
 
     # 전기인원별추계명세 — '전기정보' 인원별 전기말 재계산액과 '회사계상 기말 연차충당부채(원)' 대사
-    prior_df = build_prior_schedule_table(전기_employees, 전기_anchor_start, 전기결산일, mode, payout_rate)
+    prior_df = build_prior_schedule_table(전기_employees, 전기_anchor_start, 전기결산일, mode, payout_rate_prior)
     ws_prior = wb.create_sheet("전기인원별추계명세")
     ws_prior.cell(row=1, column=1,
                   value=(f"전기인원별 연차충당부채 명세서 (회사: {company}, 회계연도: {target_fy}, "
@@ -1591,24 +1602,26 @@ def main():
     payroll_employees = load_employees(input_path, PAYROLL_SHEET)
     basis = load_basis(input_path)
     mode = leave_basis_mode(basis)
-    payout_rate = leave_payout_rate(basis)
+    payout_rate_current = leave_payout_rate(basis, PAYOUT_RATE_LABEL_CURRENT)
+    payout_rate_prior = leave_payout_rate(basis, PAYOUT_RATE_LABEL_PRIOR)
     print(f"[연차산정기준] {mode}")
-    if payout_rate != 1.0:
-        print(f"[연차사용촉진 반영 지급률] {payout_rate * 100:g}%")
+    if payout_rate_current != 1.0 or payout_rate_prior != 1.0:
+        print(f"[연차사용촉진 반영 지급률] 당기={payout_rate_current * 100:g}%, 전기={payout_rate_prior * 100:g}%")
     print(f"[인원 수] 당기={len(당기_employees)}건, 전기={len(전기_employees)}건, 당기퇴사자(지급액 입력)={len(leaver_payments)}건, "
           f"급여대장인원명부={len(payroll_employees)}건")
 
     matched = match_periods(당기_employees, 전기_employees)
-    전기말_balances = compute_prior_balances(matched["전기_by_key"], 전기_anchor_start, 전기결산일, mode, payout_rate)
+    전기말_balances = compute_prior_balances(matched["전기_by_key"], 전기_anchor_start, 전기결산일, mode, payout_rate_prior)
     df = build_schedule_table(당기_employees, 당기_anchor_start, 당기결산일,
-                               matched["신규입사_keys"], 전기말_balances, mode, payout_rate)
+                               matched["신규입사_keys"], 전기말_balances, mode, payout_rate_current)
 
     suffix = f"_interim{args.interim_month:02d}" if args.interim_month else ""
     output_path = os.path.join(OUTPUT_DIR, f"leave_schedule_{company}_{target_fy}{suffix}.xlsx")
     save_results(df, output_path, company, target_fy, 당기결산일, 전기결산일,
                  전기_employees, matched["신규입사자"], matched["퇴사자"], basis,
                  matched["전기_by_key"], 전기말_balances, leaver_payments,
-                 matched["당기_by_key"], mode, 전기_anchor_start, args.interim_month, payroll_employees, payout_rate)
+                 matched["당기_by_key"], mode, 전기_anchor_start, args.interim_month, payroll_employees,
+                 payout_rate_current, payout_rate_prior)
     print(f"[완료] {output_path}")
 
 
