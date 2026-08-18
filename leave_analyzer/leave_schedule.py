@@ -76,6 +76,9 @@ BASIS_MODE_DEFAULT = "입사기준"
 CURRENT_SHEET = "당기정보"
 PRIOR_SHEET = "전기정보"
 LEAVER_SHEET = "당기퇴사자"
+PAYROLL_SHEET = "급여대장인원명부"
+
+PAYROLL_COUNT_LABEL = "기말 급여대장상 총인원수(명부 미확보 시 참고용)"
 
 DISPLAY_COLS = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일"]
 
@@ -429,6 +432,56 @@ def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_r
     ).reset_index(drop=True)
 
 
+PAYROLL_MATCH_COLS = ["사업장", "부서", "사번", "직급", "원가구분",
+                       "급여대장인원명부에만 존재", "연차정보(당기정보)에만 존재", "비고"]
+
+
+def _build_payroll_match_df(당기_by_key: dict, payroll_employees: list) -> pd.DataFrame:
+    """연차수당 대상인원(당기정보)과 기말 급여대장상 인원명부(선택 입력, '급여대장인원명부' 시트)를
+    사번(없으면 성명) 기준으로 대사한다. 급여대장에는 있는데 연차정보에 없으면 연차 대상 인원이
+    누락됐을 가능성, 반대로 연차정보에만 있으면 이미 퇴사했는데 남아있는 등의 확인이 필요하다는 뜻."""
+    payroll_by_key: dict = {}
+    for rec in payroll_employees:
+        k = _employee_key(rec)
+        if k is not None:
+            payroll_by_key.setdefault(k, rec)
+
+    rows = []
+    for key in set(payroll_by_key) | set(당기_by_key):
+        급여대장레코드 = payroll_by_key.get(key)
+        연차정보레코드 = 당기_by_key.get(key)
+        in_payroll = 급여대장레코드 is not None
+        in_leave = 연차정보레코드 is not None
+        source = 급여대장레코드 or 연차정보레코드
+
+        if in_payroll and in_leave:
+            tags = ["이상없음"]
+        elif in_payroll and not in_leave:
+            tags = ["⚠ 급여대장에는 있으나 연차정보(당기정보)에 없음 — 연차 대상 인원 누락 가능"]
+        else:
+            tags = ["⚠ 연차정보(당기정보)에는 있으나 급여대장에 없음 — 당기 중 퇴사 등 확인 필요"]
+
+        성명_급여대장 = (급여대장레코드.get("성명") or 급여대장레코드.get("사번") or "") if in_payroll else ""
+        성명_연차정보 = (연차정보레코드.get("성명") or 연차정보레코드.get("사번") or "") if in_leave else ""
+        사번 = (source or {}).get("사번")
+
+        rows.append({
+            "사업장": (source or {}).get("사업장") or "",
+            "부서": (source or {}).get("부서") or "",
+            "사번": 사번,
+            "직급": (source or {}).get("직급") or "",
+            "원가구분": _cost_type(source) if source else "(미상)",
+            "급여대장인원명부에만 존재": 성명_급여대장,
+            "연차정보(당기정보)에만 존재": 성명_연차정보,
+            "비고": " / ".join(tags),
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=PAYROLL_MATCH_COLS)
+    df = pd.DataFrame(rows)[PAYROLL_MATCH_COLS]
+    return df.sort_values(["비고", "사업장", "부서"], na_position="last").reset_index(drop=True)
+
+
 def _build_group_summary(d: pd.DataFrame, 전기_calc_df: pd.DataFrame, group_col: str) -> list:
     """사업장별/부서별 요약표. 당기말은 당기_df(d, 당기 재직자)에서, 전기말은 전기_calc_df
     (전기 결산기준일 현재 재직 중이던 전체 인원 — 당기 중 퇴사한 사람 포함)에서 각각 집계한다."""
@@ -644,7 +697,7 @@ def build_prior_schedule_table(전기_employees: list, anchor_start: date, ancho
 def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
                    신규입사자_recs: list, 퇴사자_recs: list, basis: dict,
                    전기_by_key: dict, 전기말_balances: dict, leaver_payments: list,
-                   당기_by_key: dict) -> dict:
+                   당기_by_key: dict, payroll_employees: list = None) -> dict:
     if 당기_df.empty and not 전기_employees and not 신규입사자_recs and not 퇴사자_recs:
         return {}
 
@@ -744,6 +797,22 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
     site_summary = _build_group_summary(d, 전기_calc_df, "사업장")
     dept_summary = _build_group_summary(d, 전기_calc_df, "부서")
 
+    # 연차수당 대상인원 대사 — 급여대장인원명부(선택)가 있으면 인별 대사, 없으면 '기준정보'에 입력된
+    # 총인원수(선택)와 당기말인원수만 비교(명부를 못 받았을 때 수기 검증용 참고치).
+    payroll_employees = payroll_employees or []
+    payroll_match_df = None
+    payroll_count_check = None
+    if payroll_employees:
+        payroll_match_df = _build_payroll_match_df(당기_by_key, payroll_employees)
+    else:
+        급여대장총인원수 = _basis_float(basis, PAYROLL_COUNT_LABEL)
+        if 급여대장총인원수 is not None:
+            payroll_count_check = {
+                "연차수당 대상인원수(당기정보)": headcount["당기말인원수"],
+                "기말 급여대장상 총인원수(입력)": 급여대장총인원수,
+                "차이": headcount["당기말인원수"] - 급여대장총인원수,
+            }
+
     # T계정 검증(tie-out): 전기말(회사계상) + 당기 연차수당비용(재계산) - 당기지급액(분개장, 입력) =? 당기말(회사계상)
     당기지급액 = _basis_float(basis, DEBIT_BASIS_LABEL)
     tie_out = None
@@ -798,6 +867,8 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
         "신규입사자": 신규입사자_df[["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일"]],
         "headcount": headcount,
         "headcount_by_cost": headcount_by_cost,
+        "payroll_match": payroll_match_df,
+        "payroll_count_check": payroll_count_check,
     }
 
 
@@ -981,6 +1052,94 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         cell.fill = total_fill
     r += 3
 
+    # 2-1) 연차수당 대상인원 대사 (급여대장인원명부 vs 연차정보) — 둘 다 없으면 섹션 자체를 생략
+    payroll_match = summary.get("payroll_match")
+    payroll_count_check = summary.get("payroll_count_check")
+    if payroll_match is not None:
+        ws.cell(row=r, column=1, value="■ 연차수당 대상인원 대사 (급여대장인원명부 vs 연차정보)").fill = section_fill
+        ws.cell(row=r, column=1).font = section_font
+        for c in range(2, 9):
+            ws.cell(row=r, column=c).fill = section_fill
+        r += 1
+        ws.cell(row=r, column=1,
+                value="※ 양쪽 명단에 모두 있으면 '이상없음', 한쪽에만 있으면 비고에 원인을 표시합니다. "
+                      "사번(없으면 성명) 기준 매칭입니다.").font = Font(italic=True, color="808080", size=9)
+        r += 1
+
+        pm_headers = ["사업장", "부서", "사번", "직급", "원가구분",
+                      "급여대장인원명부에만 존재", "연차정보(당기정보)에만 존재", "비고"]
+        for i, h in enumerate(pm_headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+            if h == "비고":
+                ws.column_dimensions[get_column_letter(i)].width = 46
+        r += 1
+        if payroll_match.empty:
+            ws.cell(row=r, column=1, value="(해당 없음)")
+            for c in range(1, 9):
+                ws.cell(row=r, column=c).border = border
+            r += 1
+        else:
+            for _, row in payroll_match.iterrows():
+                for i, h in enumerate(pm_headers, start=1):
+                    val = row[h]
+                    cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) or val == "" else val))
+                    cell.border = border
+                    if h == "비고" and val:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+                        if val != "이상없음":
+                            cell.fill = sig_fill
+                r += 1
+
+            급여대장만_인원수 = int(payroll_match["비고"].str.contains("급여대장에는 있으나", na=False).sum())
+            연차정보만_인원수 = int(payroll_match["비고"].str.contains("연차정보\\(당기정보\\)에는 있으나", na=False).sum())
+            cell = ws.cell(row=r, column=1, value="불일치 인원수")
+            cell.font = bold
+            cell.fill = total_fill
+            cell.border = border
+            for c in range(2, 9):
+                ws.cell(row=r, column=c).fill = total_fill
+                ws.cell(row=r, column=c).border = border
+            cell = ws.cell(row=r, column=6, value=급여대장만_인원수)
+            cell.font = bold
+            cell.alignment = center
+            cell = ws.cell(row=r, column=7, value=연차정보만_인원수)
+            cell.font = bold
+            cell.alignment = center
+            r += 1
+        r += 2
+    elif payroll_count_check is not None:
+        ws.cell(row=r, column=1,
+                value="■ 연차수당 대상인원 대사 (급여대장 총인원수 vs 연차정보 — 인원명부 미확보)").fill = section_fill
+        ws.cell(row=r, column=1).font = section_font
+        for c in range(2, 4):
+            ws.cell(row=r, column=c).fill = section_fill
+        r += 1
+        ws.cell(row=r, column=1,
+                value="※ 급여대장 인원명부를 확보하지 못해 총인원수만 비교합니다 — 차이가 있으면 수기로 원인을 확인하세요."
+                ).font = Font(italic=True, color="808080", size=9)
+        r += 1
+        pc_headers = ["연차수당 대상인원수(당기정보)", "기말 급여대장상 총인원수(입력)", "차이"]
+        for i, h in enumerate(pc_headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        r += 1
+        vals = [payroll_count_check["연차수당 대상인원수(당기정보)"],
+                payroll_count_check["기말 급여대장상 총인원수(입력)"], payroll_count_check["차이"]]
+        for i, v in enumerate(vals, start=1):
+            cell = ws.cell(row=r, column=i, value=v)
+            cell.border = border
+            if i == 3 and v != 0:
+                cell.fill = sig_fill
+                cell.font = bold
+        r += 2
+
     # 3) 신규입사자 명단
     ws.cell(row=r, column=1,
             value="■ 신규입사자 명단 ('당기정보'에는 있으나 '전기정보'에는 없음)").fill = section_fill
@@ -1152,12 +1311,13 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                   당기결산일: date, 전기결산일: date, 전기_employees: list,
                   신규입사자_recs: list, 퇴사자_recs: list, basis: dict,
                   전기_by_key: dict, 전기말_balances: dict, leaver_payments: list,
-                  당기_by_key: dict, mode: str, 전기_anchor_start: date, interim_month: int = None):
+                  당기_by_key: dict, mode: str, 전기_anchor_start: date, interim_month: int = None,
+                  payroll_employees: list = None):
     wb = openpyxl.Workbook()
     ws_summary = wb.active
     ws_summary.title = "요약표"
     summary = build_summary(df, 전기_employees, 신규입사자_recs, 퇴사자_recs, basis,
-                             전기_by_key, 전기말_balances, leaver_payments, 당기_by_key)
+                             전기_by_key, 전기말_balances, leaver_payments, 당기_by_key, payroll_employees)
     write_summary_sheet(ws_summary, summary, company, target_fy, 당기결산일, 전기결산일, mode, interim_month)
 
     ws = wb.create_sheet("인원별추계명세")
@@ -1398,10 +1558,12 @@ def main():
     당기_employees = load_employees(input_path, CURRENT_SHEET)
     전기_employees = load_employees(input_path, PRIOR_SHEET)
     leaver_payments = load_employees(input_path, LEAVER_SHEET)
+    payroll_employees = load_employees(input_path, PAYROLL_SHEET)
     basis = load_basis(input_path)
     mode = leave_basis_mode(basis)
     print(f"[연차산정기준] {mode}")
-    print(f"[인원 수] 당기={len(당기_employees)}건, 전기={len(전기_employees)}건, 당기퇴사자(지급액 입력)={len(leaver_payments)}건")
+    print(f"[인원 수] 당기={len(당기_employees)}건, 전기={len(전기_employees)}건, 당기퇴사자(지급액 입력)={len(leaver_payments)}건, "
+          f"급여대장인원명부={len(payroll_employees)}건")
 
     matched = match_periods(당기_employees, 전기_employees)
     전기말_balances = compute_prior_balances(matched["전기_by_key"], 전기_anchor_start, 전기결산일, mode)
@@ -1413,7 +1575,7 @@ def main():
     save_results(df, output_path, company, target_fy, 당기결산일, 전기결산일,
                  전기_employees, matched["신규입사자"], matched["퇴사자"], basis,
                  matched["전기_by_key"], 전기말_balances, leaver_payments,
-                 matched["당기_by_key"], mode, 전기_anchor_start, args.interim_month)
+                 matched["당기_by_key"], mode, 전기_anchor_start, args.interim_month, payroll_employees)
     print(f"[완료] {output_path}")
 
 

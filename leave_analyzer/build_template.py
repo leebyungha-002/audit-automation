@@ -51,6 +51,7 @@ COST_TYPE_OPTIONS = ["제조원가", "판관비"]
 
 BASIS_MODE_LABEL = "연차산정기준(입사기준/회계기준)"
 BASIS_MODE_OPTIONS = ["입사기준", "회계기준"]
+PAYROLL_COUNT_LABEL = "기말 급여대장상 총인원수(명부 미확보 시 참고용)"
 
 BASIS_ROWS = [
     "전기말 회사계상 연차충당부채(제조원가분)",
@@ -68,6 +69,19 @@ LEAVER_COLUMNS = [("퇴사자 지급정보", "사번", 14), ("퇴사자 지급�
 LEAVER_EXAMPLES = [
     ["EMP-0999", "예시)최과장", 1200000, None,
      "예시) 전기정보에 있는 사번으로 매칭 — 전기말 연차충당부채(계산)와 자동 대사됨. 사번 없으면 성명으로 매칭."],
+]
+
+# '급여대장인원명부' 시트 — 선택 입력. 기말 급여대장상 실제 인원명부를 사업장/부서/사번/성명/직급만
+# 붙여넣으면, 앱이 '당기정보'(연차수당 대상인원)와 사번(없으면 성명) 기준으로 자동 대사한다.
+# 명부를 못 받았으면 이 시트는 비워두고, 대신 '기준정보' 시트의 총인원수 참고값만 입력해도 된다.
+PAYROLL_COLUMNS = [("급여대장 인원(선택)", "사업장", 14), ("급여대장 인원(선택)", "부서", 14),
+                    ("급여대장 인원(선택)", "사번", 12), ("급여대장 인원(선택)", "성명", 12),
+                    ("급여대장 인원(선택)", "직급", 10)]
+PAYROLL_EXAMPLES = [
+    ["본사", "생산1팀", "EMP-1001", "예시)홍길동", "과장"],
+    ["본사", "경영지원팀", "EMP-1002", "예시)김영희", "대리"],
+    ["본사", "영업팀", "EMP-1003", "예시)이철수", "사원"],
+    ["본사", "기타", "EMP-9001", "예시)김철수", "사원"],
 ]
 
 # 예시행: 기존재직자(제조/판관), 당기 신규입사자(비례연차/월단위 발생 케이스), 근속 3년 이상(가산휴가 케이스)
@@ -231,6 +245,29 @@ def build():
             if field == "입사일(선택)" and val:
                 cell.number_format = "yyyy-mm-dd"
 
+    # 급여대장인원명부 시트 — 선택 입력. 채우면 요약표에 '연차수당 대상인원 대사' 표가 인별로 추가된다.
+    ws_payroll = wb.create_sheet("급여대장인원명부")
+    ws_payroll.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(PAYROLL_COLUMNS))
+    c1 = ws_payroll.cell(row=1, column=1, value=PAYROLL_COLUMNS[0][0])
+    c1.fill = group_fill
+    c1.font = group_font
+    c1.alignment = center
+    c1.border = border
+    for i, (_, name, width) in enumerate(PAYROLL_COLUMNS, start=1):
+        c2 = ws_payroll.cell(row=2, column=i, value=name)
+        c2.fill = header_fill
+        c2.font = header_font
+        c2.alignment = center
+        c2.border = border
+        ws_payroll.column_dimensions[get_column_letter(i)].width = width
+    ws_payroll.row_dimensions[1].height = 20
+    ws_payroll.row_dimensions[2].height = 32
+    ws_payroll.freeze_panes = "A3"
+    for r, row in enumerate(PAYROLL_EXAMPLES, start=3):
+        for c, val in enumerate(row, start=1):
+            cell = ws_payroll.cell(row=r, column=c, value=val)
+            cell.border = border
+
     # 기준정보 시트 — 연차산정기준(전사 공통 설정) + 전기말/당기말 회사계상 충당부채(대사용)
     basis = wb.create_sheet("기준정보")
     basis.column_dimensions["A"].width = 42
@@ -271,7 +308,25 @@ def build():
     basis.add_data_validation(dv_mode)
     dv_mode.add(f"B{mode_row}")
 
-    money_header_row = mode_row + 2
+    payroll_count_row = mode_row + 1
+    c1 = basis.cell(row=payroll_count_row, column=1, value=PAYROLL_COUNT_LABEL)
+    c1.border = border
+    c2 = basis.cell(row=payroll_count_row, column=2)
+    c2.border = border
+    c2.number_format = "0"
+    c2.fill = PatternFill("solid", fgColor="FFF2CC")
+    c2.alignment = Alignment(horizontal="center", vertical="center")
+    c3 = basis.cell(
+        row=payroll_count_row, column=3,
+        value="'급여대장인원명부' 시트에 실제 인원명부(사업장/부서/사번/성명/직급)를 붙여넣을 수 있으면 이 값은 "
+              "입력하지 않아도 됩니다(그 경우 인별 대사가 자동으로 이루어짐). 명부를 확보하지 못했을 때만, "
+              "기말 급여대장상 총인원수를 여기에 입력하면 연차수당 대상인원수(당기정보 인원수)와 총원 차이만 "
+              "요약표에 표시됩니다(수기 검증용).",
+    )
+    c3.border = border
+    c3.alignment = Alignment(wrap_text=True, vertical="top")
+
+    money_header_row = payroll_count_row + 2
     for i, h in enumerate(["항목", "금액(원)", "설명"], start=1):
         cell = basis.cell(row=money_header_row, column=i, value=h)
         cell.fill = header_fill
@@ -364,7 +419,16 @@ def build():
         "   '입사일(선택)': '전기정보'에서 매칭이 안 되는 인원에 한해 참고용으로 적어둘 수 있습니다.",
         "   같은 인원(사번/성명)이 두 번 이상 입력되면 '이중기입의심' 경고가 표시됩니다.",
         "",
-        "6. '기준정보' 시트",
+        "6. '급여대장인원명부' 시트 (선택) — 연차수당 대상인원(당기정보)과 기말 급여대장상 실제 인원이",
+        "   일치하는지 대사하려는 용도입니다. 회사로부터 기말 급여대장 인원명부를 엑셀로 받으면, 사업장/부서/",
+        "   사번/성명/직급만 이 시트에 붙여넣으세요. 앱이 사번(없으면 성명) 기준으로 '당기정보'와 자동 대사해",
+        "   요약표에 '연차수당 대상인원 대사' 표를 추가합니다 — 급여대장에만 있으면(연차 대상 인원 누락 가능),",
+        "   당기정보에만 있으면(당기 중 퇴사 등) 각각 원인 확인이 필요하다는 경고가 표시됩니다.",
+        "   인원명부를 확보하지 못했다면 이 시트는 비워두고, 대신 '기준정보' 시트의 '기말 급여대장상",
+        "   총인원수(명부 미확보 시 참고용)'에 총원 숫자만 입력하세요 — 연차수당 대상인원수와 단순 총인원",
+        "   비교만 요약표에 표시됩니다(원인 파악은 수기로 확인). 둘 다 비워두면 이 대사 자체가 생략됩니다.",
+        "",
+        "7. '기준정보' 시트",
         "   '연차산정기준'(전사 공통 설정, 드롭다운): '입사기준' 또는 '회계기준' 중 회사의 실제 운영 방식을",
         "     선택하세요. 미입력 시 '입사기준'으로 계산됩니다.",
         "       입사기준 — 개인별 입사기념일마다 근속연수가 갱신되어 그 시점에 연차가 개별 부여됩니다.",
@@ -376,11 +440,11 @@ def build():
         "   합계를 뽑아 입력하면 됩니다 — 전기말(회사계상)+당기 연차수당비용(재계산)-당기지급액이 당기말",
         "   (회사계상)과 맞는지 요약표에서 자동으로 T계정 검증(tie-out)합니다. 모르면 비워둬도 됩니다.",
         "",
-        "7. 결산기준일은 이 파일에 입력하지 않습니다. 실행 시 파일명의 'fy<연도>'와 --fiscal-month 옵션(기본 12월)으로",
+        "8. 결산기준일은 이 파일에 입력하지 않습니다. 실행 시 파일명의 'fy<연도>'와 --fiscal-month 옵션(기본 12월)으로",
         "   severance_analyzer/depreciation_analyzer와 동일한 규칙으로 당기말·전기말 결산기준일을 자동 계산합니다.",
         "   예) --fiscal-month 12 --fiscal-year 2026 → 당기말 2026-12-31, 전기말 2025-12-31.",
         "",
-        "8. 파일명 규칙: 이 템플릿을 복사해 'leave_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
+        "9. 파일명 규칙: 이 템플릿을 복사해 'leave_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
         "   예) leave_kyungnam_information_fy2026.xlsx (전기·당기 데이터가 모두 이 한 파일 안에 들어갑니다).",
     ]
     for i, line in enumerate(lines, start=1):
