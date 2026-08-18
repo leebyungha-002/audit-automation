@@ -442,7 +442,8 @@ def compute_employee(emp: dict, 기준일: date) -> dict:
         _add_warning("입사일이 결산기준일 이후 — 확인 필요(해당 기준일 시점에 아직 미입사)")
         return result
 
-    재직일수 = (기준일 - 기산일).days
+    # 근속기간(재직일수)은 계속된 재직 상태의 존속기간이므로 초일(기산일)을 산입하여 계산한다(+1).
+    재직일수 = (기준일 - 기산일).days + 1
     result["재직일수"] = 재직일수
     result["기산일"] = 기산일
 
