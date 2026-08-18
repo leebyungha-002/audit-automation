@@ -51,6 +51,7 @@ COST_TYPE_OPTIONS = ["제조원가", "판관비"]
 
 BASIS_MODE_LABEL = "연차산정기준(입사기준/회계기준)"
 BASIS_MODE_OPTIONS = ["입사기준", "회계기준"]
+PAYOUT_RATE_LABEL = "연차사용촉진 반영 지급률(%, 미입력시 100%)"
 PAYROLL_COUNT_LABEL = "기말 급여대장상 총인원수(명부 미확보 시 참고용)"
 
 BASIS_ROWS = [
@@ -326,7 +327,26 @@ def build():
     c3.border = border
     c3.alignment = Alignment(wrap_text=True, vertical="top")
 
-    money_header_row = payroll_count_row + 2
+    payout_rate_row = payroll_count_row + 1
+    c1 = basis.cell(row=payout_rate_row, column=1, value=PAYOUT_RATE_LABEL)
+    c1.border = border
+    c2 = basis.cell(row=payout_rate_row, column=2)
+    c2.border = border
+    c2.number_format = "0.0"
+    c2.fill = PatternFill("solid", fgColor="FFF2CC")
+    c2.alignment = Alignment(horizontal="center", vertical="center")
+    c3 = basis.cell(
+        row=payout_rate_row, column=3,
+        value="연차사용촉진제도(근로기준법 제61조)를 적법하게 이행하면 미사용 연차에 대한 금전 지급의무가 "
+              "면제됩니다. 인원별로 절차 이행 여부를 확인하기 어려우므로, 전사 공통으로 '실제 지급될 것으로 "
+              "예상하는 비율(%)'을 입력하면 이 비율만큼만 충당부채로 인식합니다(잔여일수 자체는 그대로 표시되고 "
+              "금액에만 곱해짐). 예) 70 입력 시 잔여연차 금액의 70%만 충당부채로 인식. 촉진제도를 쓰지 않거나 "
+              "비율을 모르면 비워두세요(100%로 계산됨).",
+    )
+    c3.border = border
+    c3.alignment = Alignment(wrap_text=True, vertical="top")
+
+    money_header_row = payout_rate_row + 2
     for i, h in enumerate(["항목", "금액(원)", "설명"], start=1):
         cell = basis.cell(row=money_header_row, column=i, value=h)
         cell.fill = header_fill
@@ -434,6 +454,11 @@ def build():
         "       입사기준 — 개인별 입사기념일마다 근속연수가 갱신되어 그 시점에 연차가 개별 부여됩니다.",
         "       회계기준 — 전 직원이 회계연도 시작일(전기 결산기준일 다음날)에 일괄로 근속연수가 갱신되어",
         "         한 번에 부여받습니다. 입사연도(근속연수 0년차)에는 비례연차(재직개월수 비례)가 적용됩니다.",
+        "   '연차사용촉진 반영 지급률(%)': 연차사용촉진제도(근로기준법 제61조)를 적법하게 이행하면 미사용",
+        "     연차의 금전 지급의무가 면제됩니다. 인원별 절차 이행 여부를 확인하기 어려우므로, 전사 공통으로",
+        "     '실제 지급될 것으로 예상하는 비율(%)'을 입력하면 그 비율만큼만 충당부채로 인식합니다(잔여일수",
+        "     자체는 그대로 표시되고 금액에만 곱해짐). 촉진제도를 쓰지 않거나 비율을 모르면 비워두세요",
+        "     (100%로 계산 — 잔여연차 전액을 충당부채로 인식).",
         "   전기말/당기말 회사계상 연차충당부채(제조원가분/판관비분) 4칸과, 당기 연차충당부채 차변(당기지급액)",
         "   1칸을 입력합니다. 다섯 값 모두 인별 재계산액과의 대사(비교)용 참고값일 뿐, 재계산 자체에는",
         "   반영되지 않습니다. '당기지급액'은 journal_analyzer(분개장분석) 메뉴에서 관련 계정의 당기 차변",
