@@ -23,7 +23,7 @@ input_data/severance_<company>_information_fy<year>.xlsx 를 읽어
 
   [일반직원] 근로기준법 평균임금 산식:
     1일평균임금 = (월평균급여 × 3 + 상여금(연간) / 4) / 92   (최근 3개월간 임금총액 ÷ 최근 3개월간 총일수 근사)
-    재직일수 = 당기 결산기준일 − 기산일
+    재직일수 = (당기 결산기준일 − 기산일) + 1   (재직 상태의 존속기간이므로 초일(기산일)을 산입)
     퇴직금 추계액 = 1일평균임금 × 30일 × (재직일수 / 365)
 
   [임원] 부서명이 정확히 '임원'인 인원 — 소득세법상 임원 퇴직금 한도 산식(평균급여 × 10% × 근속연수 × 배수):
@@ -75,6 +75,15 @@ LEAVER_SHEET = "당기퇴사자"
 DEBIT_BASIS_LABEL = "당기 퇴직급여충당부채 차변(당기지급액, 분개장 기준)"
 
 DISPLAY_COLS = ["사업장", "부서", "사번", "성명", "직급", "원가구분", "입사일", "중간정산일"]
+
+# 요약표 '비고'에 그대로 붙여 수기 검증에 쓰는 계산 공식 텍스트(compute_employee()와 동일 로직).
+FORMULA_NOTE = (
+    "[일반직원] 1일평균임금=(월평균급여×3+연간상여금/4)÷92 ; "
+    "재직일수=(기준일−기산일)+1(초일산입, 기산일=중간정산일 있으면 그 날짜·없으면 입사일) ; "
+    "퇴직금추계액=1일평균임금×30×(재직일수/365)  ‖  "
+    "[임원, 부서='임원'] 급여기준액=월평균급여+연간상여금×3/12 ; 근속연수=기준일연도−기산일연도 ; "
+    "근속월=12−기산일월 ; 퇴직금추계액=((급여기준액×근속연수+급여기준액×근속월/10)/10)×배수(임원)"
+)
 
 
 # ── 공용 헬퍼 ────────────────────────────────────────────────────────────────
@@ -797,12 +806,12 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
     # 1) 원가구분별 전기·당기 비교 + 대사 (전기말/당기말 모두 인별 재계산 기준)
     ws.cell(row=r, column=1, value="■ 퇴직급여충당부채 원가구분별 전기·당기 비교 (대사)").fill = section_fill
     ws.cell(row=r, column=1).font = section_font
-    for c in range(2, 8):
+    for c in range(2, 9):
         ws.cell(row=r, column=c).fill = section_fill
     r += 2
 
     cost_headers = ["구분", "전기말(재계산)", "전기말(회사계상)", "당기말(재계산)", "당기말(회사계상)",
-                     "당기 퇴직급여비용(재계산)", "대사차이(재계산-회사계상)"]
+                     "당기 퇴직급여비용(재계산)", "대사차이(재계산-회사계상)", "비고(계산 공식)"]
     for i, h in enumerate(cost_headers, start=1):
         cell = ws.cell(row=r, column=i, value=h)
         cell.fill = header_fill
@@ -810,6 +819,7 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
         cell.alignment = center
         cell.border = border
     r += 1
+    ws.column_dimensions["H"].width = 70
 
     for row_data in summary["by_cost"] + [summary["total_row"]]:
         is_total = row_data["구분"] == "합계"
@@ -831,6 +841,12 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                 cell.fill = total_fill
             elif i == 7 and _is_significant(v, row_data["당기말(회사계상)"]):
                 cell.fill = sig_fill
+        note_cell = ws.cell(row=r, column=8, value=FORMULA_NOTE if is_total else None)
+        note_cell.border = border
+        note_cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+        if is_total:
+            note_cell.fill = total_fill
+            ws.row_dimensions[r].height = 60
         r += 1
     r += 2
 
