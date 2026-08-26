@@ -376,7 +376,7 @@ async function downloadAndAppendToSheet(page, downloadBtnSelector, sheetName, wo
 
 // ─── 리스 완전성 자동 연동: lease_filter.py 실행 ─────────────────────────────
 function runLeaseFilter(companyName, noFilter = false, outputDir = null) {
-    const leaseScript = path.join(__dirname, '..', 'lease_analyzer', 'lease_filter.py');
+    const leaseScript = path.join(__dirname, '..', 'account_analyzer', 'lease_analyzer', 'lease_filter.py');
     if (!fs.existsSync(leaseScript)) {
         console.log(`[리스완전성] lease_filter.py 를 찾을 수 없습니다: ${leaseScript}`);
         return;

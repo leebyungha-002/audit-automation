@@ -50,7 +50,7 @@ def detect_journal_companies() -> list[str]:
 
 def detect_interest_companies() -> list[str]:
     """interest_analyzer/ 하위 폴더를 회사로 간주"""
-    ia_dir = ROOT / "interest_analyzer"
+    ia_dir = ROOT / "account_analyzer" / "interest_analyzer"
     if not ia_dir.exists():
         return []
     return sorted(
@@ -61,7 +61,7 @@ def detect_interest_companies() -> list[str]:
 
 def detect_lease_companies() -> list[str]:
     """lease_analyzer/input_data/ 의 파일명에서 회사명 추출"""
-    in_dir = ROOT / 'lease_analyzer' / 'input_data'
+    in_dir = ROOT / "account_analyzer" / "lease_analyzer" / 'input_data'
     if not in_dir.exists():
         return []
     _pat = re.compile(r'^lease_(.+)_information_', re.IGNORECASE)
@@ -76,7 +76,7 @@ def detect_lease_companies() -> list[str]:
 
 def detect_lease_input_files() -> list[tuple[str, str]]:
     """lease_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
-    in_dir = ROOT / 'lease_analyzer' / 'input_data'
+    in_dir = ROOT / "account_analyzer" / "lease_analyzer" / 'input_data'
     if not in_dir.exists():
         return []
     _pat = re.compile(r'^lease_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
@@ -92,7 +92,7 @@ def detect_lease_input_files() -> list[tuple[str, str]]:
 
 def detect_dep_input_files() -> list[tuple[str, str]]:
     """depreciation_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
-    in_dir = ROOT / 'depreciation_analyzer' / 'input_data'
+    in_dir = ROOT / "account_analyzer" / "depreciation_analyzer" / 'input_data'
     if not in_dir.exists():
         return []
     _pat = re.compile(r'^depreciation_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
@@ -108,7 +108,7 @@ def detect_dep_input_files() -> list[tuple[str, str]]:
 
 def detect_sev_input_files() -> list[tuple[str, str]]:
     """severance_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
-    in_dir = ROOT / 'severance_analyzer' / 'input_data'
+    in_dir = ROOT / "account_analyzer" / "severance_analyzer" / 'input_data'
     if not in_dir.exists():
         return []
     _pat = re.compile(r'^severance_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
@@ -123,7 +123,7 @@ def detect_sev_input_files() -> list[tuple[str, str]]:
 
 def detect_leave_input_files() -> list[tuple[str, str]]:
     """accrued_leave_liability_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
-    in_dir = ROOT / 'accrued_leave_liability_analyzer' / 'input_data'
+    in_dir = ROOT / "account_analyzer" / "accrued_leave_liability_analyzer" / 'input_data'
     if not in_dir.exists():
         return []
     _pat = re.compile(r'^leave_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
@@ -163,8 +163,8 @@ TOOLS = [
         "category": "Data_Injector",
         "name": "데이터 주입 - JS회사 (data_injector)",
         "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (루트 회사)",
-        "cmd": ["python", str(ROOT / "report" / "data_injector.py")],
-        "cwd": str(ROOT / "report"),
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "report" / "data_injector.py")],
+        "cwd": str(ROOT / "workpaper_tools" / "report"),
         "company": "js",
         "extra": None,
     },
@@ -172,17 +172,17 @@ TOOLS = [
         "category": "Data_Injector",
         "name": "데이터 주입 - journal회사 (data_injector)",
         "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (journal_analyzer 회사)",
-        "cmd": ["python", str(ROOT / "report" / "data_injector.py"), "--base", "journal_analyzer"],
-        "cwd": str(ROOT / "report"),
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "report" / "data_injector.py"), "--base", "journal_analyzer"],
+        "cwd": str(ROOT / "workpaper_tools" / "report"),
         "company": "journal",
         "extra": None,
     },
     {
         "category": "리스 분석",
         "name": "리스 스케줄 생성 (lease_schedule)",
-        "desc": "⚠ 실행 전 lease_analyzer/input_data/ 폴더에 lease_{회사명}_information_{연도}.xlsx 파일을 먼저 업로드하세요.\nK-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
-        "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_schedule.py")],
-        "cwd": str(ROOT / "lease_analyzer"),
+        "desc": "⚠ 실행 전 account_analyzer/lease_analyzer/input_data/ 폴더에 lease_{회사명}_information_{연도}.xlsx 파일을 먼저 업로드하세요.\nK-IFRS 1116 리스 회계처리 — 계약별 요약 + 월별 상각 스케줄 생성",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "lease_analyzer" / "lease_schedule.py")],
+        "cwd": str(ROOT / "account_analyzer" / "lease_analyzer"),
         "company": "lease_file",
         "extra": None,
     },
@@ -190,8 +190,8 @@ TOOLS = [
         "category": "리스 분석",
         "name": "리스 완전성 검토 - JS회사 (lease_filter)",
         "desc": "K-IFRS 1116 리스 완전성 검토 — 회사 미선택 시 input_data 직접분석, 선택 시 results 연계",
-        "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_filter.py")],
-        "cwd": str(ROOT / "lease_analyzer"),
+        "cmd": ["python", str(ROOT / "account_analyzer" / "lease_analyzer" / "lease_filter.py")],
+        "cwd": str(ROOT / "account_analyzer" / "lease_analyzer"),
         "company": "optional_js",
         "extra": "optional_company",
     },
@@ -199,35 +199,35 @@ TOOLS = [
         "category": "리스 분석",
         "name": "리스 완전성 검토 - journal회사 (lease_filter)",
         "desc": "K-IFRS 1116 리스 완전성 검토 — journal_analyzer 회사의 results 폴더 연계",
-        "cmd": ["python", str(ROOT / "lease_analyzer" / "lease_filter.py"), "--base", "journal_analyzer"],
-        "cwd": str(ROOT / "lease_analyzer"),
+        "cmd": ["python", str(ROOT / "account_analyzer" / "lease_analyzer" / "lease_filter.py"), "--base", "journal_analyzer"],
+        "cwd": str(ROOT / "account_analyzer" / "lease_analyzer"),
         "company": "journal",
         "extra": None,
     },
     {
         "category": "감가상각 검증",
         "name": "감가상각비 검증 (depreciation_schedule)",
-        "desc": "⚠ 실행 전 depreciation_analyzer/input_data/ 폴더에 depreciation_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\n유형자산·투자부동산 감가상각비 재계산(정액법/정률법) — 계정과목별 소계가 있는 고정자산명세서 생성, 회사계상액과 자동 대사",
-        "cmd": ["python", str(ROOT / "depreciation_analyzer" / "depreciation_schedule.py")],
-        "cwd": str(ROOT / "depreciation_analyzer"),
+        "desc": "⚠ 실행 전 account_analyzer/depreciation_analyzer/input_data/ 폴더에 depreciation_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\n유형자산·투자부동산 감가상각비 재계산(정액법/정률법) — 계정과목별 소계가 있는 고정자산명세서 생성, 회사계상액과 자동 대사",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "depreciation_analyzer" / "depreciation_schedule.py")],
+        "cwd": str(ROOT / "account_analyzer" / "depreciation_analyzer"),
         "company": "dep_file",
         "extra": None,
     },
     {
         "category": "퇴직급여충당부채 검증",
         "name": "퇴직급여충당부채 검증 (severance_schedule)",
-        "desc": "⚠ 실행 전 severance_analyzer/input_data/ 폴더에 severance_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n일반기업회계기준 퇴직금 추계액 방식 — 인원별 재직일수·급여로 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출",
-        "cmd": ["python", str(ROOT / "severance_analyzer" / "severance_schedule.py")],
-        "cwd": str(ROOT / "severance_analyzer"),
+        "desc": "⚠ 실행 전 account_analyzer/severance_analyzer/input_data/ 폴더에 severance_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n일반기업회계기준 퇴직금 추계액 방식 — 인원별 재직일수·급여로 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "severance_analyzer" / "severance_schedule.py")],
+        "cwd": str(ROOT / "account_analyzer" / "severance_analyzer"),
         "company": "sev_file",
         "extra": None,
     },
     {
         "category": "연월차충당부채 검증",
         "name": "연월차충당부채 검증 (leave_schedule)",
-        "desc": "⚠ 실행 전 accrued_leave_liability_analyzer/input_data/ 폴더에 leave_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n잔여연차일수×1일통상임금 방식 — 기초 이월잔여일수(입력)에 근로기준법 산식으로 계산한 당기 부여일수를 얹어 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출. '기준정보' 시트에서 입사기준/회계기준 선택 가능",
-        "cmd": ["python", str(ROOT / "accrued_leave_liability_analyzer" / "leave_schedule.py")],
-        "cwd": str(ROOT / "accrued_leave_liability_analyzer"),
+        "desc": "⚠ 실행 전 account_analyzer/accrued_leave_liability_analyzer/input_data/ 폴더에 leave_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n잔여연차일수×1일통상임금 방식 — 기초 이월잔여일수(입력)에 근로기준법 산식으로 계산한 당기 부여일수를 얹어 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출. '기준정보' 시트에서 입사기준/회계기준 선택 가능",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "accrued_leave_liability_analyzer" / "leave_schedule.py")],
+        "cwd": str(ROOT / "account_analyzer" / "accrued_leave_liability_analyzer"),
         "company": "leave_file",
         "extra": None,
     },
@@ -235,8 +235,8 @@ TOOLS = [
         "category": "시트 분리",
         "name": "엑셀 시트 분리 (sheet_splitter)",
         "desc": "시트명 기준(sheet) 또는 컬럼값 기준(col)으로 엑셀 파일을 분리",
-        "cmd": ["python", str(ROOT / "sheet_splitter" / "split_sheets.py")],
-        "cwd": str(ROOT / "sheet_splitter"),
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "sheet_splitter" / "split_sheets.py")],
+        "cwd": str(ROOT / "workpaper_tools" / "sheet_splitter"),
         "company": None,
         "extra": "sheet_mode",  # 모드 선택
     },
@@ -244,8 +244,8 @@ TOOLS = [
         "category": "파일 분류",
         "name": "감사조서 파일 분류 - JS회사 (file_classifier)",
         "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (루트 회사)",
-        "cmd": ["python", str(ROOT / "file_classifier" / "main.py")],
-        "cwd": str(ROOT / "file_classifier"),
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "file_classifier" / "main.py")],
+        "cwd": str(ROOT / "workpaper_tools" / "file_classifier"),
         "company": "js",
         "extra": "company_flag",
     },
@@ -253,17 +253,17 @@ TOOLS = [
         "category": "파일 분류",
         "name": "감사조서 파일 분류 - journal회사 (file_classifier)",
         "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (journal_analyzer 회사)",
-        "cmd": ["python", str(ROOT / "file_classifier" / "main.py"), "--base", "journal_analyzer"],
-        "cwd": str(ROOT / "file_classifier"),
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "file_classifier" / "main.py"), "--base", "journal_analyzer"],
+        "cwd": str(ROOT / "workpaper_tools" / "file_classifier"),
         "company": "journal",
         "extra": "company_flag",
     },
     {
         "category": "적정성 분석",
         "name": "이자비용 적정성 분석 (interest_expense_analysis)",
-        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증 (interest_analyzer/<회사>/input)",
-        "cmd": ["python", str(ROOT / "interest_analyzer" / "interest_expense_analysis.py")],
-        "cwd": str(ROOT / "interest_analyzer"),
+        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증 (account_analyzer/interest_analyzer/<회사>/input)",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "interest_analyzer" / "interest_expense_analysis.py")],
+        "cwd": str(ROOT / "account_analyzer" / "interest_analyzer"),
         "company": "interest",
         "extra": None,
     },
@@ -271,7 +271,7 @@ TOOLS = [
         "category": "주석 검증",
         "name": "감사주석 검증 - JS회사 (note_verifier)",
         "desc": "정산표/DSD와 감사조서 주석을 시트별 비교 검증 — 블록1 자동채움 + 차이 색상 표시 (루트 회사)",
-        "cmd": ["python", str(ROOT / "note_verifier" / "note_verifier.py")],
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "note_verifier" / "note_verifier.py")],
         "cwd": str(ROOT),
         "company": "js",
         "extra": "company_flag",
@@ -280,7 +280,7 @@ TOOLS = [
         "category": "주석 검증",
         "name": "감사주석 검증 - journal회사 (note_verifier)",
         "desc": "정산표/DSD와 감사조서 주석을 시트별 비교 검증 — 블록1 자동채움 + 차이 색상 표시 (journal_analyzer 회사)",
-        "cmd": ["python", str(ROOT / "note_verifier" / "note_verifier.py"), "--base", "journal_analyzer"],
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "note_verifier" / "note_verifier.py"), "--base", "journal_analyzer"],
         "cwd": str(ROOT),
         "company": "journal",
         "extra": "company_flag",

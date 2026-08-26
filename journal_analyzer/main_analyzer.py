@@ -2199,7 +2199,7 @@ def _load_lease_filter():
     try:
         import importlib.util as _ilu
         lf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               '..', 'lease_analyzer', 'lease_filter.py')
+                               '..', 'account_analyzer', 'lease_analyzer', 'lease_filter.py')
         spec = _ilu.spec_from_file_location('lease_filter', lf_path)
         mod = _ilu.module_from_spec(spec)
         spec.loader.exec_module(mod)

@@ -11,3 +11,7 @@ CompanyB_Audit_Result.xlsx
 
 # Parquet 캐시 (자동 생성, 커밋 불필요)
 journal_analyzer/**/data/cache/
+
+# Excel 임시 잠금 파일
+~$*.xlsx
+~$*.xls
