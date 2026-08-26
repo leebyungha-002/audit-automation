@@ -44,6 +44,17 @@ ACCRUAL_RATE_MEMO = (
     "  (촉진 미적용이면 B=0이므로 100% 그대로 → 1,000,000원)"
 )
 
+USAGE_DAYS_MEMO = (
+    "'당기 연차사용일수' — 무엇을 적는 칸인지 헷갈리기 쉬워 메모로 설명\n\n"
+    "이 칸은 이 시트가 나타내는 회계연도(당기정보=당기, 전기정보=전기) 한 해 동안 이 사람이\n"
+    "'실제로 휴가로 소진한' 연차일수를 그대로 옮겨 적는 칸입니다 — 회사 연차관리대장·인사시스템에\n"
+    "이미 기록돼 있는 과거 실적치이며, 반차는 0.5로 입력 가능합니다.\n\n"
+    "※ 연차산정기준(회계기준/입사기준)이나 anchor_end·안분 같은 계산 로직과는 전혀 무관합니다.\n"
+    "  그런 건 이 옆의 '당기부여일수'(입력란 아님, 앱이 자동 계산)에서 처리되고, 이 칸은 그 결과와\n"
+    "  상관없이 그냥 '한 해 동안 몇 일 쉬었는지' 사실 그대로만 적으면 됩니다.\n\n"
+    "  당기말 잔여연차일수(계산) = 기초 이월연차잔여일수(입력) + 당기부여일수(계산) − 이 칸(입력)"
+)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_PATH = os.path.join(HERE, "input_data", "leave_template.xlsx")
 
@@ -206,6 +217,10 @@ def build():
             c2.font = header_font
             c2.alignment = center
             c2.border = border
+            if name == "당기 연차사용일수(일)":
+                memo = Comment(USAGE_DAYS_MEMO, "leave_analyzer")
+                memo.width, memo.height = 420, 280
+                c2.comment = memo
 
             ws.column_dimensions[get_column_letter(i)].width = width
 
