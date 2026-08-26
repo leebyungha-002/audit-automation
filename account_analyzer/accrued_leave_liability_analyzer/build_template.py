@@ -53,8 +53,8 @@ COST_TYPE_OPTIONS = ["제조원가", "판관비"]
 
 BASIS_MODE_LABEL = "연차산정기준(입사기준/회계기준)"
 BASIS_MODE_OPTIONS = ["입사기준", "회계기준"]
-PAYOUT_RATE_LABEL_CURRENT = "당기 연차사용촉진 반영 지급률(%, 미입력시 100%)"
-PAYOUT_RATE_LABEL_PRIOR = "전기 연차사용촉진 반영 지급률(%, 미입력시 100%)"
+ACCRUAL_RATE_LABEL_CURRENT = "당기 연차사용촉진 반영 부채인정비율(%, 미입력시 100%)"
+ACCRUAL_RATE_LABEL_PRIOR = "전기 연차사용촉진 반영 부채인정비율(%, 미입력시 100%)"
 PAYROLL_COUNT_LABEL = "기말 급여대장상 총인원수(명부 미확보 시 참고용)"
 
 BASIS_ROWS = [
@@ -332,43 +332,47 @@ def build():
     c3.border = border
     c3.alignment = Alignment(wrap_text=True, vertical="top")
 
-    payout_rate_current_row = payroll_count_row + 1
-    c1 = basis.cell(row=payout_rate_current_row, column=1, value=PAYOUT_RATE_LABEL_CURRENT)
+    accrual_rate_current_row = payroll_count_row + 1
+    c1 = basis.cell(row=accrual_rate_current_row, column=1, value=ACCRUAL_RATE_LABEL_CURRENT)
     c1.border = border
-    c2 = basis.cell(row=payout_rate_current_row, column=2)
+    c2 = basis.cell(row=accrual_rate_current_row, column=2)
     c2.border = border
     c2.number_format = "0.0"
     c2.fill = PatternFill("solid", fgColor="FFF2CC")
     c2.alignment = Alignment(horizontal="center", vertical="center")
     c3 = basis.cell(
-        row=payout_rate_current_row, column=3,
-        value="연차사용촉진제도(근로기준법 제61조)를 적법하게 이행하면 미사용 연차에 대한 금전 지급의무가 "
-              "면제됩니다. 인원별로 절차 이행 여부를 확인하기 어려우므로, 전사 공통으로 '당기 중 실제 지급될 "
-              "것으로 예상하는 비율(%)'을 입력하면 이 비율만큼만 당기말 충당부채로 인식합니다(잔여일수 자체는 "
-              "그대로 표시되고 금액에만 곱해짐). 예) 70 입력 시 당기말 잔여연차 금액의 70%만 충당부채로 인식. "
-              "촉진제도를 쓰지 않거나 비율을 모르면 비워두세요(100%로 계산됨).",
+        row=accrual_rate_current_row, column=3,
+        value="연차사용촉진제도(근로기준법 제61조)를 적법하게 이행해도, 잔여연차 중 완전히 소멸(미사용+촉진 "
+              "이행으로 금전보상의무까지 면제)되는 부분만 부채가 0입니다. 사용될 것으로 예상되는 부분은 그 "
+              "유급휴가를 제공할 의무 자체가 이미 당기 근무의 대가로 발생했으므로(일반기준 21.5의2 매칭원칙 — "
+              "현금유출 여부와 무관), 미사용인데 촉진 실패로 금전보상해야 하는 부분과 함께 모두 부채로 남습니다. "
+              "인원별로 이 구성비를 확인하기 어려우므로, 전사 공통으로 '완전소멸되지 않고 부채로 남을 것으로 "
+              "예상하는 비율(%) = 1 − 완전소멸 예상비율'을 입력하면 이 비율만큼만 당기말 충당부채로 인식합니다"
+              "(잔여일수 자체는 그대로 표시되고 금액에만 곱해짐). 예) 70 입력 시 당기말 잔여연차 금액의 70%만 "
+              "충당부채로 인식(30%는 미사용+촉진 적법이행으로 완전소멸 예상). 촉진제도를 쓰지 않거나 비율을 "
+              "모르면 비워두세요(100%로 계산 — 잔여연차 전액 부채).",
     )
     c3.border = border
     c3.alignment = Alignment(wrap_text=True, vertical="top")
 
-    payout_rate_prior_row = payout_rate_current_row + 1
-    c1 = basis.cell(row=payout_rate_prior_row, column=1, value=PAYOUT_RATE_LABEL_PRIOR)
+    accrual_rate_prior_row = accrual_rate_current_row + 1
+    c1 = basis.cell(row=accrual_rate_prior_row, column=1, value=ACCRUAL_RATE_LABEL_PRIOR)
     c1.border = border
-    c2 = basis.cell(row=payout_rate_prior_row, column=2)
+    c2 = basis.cell(row=accrual_rate_prior_row, column=2)
     c2.border = border
     c2.number_format = "0.0"
     c2.fill = PatternFill("solid", fgColor="FFF2CC")
     c2.alignment = Alignment(horizontal="center", vertical="center")
     c3 = basis.cell(
-        row=payout_rate_prior_row, column=3,
-        value="위와 동일하되 전기말 충당부채 재계산에 적용되는 지급률입니다. 연도별로 촉진 이행 여부·실제 "
-              "사용률이 달라질 수 있어 당기와 별도로 입력받습니다. 전기에는 촉진제도를 쓰지 않았거나 비율을 "
+        row=accrual_rate_prior_row, column=3,
+        value="위와 동일하되 전기말 충당부채 재계산에 적용되는 부채인정비율입니다. 연도별로 촉진 이행 여부·실제 "
+              "소멸률이 달라질 수 있어 당기와 별도로 입력받습니다. 전기에는 촉진제도를 쓰지 않았거나 비율을 "
               "모르면 비워두세요(100%로 계산됨).",
     )
     c3.border = border
     c3.alignment = Alignment(wrap_text=True, vertical="top")
 
-    money_header_row = payout_rate_prior_row + 2
+    money_header_row = accrual_rate_prior_row + 2
     for i, h in enumerate(["항목", "금액(원)", "설명"], start=1):
         cell = basis.cell(row=money_header_row, column=i, value=h)
         cell.fill = header_fill
@@ -485,13 +489,16 @@ def build():
         "       ※ 두 기준 모두 발생주의(K-IFRS 1019/일반기준 21장 누적유급휴가 원칙) — 그 연차를 만든",
         "         근로가 제공된 회계기간 말에 부채로 인식하며, 근로기준법상 법적 청구권 발생일(대개 익년",
         "         1/1 또는 입사기념일 다음날)과는 무관합니다.",
-        "   '당기/전기 연차사용촉진 반영 지급률(%)': 연차사용촉진제도(근로기준법 제61조)를 적법하게",
-        "     이행하면 미사용 연차의 금전 지급의무가 면제됩니다. 인원별 절차 이행 여부를 확인하기 어려우므로,",
-        "     전사 공통으로 '실제 지급될 것으로 예상하는 비율(%)'을 입력하면 그 비율만큼만 충당부채로",
-        "     인식합니다(잔여일수 자체는 그대로 표시되고 금액에만 곱해짐). 연도마다 촉진 이행 여부·실제",
-        "     사용률이 달라질 수 있어 당기/전기 지급률을 각각 따로 입력받습니다 — 당기 지급률은 당기말",
-        "     충당부채(재계산)에, 전기 지급률은 전기말 충당부채(재계산)에 각각 적용됩니다. 촉진제도를 쓰지",
-        "     않거나 비율을 모르면 비워두세요(100%로 계산 — 잔여연차 전액을 충당부채로 인식).",
+        "   '당기/전기 연차사용촉진 반영 부채인정비율(%)': 연차사용촉진제도(근로기준법 제61조)를 적법하게",
+        "     이행해도, 잔여연차 중 완전히 소멸(미사용+촉진 이행으로 금전보상의무까지 면제)되는 부분만",
+        "     부채가 0입니다. 사용될 것으로 예상되는 부분은 그 유급휴가를 제공할 의무 자체가 이미 당기",
+        "     근무의 대가로 발생했으므로(일반기준 21.5의2 매칭원칙, 현금유출 여부와 무관) 부채이고, 미사용",
+        "     인데 촉진 실패로 금전보상해야 하는 부분도 당연히 부채입니다. 인원별 구성비를 확인하기 어려우므로,",
+        "     전사 공통으로 '완전소멸되지 않고 부채로 남을 것으로 예상하는 비율(%) = 1−완전소멸 예상비율'을",
+        "     입력하면 그 비율만큼만 충당부채로 인식합니다(잔여일수 자체는 그대로 표시되고 금액에만 곱해짐).",
+        "     연도마다 촉진 이행 여부·실제 소멸률이 달라질 수 있어 당기/전기 비율을 각각 따로 입력받습니다 —",
+        "     당기 비율은 당기말 충당부채(재계산)에, 전기 비율은 전기말 충당부채(재계산)에 각각 적용됩니다.",
+        "     촉진제도를 쓰지 않거나 비율을 모르면 비워두세요(100%로 계산 — 잔여연차 전액을 충당부채로 인식).",
         "   전기말/당기말 회사계상 연차충당부채(제조원가분/판관비분) 4칸과, 당기 연차충당부채 차변(당기지급액)",
         "   1칸을 입력합니다. 다섯 값 모두 인별 재계산액과의 대사(비교)용 참고값일 뿐, 재계산 자체에는",
         "   반영되지 않습니다. '당기지급액'은 journal_analyzer(분개장분석) 메뉴에서 관련 계정의 당기 차변",
