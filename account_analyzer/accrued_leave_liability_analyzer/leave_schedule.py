@@ -34,7 +34,8 @@ depreciation_analyzer의 "기초잔액은 입력값 신뢰, 당기분만 계산"
     한 번에 부여받는다 — 즉 '당기 근무로 발생하는 연차'를 당기말에 인식한다(법적으로는 익년
     1/1부터 사용 가능하더라도, 그 청구권을 만든 근로는 이미 당기 중에 제공되었으므로). 입사연도
     (근속연수 0년차)에는 월단위 발생 대신 비례연차를 적용한다: 비례연차일수 = floor(15 × 재직개월수 / 12)
-    (재직개월수 = 입사월부터 회계연도 종료월까지 달력월 기준 개월수, 상한 12개월).
+    (재직개월수 = 입사일로부터 '만 1개월 개근'이 완성된 횟수 — 입사월이라도 하루만 근무했으면
+    카운트하지 않음, _monthly_accrual_days·입사기준 안분과 동일한 개근 원칙, 최대 11).
   [입사기준] 개인별 입사기념일마다 근속연수가 갱신된다. 당기 회계기간 중 도래하는 입사기념일마다
     그 시점 근속연수로 위 표를 적용해 개별로 전액 부여한다(정상적인 12개월 회계기간이면 보통 0~1개).
     그리고 마지막 확정 부여 시점(직전 입사기념일 — 당기 중 기념일이 없으면 당기 시작 전 마지막
@@ -122,7 +123,7 @@ FORMULA_NOTE_LINES = [
     ("[회계기준] 근속연수 기산 시점 = 결산기준일(회계연도 종료일), 전 직원 동일 시점에 일괄 부여 "
      "— 발생주의: 당기 근무로 창출되는 연차를 당기말에 인식(익년 사용가능 여부와 무관)", True),
     ("입사연도(근속연수 0년차) 비례연차 = floor(15 × 재직개월수 ÷ 12)   "
-     "(재직개월수 = 입사월~회계연도 종료월, 달력월 기준 상한 12개월)", False),
+     "(재직개월수 = 입사일로부터 만1개월 개근 완성 횟수, 입사월 미개근분 미포함)", False),
     ("", False),
     ("[입사기준] 근속연수 기산 시점 = 개인별 입사기념일, 당기 회계기간 중 도래하는 기념일마다 전액 개별 부여", True),
     ("+ 발생주의 월할 안분: 직전 확정 기념일부터 결산기준일까지 경과개월수만큼 다음 근속연수분을 미리 가산 "
@@ -247,14 +248,6 @@ def _years_between(start: date, end: date) -> int:
     if (end.month, end.day) < (start.month, start.day):
         years -= 1
     return years
-
-
-def _months_between_inclusive(start: date, end: date) -> int:
-    """start가 속한 달부터 end가 속한 달까지의 달력월 개월수(양끝 포함), 최대 12·최소 0."""
-    if end < start:
-        return 0
-    months = (end.year - start.year) * 12 + (end.month - start.month) + 1
-    return max(0, min(months, 12))
 
 
 def _monthly_accrual_days(입사일: date, anchor_start: date, anchor_end: date) -> int:
@@ -621,7 +614,9 @@ def compute_employee(emp: dict, anchor_start: date, anchor_end: date, mode: str,
             부여일수 = _entitlement_by_tenure(근속연수)
             근속연수_표시 = 근속연수
         elif 근속연수 == 0:
-            재직개월수 = _months_between_inclusive(입사일, anchor_end)
+            # 개근 원칙: 입사월이라도 하루만 근무했다면 그 달은 재직개월수에 넣지 않는다
+            # (_monthly_accrual_days·입사기준 안분과 동일한 '만 1개월 개근 완성' 기준).
+            재직개월수 = _elapsed_full_months(입사일, anchor_end)
             부여일수 = (15 * 재직개월수) // 12
             근속연수_표시 = 0
         else:  # 당기 중 입사(회계기준이라도 최초 근속연도는 입사일 기준 월단위 발생 적용)
