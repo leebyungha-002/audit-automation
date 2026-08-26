@@ -779,7 +779,7 @@ def main():
 
     default_dir = None
     if args.company:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         base = (os.path.join(root, args.base, args.company)
                 if args.base else os.path.join(root, args.company))
         if os.path.isdir(base):
