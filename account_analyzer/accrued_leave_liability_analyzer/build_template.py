@@ -25,6 +25,24 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
+
+ACCRUAL_RATE_MEMO = (
+    "연차사용촉진 반영 부채인정비율 — 계산식 메모 (헷갈리기 쉬운 개념이라 예시로 설명)\n\n"
+    "결산일 현재 잔여연차 1일은 다음 셋 중 하나로 귀결됩니다:\n"
+    "  A. 실제 사용 예정 → 그 유급휴가를 줄 의무 자체가 이미 당기 근무의 대가로 발생\n"
+    "     (일반기준 21.5의2 매칭원칙, 현금유출 여부와 무관) → 부채 O\n"
+    "  B. 미사용인데 촉진 절차가 적법 이행돼 금전보상의무까지 완전 면제 → 부채 X (완전소멸)\n"
+    "  C. 미사용인데 촉진 실패(절차 하자·퇴사자라 시간 없음·대상 제외 등) → 결국 현금 지급 → 부채 O\n\n"
+    "부채인정비율 = (A+C) / (A+B+C) = 1 − B의 비율\n"
+    "  ※ 자주 하는 실수: '미사용예상비율'(B+C)이나 '지급될 비율'(C)만 곱하는 것 — 틀립니다.\n"
+    "    A(사용예정분)도 촉진과 무관하게 그 자체로 부채입니다.\n\n"
+    "예시) 잔여연차 10일, 1일 통상임금 100,000원인 직원\n"
+    "  A(사용예정) 7일 + C(미사용·지급예정) 2일 + B(완전소멸) 1일 = 10일\n"
+    "  부채인정비율 = (7+2)/10 = 90%\n"
+    "  연차충당부채 = 10일 × 100,000원 × 90% = 900,000원\n"
+    "  (촉진 미적용이면 B=0이므로 100% 그대로 → 1,000,000원)"
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_PATH = os.path.join(HERE, "input_data", "leave_template.xlsx")
@@ -340,6 +358,9 @@ def build():
     c2.number_format = "0.0"
     c2.fill = PatternFill("solid", fgColor="FFF2CC")
     c2.alignment = Alignment(horizontal="center", vertical="center")
+    memo = Comment(ACCRUAL_RATE_MEMO, "leave_analyzer")
+    memo.width, memo.height = 420, 320
+    c2.comment = memo
     c3 = basis.cell(
         row=accrual_rate_current_row, column=3,
         value="연차사용촉진제도(근로기준법 제61조)를 적법하게 이행해도, 잔여연차 중 완전히 소멸(미사용+촉진 "
@@ -363,6 +384,9 @@ def build():
     c2.number_format = "0.0"
     c2.fill = PatternFill("solid", fgColor="FFF2CC")
     c2.alignment = Alignment(horizontal="center", vertical="center")
+    memo_prior = Comment(ACCRUAL_RATE_MEMO, "leave_analyzer")
+    memo_prior.width, memo_prior.height = 420, 320
+    c2.comment = memo_prior
     c3 = basis.cell(
         row=accrual_rate_prior_row, column=3,
         value="위와 동일하되 전기말 충당부채 재계산에 적용되는 부채인정비율입니다. 연도별로 촉진 이행 여부·실제 "
@@ -499,6 +523,11 @@ def build():
         "     연도마다 촉진 이행 여부·실제 소멸률이 달라질 수 있어 당기/전기 비율을 각각 따로 입력받습니다 —",
         "     당기 비율은 당기말 충당부채(재계산)에, 전기 비율은 전기말 충당부채(재계산)에 각각 적용됩니다.",
         "     촉진제도를 쓰지 않거나 비율을 모르면 비워두세요(100%로 계산 — 잔여연차 전액을 충당부채로 인식).",
+        "     [예시] 잔여연차 10일, 1일 통상임금 100,000원인 직원이 있다면: 7일은 내년 실사용 예정(부채 O),",
+        "     2일은 미사용인데 촉진 실패로 결국 지급 예정(부채 O), 1일은 미사용+촉진 적법이행으로 완전소멸",
+        "     (부채 X) → 부채인정비율 = (7+2)/10 = 90% → 연차충당부채 = 10일×100,000원×90% = 900,000원.",
+        "     ※ 흔한 실수: '미사용예상비율'(2+1일=30%)이나 '지급될 비율'(2일=20%)만 곱하면 사용예정분",
+        "     7일치가 통째로 빠져 과소계상됩니다 — 이 셀(B열)에 마우스를 올리면 같은 예시가 메모로도 뜹니다.",
         "   전기말/당기말 회사계상 연차충당부채(제조원가분/판관비분) 4칸과, 당기 연차충당부채 차변(당기지급액)",
         "   1칸을 입력합니다. 다섯 값 모두 인별 재계산액과의 대사(비교)용 참고값일 뿐, 재계산 자체에는",
         "   반영되지 않습니다. '당기지급액'은 journal_analyzer(분개장분석) 메뉴에서 관련 계정의 당기 차변",
