@@ -81,6 +81,7 @@ OUTPUT_DIR = os.path.join(HERE, "output")
 
 SIG_THRESHOLD_ABS = 1000      # 유의차이 절대금액 기준(원)
 SIG_THRESHOLD_PCT = 0.01      # 유의차이 비율 기준(1%)
+SIG_THRESHOLD_DAYS_ABS = 0.5  # 유의차이 절대일수 기준(일) — 반차 단위 차이도 잡히도록 금액과 별도 기준 사용
 
 COST_TYPES = ["제조원가", "판관비"]
 BASIS_KEYS = {
@@ -229,10 +230,12 @@ def _find_input_file(company: str = None, file: str = None) -> str:
     return matches[0]
 
 
-def _is_significant(diff, base) -> bool:
+def _is_significant(diff, base, abs_threshold: float = SIG_THRESHOLD_ABS) -> bool:
+    """abs_threshold: 금액(원) 차이는 기본값(SIG_THRESHOLD_ABS) 사용, 일수 차이는 호출부에서
+    SIG_THRESHOLD_DAYS_ABS를 넘겨 별도 기준(반차 단위)을 적용한다 — 두 단위 스케일이 다르기 때문."""
     if diff is None or pd.isna(diff):
         return False
-    if abs(diff) >= SIG_THRESHOLD_ABS and (base in (None, 0) or abs(diff) >= abs(base) * SIG_THRESHOLD_PCT):
+    if abs(diff) >= abs_threshold and (base in (None, 0) or abs(diff) >= abs(base) * SIG_THRESHOLD_PCT):
         return True
     return False
 
@@ -701,6 +704,9 @@ def build_schedule_table(employees: list, anchor_start: date, anchor_end: date,
         회사계상_raw = e.get("회사계상 기말 연차충당부채(원)")
         당기회사계상 = _safe_float(회사계상_raw) if 회사계상_raw not in (None, "") else None
         당기말차이 = None if 당기회사계상 is None else r["당기말충당부채"] - 당기회사계상
+        회사계상일수_raw = e.get("회사계상 기말 연차일수(일)")
+        당기회사계상일수 = _safe_float(회사계상일수_raw) if 회사계상일수_raw not in (None, "") else None
+        당기말일수차이 = None if 당기회사계상일수 is None else r["당기말잔여일수"] - 당기회사계상일수
 
         비고 = e.get("비고") or ""
         tags = []
@@ -725,6 +731,8 @@ def build_schedule_table(employees: list, anchor_start: date, anchor_end: date,
             "근속연수(당기말기준)": r["근속연수"],
             "당기부여일수(계산)": r["당기부여일수"],
             "당기말 잔여연차일수(계산)": r["당기말잔여일수"],
+            "당기말 회사계상 연차일수(일)": 당기회사계상일수,
+            "당기말 일수차이(계산-회사계상)": 당기말일수차이,
             "전기말 연차충당부채(계산)": 전기말충당부채,
             "당기말 연차충당부채(계산)": r["당기말충당부채"],
             "당기말 회사계상 연차충당부채(원)": 당기회사계상,
@@ -751,6 +759,9 @@ def build_prior_schedule_table(전기_employees: list, anchor_start: date, ancho
         회사계상_raw = e.get("회사계상 기말 연차충당부채(원)")
         회사계상 = _safe_float(회사계상_raw) if 회사계상_raw not in (None, "") else None
         차이 = None if 회사계상 is None else r["당기말충당부채"] - 회사계상
+        회사계상일수_raw = e.get("회사계상 기말 연차일수(일)")
+        회사계상일수 = _safe_float(회사계상일수_raw) if 회사계상일수_raw not in (None, "") else None
+        일수차이 = None if 회사계상일수 is None else r["당기말잔여일수"] - 회사계상일수
 
         비고 = e.get("비고") or ""
         if r["warning"]:
@@ -770,6 +781,8 @@ def build_prior_schedule_table(전기_employees: list, anchor_start: date, ancho
             "근속연수(전기말기준)": r["근속연수"],
             "전기부여일수(계산)": r["당기부여일수"],
             "전기말 잔여연차일수(계산)": r["당기말잔여일수"],
+            "전기말 회사계상 연차일수(일)": 회사계상일수,
+            "전기말 일수차이(계산-회사계상)": 일수차이,
             "전기말 연차충당부채(계산)": r["당기말충당부채"],
             "전기말 회사계상 연차충당부채(원)": 회사계상,
             "전기말 차이(계산-회사계상)": 차이,
@@ -1393,15 +1406,19 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
 
 MONEY_COLS = ["1일 통상임금(원)", "전기말 연차충당부채(계산)", "당기말 연차충당부채(계산)",
               "당기말 회사계상 연차충당부채(원)", "당기말 차이(계산-회사계상)", "당기 연차수당비용(계산)"]
-DAY_COLS = ["기초 이월연차잔여일수(일)", "당기 연차사용일수(일)", "당기부여일수(계산)", "당기말 잔여연차일수(계산)"]
+DAY_COLS = ["기초 이월연차잔여일수(일)", "당기 연차사용일수(일)", "당기부여일수(계산)", "당기말 잔여연차일수(계산)",
+            "당기말 회사계상 연차일수(일)", "당기말 일수차이(계산-회사계상)"]
 DATE_COLS = ["입사일"]
-DIFF_BASE_COLS = {"당기말 차이(계산-회사계상)": "당기말 회사계상 연차충당부채(원)"}
+DIFF_BASE_COLS = {"당기말 차이(계산-회사계상)": "당기말 회사계상 연차충당부채(원)",
+                   "당기말 일수차이(계산-회사계상)": "당기말 회사계상 연차일수(일)"}
 COUNT_COLS = ["당기신규입사"]
 
 PRIOR_MONEY_COLS = ["1일 통상임금(원)", "전기말 연차충당부채(계산)",
                      "전기말 회사계상 연차충당부채(원)", "전기말 차이(계산-회사계상)"]
-PRIOR_DAY_COLS = ["기초 이월연차잔여일수(일)", "당기 연차사용일수(일)", "전기부여일수(계산)", "전기말 잔여연차일수(계산)"]
-PRIOR_DIFF_BASE_COLS = {"전기말 차이(계산-회사계상)": "전기말 회사계상 연차충당부채(원)"}
+PRIOR_DAY_COLS = ["기초 이월연차잔여일수(일)", "당기 연차사용일수(일)", "전기부여일수(계산)", "전기말 잔여연차일수(계산)",
+                   "전기말 회사계상 연차일수(일)", "전기말 일수차이(계산-회사계상)"]
+PRIOR_DIFF_BASE_COLS = {"전기말 차이(계산-회사계상)": "전기말 회사계상 연차충당부채(원)",
+                         "전기말 일수차이(계산-회사계상)": "전기말 회사계상 연차일수(일)"}
 
 
 def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: str,
@@ -1474,8 +1491,10 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                 if h == "당기신규입사":
                     cell.value = "O" if val is True else None
                     cell.alignment = center
-                if h in DIFF_BASE_COLS and _is_significant(val, row.get(DIFF_BASE_COLS[h])):
-                    cell.fill = sig_fill
+                if h in DIFF_BASE_COLS:
+                    threshold = SIG_THRESHOLD_DAYS_ABS if h in DAY_COLS else SIG_THRESHOLD_ABS
+                    if _is_significant(val, row.get(DIFF_BASE_COLS[h]), threshold):
+                        cell.fill = sig_fill
             for c in MONEY_COLS + DAY_COLS:
                 v = row.get(c)
                 if v is not None and not pd.isna(v):
@@ -1561,8 +1580,10 @@ def save_results(df: pd.DataFrame, output_path: str, company: str, target_fy: st
                         cell.number_format = "#,##0"
                     if h in PRIOR_DAY_COLS:
                         cell.number_format = "0.0"
-                    if h in PRIOR_DIFF_BASE_COLS and _is_significant(val, row.get(PRIOR_DIFF_BASE_COLS[h])):
-                        cell.fill = sig_fill
+                    if h in PRIOR_DIFF_BASE_COLS:
+                        threshold = SIG_THRESHOLD_DAYS_ABS if h in PRIOR_DAY_COLS else SIG_THRESHOLD_ABS
+                        if _is_significant(val, row.get(PRIOR_DIFF_BASE_COLS[h]), threshold):
+                            cell.fill = sig_fill
                 for c in PRIOR_MONEY_COLS + PRIOR_DAY_COLS:
                     v = row.get(c)
                     if v is not None and not pd.isna(v):
