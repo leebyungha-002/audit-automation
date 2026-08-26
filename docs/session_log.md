@@ -1742,3 +1742,32 @@
 3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
 
 ---
+
+## 2026-08-26 — 프로젝트 폴더 재구성 3건 + leave_analyzer 발생주의 로직 정정
+
+**완료 작업**:
+- **폴더 재구성 3단계** (모두 launcher.py 재검증 완료 — 16개 도구 전체 cwd/스크립트 경로 실존 확인, JS 회사 5개 자동 감지 확인)
+  1. `leave_analyzer/` → `accrued_leave_liability_analyzer/`(회계용어 반영) — 폴더명만 변경, 내부 파일명(`leave_schedule.py`/`leave_template.xlsx`)은 풀네임이 너무 길다는 blue sky 피드백으로 `leave_` 접두어 유지
+  2. 계정별 재계산+대사 도구 5종(lease/depreciation/interest/severance/accrued_leave_liability) → `account_analyzer/` 하위로, 감사조서 작성 지원 도구 4종(file_classifier/note_verifier/sheet_splitter/report) → `workpaper_tools/` 하위로 이동. 이동으로 깨지는 상위 경로 계산(PROJECT_ROOT 등, `__file__` 기준 dirname 체인)을 lease_filter.py/lease_schedule.py/file_classifier/main.py/report의 cash_lead_generator.py·data_injector.py에서 보정, journal_analyzer·auditRunner.js의 lease_filter.py 참조 경로도 수정
+  3. 자바스크립트 자동화 회사 폴더(Braintree/dae_il/dae_il_contry/dae_sung_eco/graphy) → `java_script_companies/` 하위로 이동 — journal_analyzer 회사들에 이미 쓰던 `--base` 패턴 재사용해 핵심 로직 변경 최소화(run.js 1줄, config.js 상대경로 2곳). CLAUDE.md 0-1절도 갱신
+  - 사이드: 이전 세션에 놓쳤던 note_verifier.py의 dirname 체인 누락(grep 제외패턴이 우연히 가려서 못 봄) 발견해 별도 수정
+- **leave_analyzer 계산 로직 발생주의 원칙 정정** (blue sky의 연속된 지적으로 3단계 수정)
+  1. 회계기준: 근속연수 기산점 `anchor_start`(회계연도 시작일=전기 근무분) → `anchor_end`(결산기준일=당기 근무분)로 변경 — 기존엔 부채 인식이 1년 늦게 잡히던 문제
+  2. 입사기준: 당기 중 기념일이 없으면 `부여일수=0`으로 계산되던 버그 수정 — 직전 확정 기념일부터 결산일까지 진행 중인 다음 사이클을 월할 안분해 가산(`_elapsed_full_months()` 신규 헬퍼, "만1개월 개근 완성" 원칙 — 입사월 하루만 근무해도 카운트 안 함). 회계기준 0년차 비례연차도 동일 개근원칙으로 통일, 이제 쓸모없어진 `_months_between_inclusive()` 삭제
+  3. **연차사용촉진 "지급률"→"부채인정비율" 개념 정정**: 일반기업회계기준 21.5의2 매칭원칙상, 미사용시 지급의무가 촉진으로 면제되더라도 "사용될 것으로 예상되는 분"은 그 유급휴가 제공의무 자체가 이미 당기 근무로 발생한 것이라 부채임(현금유출 무관). 완전소멸(미사용+촉진 적법이행)분만 부채 0. 계산식 구조(잔여연차일수×통상임금×비율)는 그대로이나 비율의 의미가 "지급될 비율"→"1−완전소멸 예상비율"로 확장(입력값도 커져야 함). `leave_payout_rate()`→`leave_accrual_rate()` 등 전체 리네이밍
+- **템플릿에 계산식 설명 메모(엑셀 Comment) 추가**: "AI들도 헷갈릴 정도로 어려운 개념"이라는 blue sky 의견 반영. 부채인정비율 입력 셀(B6/B7)에 A(사용예정)/B(완전소멸)/C(미사용·지급예정) 구분표+숫자예시 메모, "당기 연차사용일수" 헤더(I2)에도 "이 칸은 계산 로직과 무관한 순수 입력값이며 실사용 가능 소스는 기초이월·당기중 도래 기념일 전액부여분·신규입사자 월단위발생분뿐(당기부여일수는 결산일에야 인식되는 것이라 제외)" 메모 추가. '작성안내' 시트에도 동일 내용 텍스트로 중복 기재
+
+**변경 파일**:
+- 폴더 이동: `leave_analyzer/*` → `account_analyzer/accrued_leave_liability_analyzer/*`, `{lease,depreciation,interest,severance}_analyzer/*` → `account_analyzer/*`, `{file_classifier,note_verifier,sheet_splitter,report}/*` → `workpaper_tools/*`, `{Braintree,dae_il,dae_il_contry,dae_sung_eco,graphy}/*` → `java_script_companies/*`
+- `launcher.py`, `run.js`, `journal_analyzer/main_analyzer.py`, `shared_modules/auditRunner.js`, `CLAUDE.md`(경로 참조 전체 갱신)
+- `account_analyzer/accrued_leave_liability_analyzer/leave_schedule.py`, `build_template.py`, `input_data/leave_template.xlsx`(발생주의 로직 정정 + 메모 추가)
+- `.gitignore`(엑셀 임시 잠금파일 `~$*.xlsx` 패턴 추가)
+
+**미해결 이슈**: 없음(leave_analyzer는 여전히 실데이터 미실행 상태 — 로직은 이번 세션에 크게 성숙됨)
+
+**다음 할 일**:
+1. blue sky가 leave_analyzer 실제 회사 데이터를 받으면(부채인정비율 추정치는 "1−완전소멸 예상비율"로 재해석해서 입력 — 예전 "지급률" 감각으로 낮게 입력하면 과소계상됨) 표준 템플릿에 맞춰 입력 파일 작성 → 1차 실행
+2. (severance, 이월) 대일개발 fy2025 파일 '당기퇴사자' 시트 지급사유 표시 확인 + L열 회사계상액 입력 후 차이 원인 특정
+3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
+
+---
