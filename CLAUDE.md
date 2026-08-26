@@ -50,7 +50,8 @@ docs/session_log.md 의 마지막 항목을 읽고, 미해결 이슈부터 이�
 
 ## 1. 프로젝트 구조 및 관리
 
-- **회사별 격리**: 반드시 회사별로 독립된 폴더(예: `/Company_A`, `/Company_B`)를 생성하고,
+- **회사별 격리**: 자바스크립트(Playwright)로 분석하는 회사는 `java_script_companies/` 하위에
+  회사별로 독립된 폴더(예: `java_script_companies/Company_A`)를 생성하고,
   각 폴더 내에 해당 회사의 전용 템플릿과 설정 파일(`config.js`)을 위치시킨다.
 - **상대 경로 금지**: 파일 읽기/쓰기 시 실행 위치에 따라 에러가 나지 않도록
   반드시 `path.join(__dirname, ...)`를 사용하여 절대 경로를 생성한다.

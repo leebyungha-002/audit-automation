@@ -28,9 +28,12 @@ _FY_MONTH_BY_INDEX = {0: 12, 1: 6, 2: 9}
 # ──────────────────────────────────────────────────────────────────────────────
 
 def detect_js_companies() -> list[str]:
-    """루트 폴더 중 task_list_*.xlsx가 있는 폴더를 회사로 간주"""
+    """java_script_companies/ 하위 폴더 중 task_list_*.xlsx가 있는 폴더를 회사로 간주"""
+    js_dir = ROOT / "java_script_companies"
+    if not js_dir.exists():
+        return []
     companies = []
-    for p in sorted(ROOT.iterdir()):
+    for p in sorted(js_dir.iterdir()):
         if p.is_dir() and not p.name.startswith((".", "_")):
             if any(p.glob("task_list_*.xlsx")):
                 companies.append(p.name)
@@ -162,8 +165,8 @@ TOOLS = [
     {
         "category": "Data_Injector",
         "name": "데이터 주입 - JS회사 (data_injector)",
-        "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (루트 회사)",
-        "cmd": ["python", str(ROOT / "workpaper_tools" / "report" / "data_injector.py")],
+        "desc": "mapping_list 기반으로 감사조서 엑셀에 데이터를 자동 주입 (java_script_companies 회사)",
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "report" / "data_injector.py"), "--base", "java_script_companies"],
         "cwd": str(ROOT / "workpaper_tools" / "report"),
         "company": "js",
         "extra": None,
@@ -189,8 +192,8 @@ TOOLS = [
     {
         "category": "리스 분석",
         "name": "리스 완전성 검토 - JS회사 (lease_filter)",
-        "desc": "K-IFRS 1116 리스 완전성 검토 — 회사 미선택 시 input_data 직접분석, 선택 시 results 연계",
-        "cmd": ["python", str(ROOT / "account_analyzer" / "lease_analyzer" / "lease_filter.py")],
+        "desc": "K-IFRS 1116 리스 완전성 검토 — 회사 미선택 시 input_data 직접분석, 선택 시 java_script_companies 회사의 results 연계",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "lease_analyzer" / "lease_filter.py"), "--base", "java_script_companies"],
         "cwd": str(ROOT / "account_analyzer" / "lease_analyzer"),
         "company": "optional_js",
         "extra": "optional_company",
@@ -243,8 +246,8 @@ TOOLS = [
     {
         "category": "파일 분류",
         "name": "감사조서 파일 분류 - JS회사 (file_classifier)",
-        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (루트 회사)",
-        "cmd": ["python", str(ROOT / "workpaper_tools" / "file_classifier" / "main.py")],
+        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (java_script_companies 회사)",
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "file_classifier" / "main.py"), "--base", "java_script_companies"],
         "cwd": str(ROOT / "workpaper_tools" / "file_classifier"),
         "company": "js",
         "extra": "company_flag",
@@ -270,8 +273,8 @@ TOOLS = [
     {
         "category": "주석 검증",
         "name": "감사주석 검증 - JS회사 (note_verifier)",
-        "desc": "정산표/DSD와 감사조서 주석을 시트별 비교 검증 — 블록1 자동채움 + 차이 색상 표시 (루트 회사)",
-        "cmd": ["python", str(ROOT / "workpaper_tools" / "note_verifier" / "note_verifier.py")],
+        "desc": "정산표/DSD와 감사조서 주석을 시트별 비교 검증 — 블록1 자동채움 + 차이 색상 표시 (java_script_companies 회사)",
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "note_verifier" / "note_verifier.py"), "--base", "java_script_companies"],
         "cwd": str(ROOT),
         "company": "js",
         "extra": "company_flag",

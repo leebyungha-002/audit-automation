@@ -58,7 +58,7 @@ async function main() {
         : [];
     if (sheetFilters.length) console.log(`[필터] 시트 필터 적용: ${sheetFilters.map(s => `"${s}"`).join(', ')}`);
 
-    const companyDir = path.join(__dirname, targetCompany);
+    const companyDir = path.join(__dirname, 'java_script_companies', targetCompany);
 
     if (!fs.existsSync(companyDir)) {
         console.error(`[오류] 대상 폴더를 찾을 수 없습니다: ${companyDir}`);
