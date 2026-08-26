@@ -1,8 +1,8 @@
-"""표준 입력 템플릿(accrued_leave_liability_template.xlsx) 생성 스크립트.
+"""표준 입력 템플릿(leave_template.xlsx) 생성 스크립트.
 
 실행: python build_template.py
-input_data/accrued_leave_liability_template.xlsx 를 새로 만든다(이미 있으면 덮어씀).
-회사별 파일은 이 템플릿을 복사해 accrued_leave_liability_<company>_information_fy<year>.xlsx 로 저장해서 사용한다.
+input_data/leave_template.xlsx 를 새로 만든다(이미 있으면 덮어씀).
+회사별 파일은 이 템플릿을 복사해 leave_<company>_information_fy<year>.xlsx 로 저장해서 사용한다.
 
 설계 원칙: 연월차충당부채(잔여연차일수 × 1일통상임금 방식) 검증.
   - 결산기준일(당기말/전기말)은 셀에 직접 입력하지 않고, 파일명(fy<연도>)과 실행 시 --fiscal-month로
@@ -25,7 +25,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_PATH = os.path.join(HERE, "input_data", "accrued_leave_liability_template.xlsx")
+OUT_PATH = os.path.join(HERE, "input_data", "leave_template.xlsx")
 
 # (그룹헤더, 상세헤더, 열너비) — '당기정보'/'전기정보' 두 시트가 동일한 구조를 공유한다.
 COLUMNS = [
@@ -489,8 +489,8 @@ def build():
         "   severance_analyzer/depreciation_analyzer와 동일한 규칙으로 당기말·전기말 결산기준일을 자동 계산합니다.",
         "   예) --fiscal-month 12 --fiscal-year 2026 → 당기말 2026-12-31, 전기말 2025-12-31.",
         "",
-        "9. 파일명 규칙: 이 템플릿을 복사해 'accrued_leave_liability_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
-        "   예) accrued_leave_liability_kyungnam_information_fy2026.xlsx (전기·당기 데이터가 모두 이 한 파일 안에 들어갑니다).",
+        "9. 파일명 규칙: 이 템플릿을 복사해 'leave_<회사명>_information_fy<회계연도>.xlsx' 로 저장하세요.",
+        "   예) leave_kyungnam_information_fy2026.xlsx (전기·당기 데이터가 모두 이 한 파일 안에 들어갑니다).",
     ]
     for i, line in enumerate(lines, start=1):
         cell = guide.cell(row=i, column=1, value=line)

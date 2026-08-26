@@ -1,8 +1,8 @@
 """연월차충당부채 검증앱(잔여연차일수 × 1일통상임금 방식) — 엔진.
 
-input_data/accrued_leave_liability_<company>_information_fy<year>.xlsx 를 읽어
+input_data/leave_<company>_information_fy<year>.xlsx 를 읽어
 결산기준일 현재 재직 중인 임직원별 연차충당부채를 재계산하고,
-전기말/당기말 회사계상 충당부채와 대사하는 output/accrued_leave_liability_schedule_<company>_<fy>.xlsx 를 생성한다.
+전기말/당기말 회사계상 충당부채와 대사하는 output/leave_schedule_<company>_<fy>.xlsx 를 생성한다.
 
 핵심 설계: severance_analyzer(퇴직급여충당부채)와 달리 연차는 이월(carryover)이 본질인 값이므로
 depreciation_analyzer의 "기초잔액은 입력값 신뢰, 당기분만 계산" 원칙을 그대로 적용한다.
@@ -41,8 +41,8 @@ depreciation_analyzer의 "기초잔액은 입력값 신뢰, 당기분만 계산"
     연단위 표만) 계산한다 — 실제 회사 데이터로 대사하며 회사 규정과 다르면 조정한다.
 
 실행 예:
-    python accrued_leave_liability_schedule.py kyungnam --fiscal-month 12
-    python accrued_leave_liability_schedule.py --file accrued_leave_liability_kyungnam_information_fy2026.xlsx
+    python leave_schedule.py kyungnam --fiscal-month 12
+    python leave_schedule.py --file leave_kyungnam_information_fy2026.xlsx
 """
 import argparse
 import calendar
@@ -188,9 +188,9 @@ def _find_input_file(company: str = None, file: str = None) -> str:
         return path
 
     if company:
-        pattern = os.path.join(INPUT_DIR, f"accrued_leave_liability_{company}_information_fy*.xlsx")
+        pattern = os.path.join(INPUT_DIR, f"leave_{company}_information_fy*.xlsx")
     else:
-        pattern = os.path.join(INPUT_DIR, "accrued_leave_liability_*_information_fy*.xlsx")
+        pattern = os.path.join(INPUT_DIR, "leave_*_information_fy*.xlsx")
 
     matches = [p for p in glob.glob(pattern) if "template" not in os.path.basename(p)]
     if not matches:
@@ -1616,7 +1616,7 @@ def main():
                                matched["신규입사_keys"], 전기말_balances, mode, payout_rate_current)
 
     suffix = f"_interim{args.interim_month:02d}" if args.interim_month else ""
-    output_path = os.path.join(OUTPUT_DIR, f"accrued_leave_liability_schedule_{company}_{target_fy}{suffix}.xlsx")
+    output_path = os.path.join(OUTPUT_DIR, f"leave_schedule_{company}_{target_fy}{suffix}.xlsx")
     save_results(df, output_path, company, target_fy, 당기결산일, 전기결산일,
                  전기_employees, matched["신규입사자"], matched["퇴사자"], basis,
                  matched["전기_by_key"], 전기말_balances, leaver_payments,
