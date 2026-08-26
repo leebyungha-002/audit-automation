@@ -74,6 +74,7 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.datetime import from_excel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(HERE, "input_data")
@@ -169,6 +170,14 @@ def _safe_date(v):
             return None
     except (TypeError, ValueError):
         pass
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        # 셀에 날짜 서식이 제대로 인식 안 돼 openpyxl이 datetime이 아닌 엑셀 일련번호(예: 44295)
+        # 그대로 반환한 경우 — pd.Timestamp(숫자)는 이를 나노초 단위로 오인식해 1970년 근처로
+        # 잘못 변환하므로(예: 44295 → 1970-01-01), 반드시 엑셀 기준일 방식으로 먼저 변환해야 한다.
+        try:
+            return from_excel(v).date()
+        except Exception:
+            return None
     ts = pd.Timestamp(v)
     return ts.date() if not pd.isna(ts) else None
 
@@ -706,7 +715,8 @@ def build_schedule_table(employees: list, anchor_start: date, anchor_end: date,
         당기말차이 = None if 당기회사계상 is None else r["당기말충당부채"] - 당기회사계상
         회사계상일수_raw = e.get("회사계상 기말 연차일수(일)")
         당기회사계상일수 = _safe_float(회사계상일수_raw) if 회사계상일수_raw not in (None, "") else None
-        당기말일수차이 = None if 당기회사계상일수 is None else r["당기말잔여일수"] - 당기회사계상일수
+        당기말일수차이 = (None if 당기회사계상일수 is None or r["당기말잔여일수"] is None
+                     else r["당기말잔여일수"] - 당기회사계상일수)
 
         비고 = e.get("비고") or ""
         tags = []
@@ -761,7 +771,8 @@ def build_prior_schedule_table(전기_employees: list, anchor_start: date, ancho
         차이 = None if 회사계상 is None else r["당기말충당부채"] - 회사계상
         회사계상일수_raw = e.get("회사계상 기말 연차일수(일)")
         회사계상일수 = _safe_float(회사계상일수_raw) if 회사계상일수_raw not in (None, "") else None
-        일수차이 = None if 회사계상일수 is None else r["당기말잔여일수"] - 회사계상일수
+        일수차이 = (None if 회사계상일수 is None or r["당기말잔여일수"] is None
+                 else r["당기말잔여일수"] - 회사계상일수)
 
         비고 = e.get("비고") or ""
         if r["warning"]:
