@@ -440,7 +440,7 @@ def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_r
 
     당기퇴사자_by_key: dict = {}
     for rec in leaver_payments:
-        if rec.get("실제지급액(원)") in (None, ""):
+        if rec.get("실제연차지급액(원)") in (None, ""):
             continue
         k = _employee_key(rec)
         if k is not None:
@@ -463,7 +463,7 @@ def _build_leaver_match_df(전기_by_key: dict, 당기_by_key: dict, 퇴사자_r
             if not tags:
                 tags.append("이상없음")
         elif in_auto and not in_actual:
-            tags.append("⚠ '당기퇴사자' 시트에 지급액 입력 없음")
+            tags.append("⚠ '당기퇴사자' 시트에 실제연차지급액 입력 없음")
         else:  # in_actual and not in_auto
             if 전기레코드 is not None:
                 tags.append("⚠ '당기정보'에도 그대로 존재함 — 실제 퇴사 여부 확인 필요")
@@ -920,10 +920,10 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
     # 퇴사자 명단 대사 — 자동 산출(전기정보-당기정보 차이) vs '당기퇴사자' 시트(사용자 입력) 통합 비교표
     leaver_match_df = _build_leaver_match_df(전기_by_key, 당기_by_key, 퇴사자_recs, leaver_payments)
 
-    # 퇴사자 금액차이 분석 — '당기퇴사자' 시트에 입력된 경우만, 전기말 연차충당부채와 실제지급액을 금액으로만 비교
+    # 퇴사자 금액차이 분석 — '당기퇴사자' 시트에 입력된 경우만, 전기말 연차충당부채와 실제연차지급액을 금액으로만 비교
     leaver_recon_rows = []
     for rec in leaver_payments:
-        실제지급액_raw = rec.get("실제지급액(원)")
+        실제지급액_raw = rec.get("실제연차지급액(원)")
         if 실제지급액_raw in (None, ""):
             continue
         key = _employee_key(rec)
@@ -938,12 +938,12 @@ def build_summary(당기_df: pd.DataFrame, 전기_employees: list,
             "직급": (전기레코드 or {}).get("직급") or "",
             "원가구분": _cost_type(전기레코드) if 전기레코드 else "(미상)",
             "전기말 연차충당부채(계산)": 전기말충당부채,
-            "실제지급액(입력)": 실제지급액,
-            "차이(연차충당부채-실제지급액)": None if 전기말충당부채 is None else 전기말충당부채 - 실제지급액,
+            "실제연차지급액(입력)": 실제지급액,
+            "차이(연차충당부채-실제연차지급액)": None if 전기말충당부채 is None else 전기말충당부채 - 실제지급액,
         })
     leaver_recon_df = pd.DataFrame(leaver_recon_rows) if leaver_recon_rows else pd.DataFrame(
         columns=["사업장", "부서", "사번", "성명", "직급", "원가구분",
-                 "전기말 연차충당부채(계산)", "실제지급액(입력)", "차이(연차충당부채-실제지급액)"]
+                 "전기말 연차충당부채(계산)", "실제연차지급액(입력)", "차이(연차충당부채-실제연차지급액)"]
     )
 
     return {
@@ -1333,14 +1333,14 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
     leaver_recon = summary.get("leaver_recon")
     if leaver_recon is not None and not leaver_recon.empty:
         ws.cell(row=r, column=1,
-                value="■ 퇴사자 금액차이 분석 ('당기퇴사자' 시트 입력분 — 전기말 연차충당부채 vs 실제지급액)").fill = section_fill
+                value="■ 퇴사자 금액차이 분석 ('당기퇴사자' 시트 입력분 — 전기말 연차충당부채 vs 실제연차지급액)").fill = section_fill
         ws.cell(row=r, column=1).font = section_font
         for c in range(2, 10):
             ws.cell(row=r, column=c).fill = section_fill
         r += 2
 
         recon_headers = ["사업장", "부서", "사번", "성명", "직급", "원가구분",
-                          "전기말 연차충당부채(계산)", "실제지급액(입력)", "차이(연차충당부채-실제지급액)"]
+                          "전기말 연차충당부채(계산)", "실제연차지급액(입력)", "차이(연차충당부채-실제연차지급액)"]
         for i, h in enumerate(recon_headers, start=1):
             cell = ws.cell(row=r, column=i, value=h)
             cell.fill = header_fill
@@ -1353,15 +1353,15 @@ def write_summary_sheet(ws, summary: dict, company: str, target_fy: str,
                 val = row[h]
                 cell = ws.cell(row=r, column=i, value=(None if pd.isna(val) or val == "" else val))
                 cell.border = border
-                if h in ("전기말 연차충당부채(계산)", "실제지급액(입력)", "차이(연차충당부채-실제지급액)") \
+                if h in ("전기말 연차충당부채(계산)", "실제연차지급액(입력)", "차이(연차충당부채-실제연차지급액)") \
                         and val is not None and not pd.isna(val):
                     cell.number_format = "#,##0"
-                    if h == "차이(연차충당부채-실제지급액)" and _is_significant(val, row["전기말 연차충당부채(계산)"]):
+                    if h == "차이(연차충당부채-실제연차지급액)" and _is_significant(val, row["전기말 연차충당부채(계산)"]):
                         cell.fill = sig_fill
             r += 1
 
         총전기말충당부채 = float(leaver_recon["전기말 연차충당부채(계산)"].sum(skipna=True))
-        총실제지급액 = float(leaver_recon["실제지급액(입력)"].sum(skipna=True))
+        총실제지급액 = float(leaver_recon["실제연차지급액(입력)"].sum(skipna=True))
         cell = ws.cell(row=r, column=1, value="합계")
         cell.font = bold
         cell.fill = total_fill
