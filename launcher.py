@@ -122,11 +122,11 @@ def detect_sev_input_files() -> list[tuple[str, str]]:
     return files
 
 def detect_leave_input_files() -> list[tuple[str, str]]:
-    """leave_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
-    in_dir = ROOT / 'leave_analyzer' / 'input_data'
+    """accrued_leave_liability_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
+    in_dir = ROOT / 'accrued_leave_liability_analyzer' / 'input_data'
     if not in_dir.exists():
         return []
-    _pat = re.compile(r'^leave_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
+    _pat = re.compile(r'^accrued_leave_liability_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
     files = []
     for f in sorted(in_dir.iterdir()):
         if f.is_file() and f.suffix.lower() == '.xlsx' and not f.name.startswith('~$') and 'template' not in f.name.lower():
@@ -224,10 +224,10 @@ TOOLS = [
     },
     {
         "category": "연월차충당부채 검증",
-        "name": "연월차충당부채 검증 (leave_schedule)",
-        "desc": "⚠ 실행 전 leave_analyzer/input_data/ 폴더에 leave_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n잔여연차일수×1일통상임금 방식 — 기초 이월잔여일수(입력)에 근로기준법 산식으로 계산한 당기 부여일수를 얹어 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출. '기준정보' 시트에서 입사기준/회계기준 선택 가능",
-        "cmd": ["python", str(ROOT / "leave_analyzer" / "leave_schedule.py")],
-        "cwd": str(ROOT / "leave_analyzer"),
+        "name": "연월차충당부채 검증 (accrued_leave_liability_schedule)",
+        "desc": "⚠ 실행 전 accrued_leave_liability_analyzer/input_data/ 폴더에 accrued_leave_liability_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능, 파일 안에 '당기정보'/'전기정보' 두 시트 포함).\n잔여연차일수×1일통상임금 방식 — 기초 이월잔여일수(입력)에 근로기준법 산식으로 계산한 당기 부여일수를 얹어 당기말 잔액 재계산, 회사계상액과 자동 대사, 신규입사자/퇴사자 명단 자동 산출. '기준정보' 시트에서 입사기준/회계기준 선택 가능",
+        "cmd": ["python", str(ROOT / "accrued_leave_liability_analyzer" / "accrued_leave_liability_schedule.py")],
+        "cwd": str(ROOT / "accrued_leave_liability_analyzer"),
         "company": "leave_file",
         "extra": None,
     },
