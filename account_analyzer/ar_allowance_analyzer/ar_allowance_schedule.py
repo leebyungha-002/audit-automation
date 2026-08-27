@@ -60,6 +60,7 @@ CATEGORY_POOLED = "집합평가(연령분석)"
 CATEGORY_INDIVIDUAL = "개별평가"
 CATEGORY_RELATED = "특수관계자(별도검토)"
 
+BASIS_CURRENT_PERIOD_LABEL = "당기말 기준일(결산기준일, 선택)"
 BASIS_LISTED_LABEL = "상장구분(상장/비상장)"
 BASIS_METHOD_LABEL = "연령산정 입력방식(회사연령표/차변발생내역)"
 BASIS_THRESHOLDS_LABEL = "연령구간 상한(개월, 콤마구분)"
@@ -352,6 +353,12 @@ def load_basis(path: str) -> dict:
 def _basis_float(basis: dict, label: str):
     v = basis.get(label)
     return None if v in (None, "") else _safe_float(v)
+
+
+def basis_current_period_override(basis: dict):
+    """'기준정보' 시트의 '당기말 기준일'을 직접 입력한 경우 그 날짜를 반환(없으면 None) —
+    입력하면 파일명(fy<연도>)·--fiscal-month/--fiscal-year/--interim-month 옵션보다 우선한다."""
+    return _safe_date(basis.get(BASIS_CURRENT_PERIOD_LABEL))
 
 
 def listed_type(basis: dict) -> str:
@@ -927,6 +934,7 @@ def main():
 
     input_path = _find_input_file(args.company, args.file)
     company = args.company or os.path.basename(input_path).split("_")[2]
+    basis = load_basis(input_path)
 
     target_fy = args.fiscal_year
     if not target_fy:
@@ -942,15 +950,20 @@ def main():
                 break
         target_fy = f"20{digits}" if len(digits) == 2 else digits
 
-    _, fy_end_ym = _fy_bounds(target_fy, args.fiscal_month)
-    fy_end_ym = _apply_interim(fy_end_ym, target_fy, args.interim_month)
-    결산일 = _ym_to_end_date(fy_end_ym)
-
     print(f"[입력] {input_path}")
     print(f"[대상] 회사={company}, 회계연도={target_fy}, 결산월={args.fiscal_month}")
-    print(f"[결산기준일] {결산일}")
 
-    basis = load_basis(input_path)
+    결산일_override = basis_current_period_override(basis)
+    if 결산일_override is not None:
+        결산일 = 결산일_override
+        print(f"[결산기준일] {결산일} (기준정보 시트의 '{BASIS_CURRENT_PERIOD_LABEL}' 값 사용 — "
+              f"--fiscal-month/--fiscal-year/--interim-month 옵션 무시됨)")
+    else:
+        _, fy_end_ym = _fy_bounds(target_fy, args.fiscal_month)
+        fy_end_ym = _apply_interim(fy_end_ym, target_fy, args.interim_month)
+        결산일 = _ym_to_end_date(fy_end_ym)
+        print(f"[결산기준일] {결산일}")
+
     listed = listed_type(basis)
     method = input_method(basis)
     thresholds = parse_bucket_thresholds(basis)

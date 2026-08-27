@@ -1847,3 +1847,20 @@
 3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
 
 ---
+
+## 2026-08-27 (3차) — ar_allowance_analyzer 당기말 기준일 직접입력 옵션 추가 + launcher 등록
+
+**완료 작업**:
+1. `launcher.py`에 ar_allowance_analyzer 등록(다른 계정앱과 동일 패턴 — 파일탐지 함수, TOOLS 항목, 결산월/반기 UI 연결).
+2. blue sky 요청으로 '기준정보' 시트에 '당기말 기준일(결산기준일, 선택)' 항목 추가 — 직접 입력하면 파일명(fy<연도>)·--fiscal-month/--fiscal-year/--interim-month 옵션보다 우선 적용되고, 비워두면 기존 방식(파일명+옵션, 기본 12월말) 그대로 동작. 실행 테스트로 override 정상 동작 확인(2026-09-30 지정 시 그 날짜의 연령분석표 행이 당기말로 정확히 인식됨).
+
+**변경 파일**: `launcher.py`, `account_analyzer/ar_allowance_analyzer/build_template.py`, `ar_allowance_schedule.py`, `input_data/ar_allowance_template.xlsx`
+
+**미해결 이슈**: 없음. 다만 세션 중 `account_analyzer/ar_allowance_analyzer/input_data/ar_allowance_samdong_information_fy25.xlsx`와 `output/ar_allowance_schedule_samdong_2025.xlsx`가 새로 생긴 것을 발견함 — 클로드가 만든 파일이 아니라 blue sky가 직접(런처 등으로) 실행해본 것으로 추정됨(samdong 실제 회사 데이터일 가능성). 커밋 대상에서 제외(input_data/output은 다른 앱들과 동일하게 개인 실작업 파일이라 git 추적 안 함).
+
+**다음 할 일**:
+1. blue sky가 samdong 파일로 이미 실행해본 것으로 보이는데, 결과 확인 후 문제 있으면 다음 세션에서 이어서 디버깅
+2. (이월) 근속연수 카운팅 방식(만근속 vs 입사연도 포함) — blue sky가 회사와 논의 후 leave_analyzer에 반영
+3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
+
+---
