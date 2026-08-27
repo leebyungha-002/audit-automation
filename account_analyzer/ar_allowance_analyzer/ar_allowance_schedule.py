@@ -871,6 +871,14 @@ def save_results(result: dict, output_path: str, company: str, target_fy: str, �
                                                   result["related_df"]))
     r = _write_table(ws4, cat_df, r, money_cols=("순채권액(원)", "대손충당금(계산,원)"), col_widths={"비고": 46})
 
+    r += 1
+    ws4.cell(row=r, column=1, value="[연령구간별 대손충당금 요약(집합평가, 거래처 합산)]").font = bold
+    r += 1
+    bucket_summary_df = bucket_df[["연령구간", "순채권액(원)", "적용대손율(계산,%)", "대손충당금(계산,원)"]].rename(
+        columns={"순채권액(원)": "구간채권액(원)", "적용대손율(계산,%)": "적용대손율(%)", "대손충당금(계산,원)": "대손충당금(원)"}
+    ) if not bucket_df.empty else pd.DataFrame(columns=["연령구간", "구간채권액(원)", "적용대손율(%)", "대손충당금(원)"])
+    r = _write_table(ws4, bucket_summary_df, r, money_cols=("구간채권액(원)", "대손충당금(원)"), pct_cols=("적용대손율(%)",))
+
     overall = build_overall_summary(result["pooled_customer_df"], result["individual_df"], basis)
     r += 2
     ws4.cell(row=r, column=1, value="[전체 대사]").font = bold
