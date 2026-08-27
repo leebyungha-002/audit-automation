@@ -121,7 +121,12 @@ def _safe_date(v):
             return from_excel(v).date()
         except Exception:
             return None
-    ts = pd.Timestamp(v)
+    try:
+        ts = pd.Timestamp(v)
+    except (ValueError, TypeError):
+        # 존재하지 않는 날짜(예: "2025-02-29", 2025년은 윤년이 아님) 등 파싱 자체가 불가능한 값 —
+        # 크래시 대신 None으로 처리하고, 호출부(load_*)에서 이런 행을 모아 경고로 보여준다.
+        return None
     return ts.date() if not pd.isna(ts) else None
 
 
@@ -273,45 +278,65 @@ def load_customers(path: str) -> dict:
     return {str(r.get("거래처명")).strip(): r for r in rows if r.get("거래처명")}
 
 
-def load_aging_table(path: str, labels: list) -> dict:
-    """{(거래처명, 기준일): {연령구간: 금액}} 반환. 연령구간 컬럼명은 '<label>(원)' 형식."""
+def load_aging_table(path: str, labels: list) -> tuple:
+    """({(거래처명, 기준일): {연령구간: 금액}}, bad_rows) 반환. 연령구간 컬럼명은 '<label>(원)' 형식.
+    bad_rows: 기준일을 날짜로 해석할 수 없었던 (거래처명, 원본값) 목록 — 해당 행은 계산에서 제외된다."""
     rows = _load_rows(path, AGING_TABLE_SHEET)
     result = {}
+    bad_rows = []
     for r in rows:
         거래처명 = r.get("거래처명")
-        기준일 = _safe_date(r.get("기준일"))
-        if not 거래처명 or 기준일 is None:
+        if not 거래처명:
+            continue
+        raw = r.get("기준일")
+        기준일 = _safe_date(raw)
+        if 기준일 is None:
+            if raw not in (None, ""):
+                bad_rows.append((str(거래처명).strip(), raw))
             continue
         bucket_amounts = {}
         for label in labels:
             bucket_amounts[label] = _safe_float(r.get(f"{label}(원)"))
         result[(str(거래처명).strip(), 기준일)] = bucket_amounts
-    return result
+    return result, bad_rows
 
 
-def load_balances(path: str) -> dict:
+def load_balances(path: str) -> tuple:
+    """({(거래처명, 기준일): 채권잔액총액}, bad_rows) 반환."""
     rows = _load_rows(path, BALANCE_SHEET)
     result = {}
-    for r in rows:
-        거래처명 = r.get("거래처명")
-        기준일 = _safe_date(r.get("기준일"))
-        if not 거래처명 or 기준일 is None:
-            continue
-        result[(str(거래처명).strip(), 기준일)] = _safe_float(r.get("채권잔액총액(원)"))
-    return result
-
-
-def load_transactions(path: str) -> dict:
-    rows = _load_rows(path, TRANSACTION_SHEET)
-    result = {}
+    bad_rows = []
     for r in rows:
         거래처명 = r.get("거래처명")
         if not 거래처명:
             continue
-        발생일 = _safe_date(r.get("발생일자"))
+        raw = r.get("기준일")
+        기준일 = _safe_date(raw)
+        if 기준일 is None:
+            if raw not in (None, ""):
+                bad_rows.append((str(거래처명).strip(), raw))
+            continue
+        result[(str(거래처명).strip(), 기준일)] = _safe_float(r.get("채권잔액총액(원)"))
+    return result, bad_rows
+
+
+def load_transactions(path: str) -> tuple:
+    """({거래처명: [(발생일, 발생액), ...]}, bad_rows) 반환. bad_rows: 발생일자를 날짜로 해석할 수
+    없었던(예: 존재하지 않는 날짜) (거래처명, 원본값) 목록 — 해당 행은 연령 재구성에서 제외된다."""
+    rows = _load_rows(path, TRANSACTION_SHEET)
+    result = {}
+    bad_rows = []
+    for r in rows:
+        거래처명 = r.get("거래처명")
+        if not 거래처명:
+            continue
+        raw = r.get("발생일자")
+        발생일 = _safe_date(raw)
+        if 발생일 is None and raw not in (None, ""):
+            bad_rows.append((str(거래처명).strip(), raw))
         금액 = _safe_float(r.get("발생액(원)"), default=None)
         result.setdefault(str(거래처명).strip(), []).append((발생일, 금액))
-    return result
+    return result, bad_rows
 
 
 def load_rate_table(path: str) -> dict:
@@ -972,9 +997,23 @@ def main():
 
     customers = load_customers(input_path)
     rate_table = load_rate_table(input_path)
-    aging_table = load_aging_table(input_path, labels) if method == "회사연령표" else {}
-    balances = load_balances(input_path) if method == "차변발생내역" else {}
-    transactions = load_transactions(input_path) if method == "차변발생내역" else {}
+    aging_table, aging_bad = (load_aging_table(input_path, labels) if method == "회사연령표" else ({}, []))
+    balances, balance_bad = (load_balances(input_path) if method == "차변발생내역" else ({}, []))
+    transactions, txn_bad = (load_transactions(input_path) if method == "차변발생내역" else ({}, []))
+
+    def _print_bad_dates(title: str, bad_rows: list):
+        if not bad_rows:
+            return
+        print(f"[경고] {title} {len(bad_rows)}건 — 날짜를 해석할 수 없어 해당 행이 제외됨(존재하지 않는 "
+              f"날짜이거나 형식 오류일 수 있음, 원본 파일에서 확인 필요):")
+        for name, raw in bad_rows[:20]:
+            print(f"  - {name}: {raw!r}")
+        if len(bad_rows) > 20:
+            print(f"  ... 외 {len(bad_rows) - 20}건")
+
+    _print_bad_dates(f"'{AGING_TABLE_SHEET}' 시트의 기준일 파싱 실패", aging_bad)
+    _print_bad_dates(f"'{BALANCE_SHEET}' 시트의 기준일 파싱 실패", balance_bad)
+    _print_bad_dates(f"'{TRANSACTION_SHEET}' 시트의 발생일자 파싱 실패", txn_bad)
 
     result = compute_all(customers, 결산일, method, thresholds, labels, aging_table, balances, transactions,
                           rate_table, basis, listed)

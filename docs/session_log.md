@@ -1864,3 +1864,20 @@
 3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
 
 ---
+
+## 2026-08-27 (4차) — ar_allowance_analyzer 치명적 크래시 버그 수정(존재하지 않는 날짜)
+
+**완료 작업**: blue sky가 samdong 실데이터로 launcher 실행 중 크래시 제보. 원인: `_safe_date()`의 마지막 `pd.Timestamp(v)` 호출에 예외처리가 없어서, "2025-02-29"처럼 **존재하지 않는 날짜**(2025년은 윤년이 아님)가 '차변발생내역' 시트의 발생일자에 들어오면 앱 전체가 죽는 버그. `try/except (ValueError, TypeError)`로 감싸 None 반환하도록 수정. 이 함수가 '연령분석표'/'분기말잔액'의 기준일, '차변발생내역'의 발생일자 3곳 모두에 쓰여서, 세 로더(`load_aging_table`/`load_balances`/`load_transactions`) 모두 반환형을 `(데이터, bad_rows)` 튜플로 바꿔 날짜 파싱 실패 행을 조용히 버리지 않고 콘솔에 "[경고] ... N건 — 원본값" 형태로 나열하도록 함(20건 초과 시 생략 표시).
+
+별개로, blue sky가 처음 두 번 실행 시 본 "[당기말 기준일] None ... 결산기준일 이하의 연령 데이터가 없음" 경고는 코드 버그가 아니라 samdong 파일의 '연령분석표' 기준일이 아직 템플릿 예시값(2026년대)으로 남아있어 fy25(2025-12-31) 이하 데이터가 없어서 발생한 것으로 추정 — 다음 세션에서 samdong 파일 실제 기준일 입력 여부 확인 필요.
+
+**변경 파일**: `account_analyzer/ar_allowance_analyzer/ar_allowance_schedule.py` (`_safe_date`, `load_aging_table`, `load_balances`, `load_transactions`, `main()`)
+
+**미해결 이슈**: samdong 실데이터(`input_data/ar_allowance_samdong_information_fy25.xlsx`, 커밋 안 됨)의 '연령분석표' 기준일이 실제 fy25 시점 값으로 맞게 입력됐는지 다음 세션에서 blue sky와 함께 확인 필요. '차변발생내역'에 있던 "2025-02-29" 오타(2025-02-28의 오기로 추정)도 원본 파일에서 수정 필요.
+
+**다음 할 일**:
+1. samdong 파일 기준일/발생일자 데이터 점검 → 재실행하여 정상 결과 나오는지 확인
+2. (이월) 근속연수 카운팅 방식(만근속 vs 입사연도 포함) — blue sky가 회사와 논의 후 leave_analyzer에 반영
+3. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
+
+---
