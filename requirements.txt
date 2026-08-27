@@ -1,0 +1,17 @@
+# audit-automation 파이썬 의존성 (2026-08-27 기준, 현재 개발 환경에서 pip freeze로 확인된 버전)
+# 설치: pip install -r requirements.txt
+# 주의: Gemini 연동은 google-genai(신 SDK)만 지원한다. google-generativeai(구 SDK, EOL)는 설치하지 말 것.
+
+pandas==2.3.3
+numpy==2.4.4
+numpy-financial==1.0.0
+openpyxl==3.1.5
+matplotlib==3.10.8
+python-dotenv==1.1.0
+python-dateutil==2.9.0.post0
+Pillow==11.3.0
+PyQt6==6.7.1
+xlwings==0.32.1
+pywin32==311
+xlrd==2.0.2
+google-genai==2.17.0
