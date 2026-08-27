@@ -633,7 +633,7 @@ def build_bucket_verification(labels: list, applied_rate: dict, rate_table: dict
         rows.append({
             "연령구간": label, "순채권액(원)": 순채권액,
             "적용대손율(계산,%)": None if 적용율 is None else 적용율 * 100.0,
-            ("회사설정 대손율(참고,%)" if listed == "상장" else "회사설정 대손율(%)"): None if 참고율 is None else 참고율 * 100.0,
+            ("회사설정 대손율(참고,%)" if listed == "상장" else "최근 실제대손율(참고,%)"): None if 참고율 is None else 참고율 * 100.0,
             "대손충당금(계산,원)": 대손충당금, "비고": " / ".join(tags),
         })
     return rows
