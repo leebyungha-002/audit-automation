@@ -1341,8 +1341,10 @@ def analyze_asset_liability_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
 
 # ── 13. 매출 vs 비용 교차 ────────────────────────────────────────────────────
 def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
+    # '매출' 외에 '수익'도 매출측 구분값으로 허용 (2026-08-31 graphy에서 '수익'으로
+    # 기재해 매칭 실패 확인 — 매출/수익은 회사마다 혼용되는 표기라 둘 다 인정)
     revs = [_nv(p.get('계정과목','')) for p in params_list
-            if str(p.get('구분','')).strip() == '매출' and _nv(p.get('계정과목',''))]
+            if str(p.get('구분','')).strip() in ('매출','수익') and _nv(p.get('계정과목',''))]
     exps = [_nv(p.get('계정과목','')) for p in params_list
             if str(p.get('구분','')).strip() == '비용' and _nv(p.get('계정과목',''))]
     if not revs or not exps:
