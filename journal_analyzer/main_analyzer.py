@@ -1371,36 +1371,38 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     e_total = edf.groupby(COL_CLIENT)[COL_DEBIT].agg(['sum', 'count'])
     e_total.columns = ['비용합계금액', '비용합계건수']
 
-    clients = sorted(set(r_detail.index.get_level_values(0)) & set(e_detail.index.get_level_values(0)))
-    if not clients:
+    common = set(r_detail.index.get_level_values(0)) & set(e_detail.index.get_level_values(0))
+    if not common:
         return {'매출비용교차': pd.DataFrame({'결과':['동시 발생 거래처 없음']})}
+    # 매출합계금액 내림차순 — 거래처명 열을 첫 행만 채우므로(아래) 행을 만든 뒤 다시
+    # 정렬하면 빈칸 거래처명 때문에 그룹이 깨져 여기서 미리 순서를 정한다
+    clients = r_total.loc[list(common), '매출합계금액'].sort_values(ascending=False).index.tolist()
 
     rows = []
     for cli in clients:
         r_sub = r_detail.loc[[cli]].sort_values('매출계정별금액', ascending=False).reset_index()
         e_sub = e_detail.loc[[cli]].sort_values('비용계정별금액', ascending=False).reset_index()
         for i in range(max(len(r_sub), len(e_sub))):
+            # 거래처명·합계 열은 그룹 첫 행에만 표시(2026-08-31 요청: 매 행 반복이 보기
+            # 불편함) — 나머지 행은 빈칸으로 두어 그룹 경계만 시각적으로 드러나게 함
+            first = (i == 0)
             rows.append({
-                '거래처명':      cli,
+                '거래처명':      cli if first else '',
                 '매출계정':      r_sub.loc[i, COL_ACCOUNT]    if i < len(r_sub) else '',
                 '매출계정별건수': r_sub.loc[i, '매출계정별건수'] if i < len(r_sub) else '',
                 '매출계정별금액': r_sub.loc[i, '매출계정별금액'] if i < len(r_sub) else '',
-                '매출합계건수':  r_total.loc[cli, '매출합계건수'],
-                '매출합계금액':  r_total.loc[cli, '매출합계금액'],
+                '매출합계건수':  r_total.loc[cli, '매출합계건수'] if first else '',
+                '매출합계금액':  r_total.loc[cli, '매출합계금액'] if first else '',
                 '비용계정':      e_sub.loc[i, COL_ACCOUNT]    if i < len(e_sub) else '',
                 '비용계정별건수': e_sub.loc[i, '비용계정별건수'] if i < len(e_sub) else '',
                 '비용계정별금액': e_sub.loc[i, '비용계정별금액'] if i < len(e_sub) else '',
-                '비용합계건수':  e_total.loc[cli, '비용합계건수'],
-                '비용합계금액':  e_total.loc[cli, '비용합계금액'],
+                '비용합계건수':  e_total.loc[cli, '비용합계건수'] if first else '',
+                '비용합계금액':  e_total.loc[cli, '비용합계금액'] if first else '',
             })
 
     result = pd.DataFrame(rows, columns=[
         '거래처명', '매출계정', '매출계정별건수', '매출계정별금액', '매출합계건수', '매출합계금액',
         '비용계정', '비용계정별건수', '비용계정별금액', '비용합계건수', '비용합계금액'])
-    order = r_total['매출합계금액'].to_dict()
-    result['_sort'] = result['거래처명'].map(order)
-    result = (result.sort_values(['_sort', '거래처명'], ascending=[False, True])
-                     .drop(columns='_sort').reset_index(drop=True))
     return {'매출비용교차': result}
 
 
