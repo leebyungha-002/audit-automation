@@ -2276,82 +2276,65 @@ def analyze_lease_completeness(df, params_list):
 
 
 # ── 25. 손익항목 월별 추이 ────────────────────────────────────────────────────
+_PL_CATEGORIES = ['매출', '매출원가', '판관비', '영업외수익', '영업외비용']
+
 def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
-    """25. 손익항목 월별 추이 (전기/당기 월별 비교)
-    task_list 파라미터: 계정과목 / 구분(차변·대변·both) / 실행여부
-    결과: 계정별 월별비교 시트 (거래처별 비교는 2번 거래처비교 메뉴 사용)
+    """25. 손익항목 월별 추이 (당기, 손익구분별 시트)
+    task_list 파라미터: 계정과목 / 구분(차변·대변·both) / 손익구분(매출·매출원가·판관비·
+        영업외수익·영업외비용) / 실행여부
+    결과: 손익구분마다 시트 1개(행=계정명, 열=1월~12월+합계)로 정리.
+    손익구분을 안 적으면 구분(차변/대변)으로 매출·판관비만 추정해 채움 — 매출원가/
+    영업외수익/영업외비용으로 분류하려면 손익구분 값을 직접 적어야 함.
+    (2026-08-31: 기존엔 계정 1개당 시트 1개(전기/당기 비교)였는데, 계정이 많은 회사는
+    시트가 수십 개로 늘어나 보기 불편하다는 요청으로 손익구분별 1개 시트·월별 매트릭스로 변경)
     """
     targets = []
     for p in params_list:
         acct = _nv(p.get('계정과목', ''))
+        if not acct:
+            continue
         direction = (_nv(p.get('구분', p.get('금액열', '')), blank_vals=('nan', 'none', ''))
                      or '대변')
         if direction not in ('차변', '대변', 'both'):
             direction = '대변'
-        if acct:
-            targets.append((acct, direction))
+        cat = _nv(p.get('손익구분', ''))
+        if cat not in _PL_CATEGORIES:
+            cat = '매출' if direction == '대변' else '판관비'
+        targets.append((acct, direction, cat))
 
     if not targets:
-        return {'손익월별분析': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
+        return {'손익월별분석': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
 
-    if '구분' not in df.columns:
-        return {'손익월별분析': pd.DataFrame(
-            {'오류': ['구분(전기/당기) 컬럼 없음 — 전기·당기 데이터를 함께 로드하세요.']})}
+    cur = df[df['구분'] == '당기'] if '구분' in df.columns else df
 
     out = {}
-
-    for acct_name, direction in targets:
-        mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
-        sub = df[mask].copy()
-        if sub.empty:
+    for cat in _PL_CATEGORIES:
+        cat_targets = [(a, d) for a, d, c in targets if c == cat]
+        if not cat_targets:
             continue
+        rows = []
+        for acct_name, direction in cat_targets:
+            mask = _account_match_flexible(cur[COL_ACCOUNT], acct_name)
+            sub = cur[mask]
+            if sub.empty:
+                continue
+            if direction == '차변':
+                amt = sub[COL_DEBIT].fillna(0)
+            elif direction == '대변':
+                amt = sub[COL_CREDIT].fillna(0)
+            else:
+                amt = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
+            month = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
+            monthly = amt.groupby(month).sum()
+            row = {'계정명': acct_name}
+            for m in range(1, 13):
+                row[f'{m}월'] = monthly.get(m, 0)
+            row['합계'] = monthly.sum()
+            rows.append(row)
+        if rows:
+            out[_safe_sheet(f'손익월별_{cat}')] = pd.DataFrame(rows)
 
-        sub['Month'] = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
-        sub['구분_str'] = sub['구분'].astype(str).str.strip()
-
-        if direction == '차변':
-            sub['_amt'] = sub[COL_DEBIT].fillna(0)
-            label = '차변'
-        elif direction == '대변':
-            sub['_amt'] = sub[COL_CREDIT].fillna(0)
-            label = '대변'
-        else:
-            sub['_amt'] = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
-            label = '합계'
-
-        mon = sub.groupby(['구분_str', 'Month']).agg(
-            금액합계=('_amt', 'sum'), 건수=('_amt', 'count')).reset_index()
-
-        prev_m = (mon[mon['구분_str'] == '전기'][['Month', '금액합계', '건수']]
-                  .rename(columns={'금액합계': f'전기_{label}', '건수': '전기_건수'}))
-        curr_m = (mon[mon['구분_str'] == '당기'][['Month', '금액합계', '건수']]
-                  .rename(columns={'금액합계': f'당기_{label}', '건수': '당기_건수'}))
-
-        base = pd.DataFrame({'월': range(1, 13)})
-        mr = (base
-              .merge(prev_m.rename(columns={'Month': '월'}), on='월', how='left')
-              .merge(curr_m.rename(columns={'Month': '월'}), on='월', how='left')
-              .fillna(0))
-        mr[f'증감_{label}'] = mr[f'당기_{label}'] - mr[f'전기_{label}']
-        mr['증감률(%)'] = mr.apply(
-            lambda r: round(r[f'증감_{label}'] / r[f'전기_{label}'] * 100, 1)
-            if r[f'전기_{label}'] != 0 else 0.0, axis=1)
-
-        total_r = {c: mr[c].sum() if c not in ('월', '증감률(%)') else '' for c in mr.columns}
-        total_r['월'] = '합  계'
-        if mr[f'전기_{label}'].sum() != 0:
-            total_r['증감률(%)'] = round(
-                mr[f'증감_{label}'].sum() / mr[f'전기_{label}'].sum() * 100, 1)
-        mr = pd.concat([mr, pd.DataFrame([total_r])], ignore_index=True)
-        mr['월'] = mr['월'].apply(lambda x: f'{int(x)}월' if isinstance(x, float) else x)
-        for c in ['전기_건수', '당기_건수']:
-            if c in mr.columns:
-                mr[c] = pd.to_numeric(mr[c], errors='coerce').fillna(0).astype(int)
-
-        acct_short = re.sub(r'[^가-힣a-zA-Z0-9]', '', acct_name)[:16]
-        out[_safe_sheet(f'손익월별_{acct_short}')] = mr
-
-    return out or {'손익월별분析': pd.DataFrame({'결과': ['분析 대상 없음']})}
+    return out or {'손익월별분석': pd.DataFrame({'결과': ['손익구분에 해당하는 계정 데이터 없음']})}
 
 
 # =============================================================================
