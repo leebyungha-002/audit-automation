@@ -2442,6 +2442,14 @@ def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
         actual = candidate if candidate in xl.sheet_names else norm_map.get(_norm_sheet(candidate))
         if actual is None: continue
         df = pd.read_excel(task_list_path, sheet_name=actual).dropna(how='all')
+        # 일부 시트(예: 손익월별분석·거래처분석)는 실제 헤더 행 위에 "※ 사용법 ..." 안내
+        # 문구가 한 행 더 들어가 있어, 그 문구가 컬럼명으로 잘못 인식되고 진짜 헤더
+        # (계정과목/실행여부 등)가 데이터 첫 행으로 밀리는 경우가 있다(2026-08-31 graphy·
+        # sejoong에서 발견). '실행여부' 컬럼이 없는데 첫 데이터 행에 '실행여부' 문자열이
+        # 그대로 들어있으면 안내행으로 판단해 헤더를 한 줄 내려 다시 읽는다.
+        if '실행여부' not in df.columns and not df.empty and \
+                (df.iloc[0].astype(str) == '실행여부').any():
+            df = pd.read_excel(task_list_path, sheet_name=actual, header=1).dropna(how='all')
         if '실행여부' in df.columns:
             flag = df['실행여부'].astype(str).str.strip().str.upper()
             df   = df[flag.isin(['Y','O'])].copy()
