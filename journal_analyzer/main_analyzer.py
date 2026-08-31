@@ -2044,13 +2044,32 @@ _FI_PATTERN = re.compile(
     r'(?:저축은행|저축|은행|금고|신협|조합|증권|캐피탈|카드|보험|파이낸스|크레딧|리스))'
 )
 
+# 계좌 별칭에 '은행' 표기 없이 약칭만 쓰이는 경우(예: "우리7396-주계좌", "하나B7404-주계좌",
+# "국민6157-ONE KB", "기업(017)") 대응 — 거래처명 맨 앞의 은행 약칭을 정식명으로 매핑
+# (2026-08-31 graphy 검토 중 발견: 위 _FI_PATTERN만으로는 이런 계좌명이 전혀 매칭되지 않아
+#  은행조회서완전성 결과의 금융기관_조회서목록 시트 헤더에 해당 계정이 통째로 빠지는 문제)
+_FI_BANK_ABBR = {
+    '국민': '국민은행', '신한': '신한은행', '우리': '우리은행', '하나': '하나은행',
+    '기업': '기업은행', '농협': '농협은행', '수협': '수협은행', '산업': '산업은행',
+    '수출입': '수출입은행', '대구': '대구은행', '부산': '부산은행', '광주': '광주은행',
+    '전북': '전북은행', '경남': '경남은행', '제주': '제주은행', '씨티': '씨티은행',
+    'SC제일': 'SC제일은행', '카카오': '카카오뱅크', '케이뱅크': '케이뱅크', '토스': '토스뱅크',
+    '새마을금고': '새마을금고',
+}
+_FI_ABBR_PATTERN = re.compile(
+    '^(' + '|'.join(sorted(_FI_BANK_ABBR, key=len, reverse=True)) + ')'
+)
+
 
 def _extract_fi(client_name: str) -> str:
     name = str(client_name).strip()
     if not name or name.lower() in ('nan', 'none', ''):
         return ''
     m = _FI_PATTERN.search(name)
-    return m.group(1) if m else ''
+    if m:
+        return m.group(1)
+    m = _FI_ABBR_PATTERN.match(name)
+    return _FI_BANK_ABBR[m.group(1)] if m else ''
 
 
 def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
@@ -2414,10 +2433,13 @@ def load_active_tasks(task_list_path: str) -> list:
 
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
     xl = pd.ExcelFile(task_list_path)
-    # 시트명 앞뒤 공백 normalize 후 매칭 (예: "심층분析 (계정별 Top) " → "심층분析 (계정별 Top)")
-    stripped_map = {s.strip(): s for s in xl.sheet_names}
+    # 시트명 공백 normalize 후 매칭 (예: "심층분析 (계정별 Top) " → "심층분析(계정별Top)",
+    # "은행조회서 완전성" → "은행조회서완전성" — 중간 공백까지 전부 제거해 비교)
+    def _norm_sheet(s: str) -> str:
+        return re.sub(r'\s+', '', s)
+    norm_map = {_norm_sheet(s): s for s in xl.sheet_names}
     for candidate in [analysis_name, f'{analysis_name}_파라미터']:
-        actual = candidate if candidate in xl.sheet_names else stripped_map.get(candidate.strip())
+        actual = candidate if candidate in xl.sheet_names else norm_map.get(_norm_sheet(candidate))
         if actual is None: continue
         df = pd.read_excel(task_list_path, sheet_name=actual).dropna(how='all')
         if '실행여부' in df.columns:
