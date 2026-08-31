@@ -1359,21 +1359,49 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     if rdf.empty or edf.empty:
         return {'매출비용교차': pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})}
 
-    gr = rdf.groupby(COL_CLIENT).agg({COL_CREDIT:'sum', COL_ACCOUNT: lambda x: ','.join(sorted(set(x)))}).reset_index()
-    gr.columns = ['거래처명','매출_금액','매출_계정']
+    # 계정별 상세(건수/금액)를 매출·비용 각각 거래처×계정 단위로 집계 (2026-08-31 요청:
+    # 비용 계정을 옆으로 쭉 펼친 넓은 표라 보기 어려움 → 매출계정/비용계정을 각각 한 줄씩
+    # 세로로 나열하고, 같은 거래처끼리는 두 목록을 나란히(짧은 쪽은 빈칸) 배치)
+    r_detail = rdf.groupby([COL_CLIENT, COL_ACCOUNT])[COL_CREDIT].agg(['sum', 'count'])
+    r_detail.columns = ['매출계정별금액', '매출계정별건수']
+    e_detail = edf.groupby([COL_CLIENT, COL_ACCOUNT])[COL_DEBIT].agg(['sum', 'count'])
+    e_detail.columns = ['비용계정별금액', '비용계정별건수']
+    r_total = rdf.groupby(COL_CLIENT)[COL_CREDIT].agg(['sum', 'count'])
+    r_total.columns = ['매출합계금액', '매출합계건수']
+    e_total = edf.groupby(COL_CLIENT)[COL_DEBIT].agg(['sum', 'count'])
+    e_total.columns = ['비용합계금액', '비용합계건수']
 
-    # 비용측은 거래처×비용계정 피벗으로 계정별 금액을 각각 열로 펼침 (2026-08-31 요청:
-    # 기존엔 비용_금액이 여러 계정 합계 하나로만 나와 계정별 상세가 안 보였음)
-    epvt = edf.groupby([COL_CLIENT, COL_ACCOUNT])[COL_DEBIT].sum().unstack(fill_value=0)
-    exp_acct_cols = epvt.sum(axis=0).sort_values(ascending=False).index.tolist()
-    epvt = epvt[exp_acct_cols]
-    epvt.insert(0, '비용_금액', epvt.sum(axis=1))
-    epvt = epvt.reset_index().rename(columns={COL_CLIENT: '거래처명'})
-
-    merged = pd.merge(gr, epvt, on='거래처명', how='inner').sort_values('매출_금액', ascending=False)
-    if merged.empty:
+    clients = sorted(set(r_detail.index.get_level_values(0)) & set(e_detail.index.get_level_values(0)))
+    if not clients:
         return {'매출비용교차': pd.DataFrame({'결과':['동시 발생 거래처 없음']})}
-    return {'매출비용교차': merged}
+
+    rows = []
+    for cli in clients:
+        r_sub = r_detail.loc[[cli]].sort_values('매출계정별금액', ascending=False).reset_index()
+        e_sub = e_detail.loc[[cli]].sort_values('비용계정별금액', ascending=False).reset_index()
+        for i in range(max(len(r_sub), len(e_sub))):
+            rows.append({
+                '거래처명':      cli,
+                '매출계정':      r_sub.loc[i, COL_ACCOUNT]    if i < len(r_sub) else '',
+                '매출계정별건수': r_sub.loc[i, '매출계정별건수'] if i < len(r_sub) else '',
+                '매출계정별금액': r_sub.loc[i, '매출계정별금액'] if i < len(r_sub) else '',
+                '매출합계건수':  r_total.loc[cli, '매출합계건수'],
+                '매출합계금액':  r_total.loc[cli, '매출합계금액'],
+                '비용계정':      e_sub.loc[i, COL_ACCOUNT]    if i < len(e_sub) else '',
+                '비용계정별건수': e_sub.loc[i, '비용계정별건수'] if i < len(e_sub) else '',
+                '비용계정별금액': e_sub.loc[i, '비용계정별금액'] if i < len(e_sub) else '',
+                '비용합계건수':  e_total.loc[cli, '비용합계건수'],
+                '비용합계금액':  e_total.loc[cli, '비용합계금액'],
+            })
+
+    result = pd.DataFrame(rows, columns=[
+        '거래처명', '매출계정', '매출계정별건수', '매출계정별금액', '매출합계건수', '매출합계금액',
+        '비용계정', '비용계정별건수', '비용계정별금액', '비용합계건수', '비용합계금액'])
+    order = r_total['매출합계금액'].to_dict()
+    result['_sort'] = result['거래처명'].map(order)
+    result = (result.sort_values(['_sort', '거래처명'], ascending=[False, True])
+                     .drop(columns='_sort').reset_index(drop=True))
+    return {'매출비용교차': result}
 
 
 # ── 14. 심층분석 (계정별 Top) ─────────────────────────────────────────────────
