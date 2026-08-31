@@ -1340,7 +1340,7 @@ def analyze_asset_liability_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
 
 
 # ── 13. 매출 vs 비용 교차 ────────────────────────────────────────────────────
-def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
+def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     # '매출' 외에 '수익'도 매출측 구분값으로 허용 (2026-08-31 graphy에서 '수익'으로
     # 기재해 매칭 실패 확인 — 매출/수익은 회사마다 혼용되는 표기라 둘 다 인정)
     revs = [_nv(p.get('계정과목','')) for p in params_list
@@ -1348,20 +1348,32 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
     exps = [_nv(p.get('계정과목','')) for p in params_list
             if str(p.get('구분','')).strip() == '비용' and _nv(p.get('계정과목',''))]
     if not revs or not exps:
-        return pd.DataFrame({'안내':['task_list 매출비용교차 시트에 구분(매출/비용)·계정과목을 입력하세요.']})
+        return {'매출비용교차': pd.DataFrame(
+            {'안내':['task_list 매출비용교차 시트에 구분(매출/비용)·계정과목을 입력하세요.']})}
     rm = pd.Series(False, index=df.index)
     for r in revs: rm |= df[COL_ACCOUNT].str.contains(r, na=False, regex=False)
     em = pd.Series(False, index=df.index)
     for e in exps: em |= df[COL_ACCOUNT].str.contains(e, na=False, regex=False)
     rdf = df[rm & (df[COL_CREDIT] != 0)]
     edf = df[em & (df[COL_DEBIT]  != 0)]
-    if rdf.empty or edf.empty: return pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})
-    gr = rdf.groupby(COL_CLIENT).agg({COL_CREDIT:'sum', COL_ACCOUNT: lambda x: ','.join(set(x))}).reset_index()
-    ge = edf.groupby(COL_CLIENT).agg({COL_DEBIT:'sum',  COL_ACCOUNT: lambda x: ','.join(set(x))}).reset_index()
+    if rdf.empty or edf.empty:
+        return {'매출비용교차': pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})}
+
+    gr = rdf.groupby(COL_CLIENT).agg({COL_CREDIT:'sum', COL_ACCOUNT: lambda x: ','.join(sorted(set(x)))}).reset_index()
     gr.columns = ['거래처명','매출_금액','매출_계정']
-    ge.columns = ['거래처명','비용_금액','비용_계정']
-    merged = pd.merge(gr, ge, on='거래처명', how='inner').sort_values('매출_금액', ascending=False)
-    return merged if not merged.empty else pd.DataFrame({'결과':['동시 발생 거래처 없음']})
+
+    # 비용측은 거래처×비용계정 피벗으로 계정별 금액을 각각 열로 펼침 (2026-08-31 요청:
+    # 기존엔 비용_금액이 여러 계정 합계 하나로만 나와 계정별 상세가 안 보였음)
+    epvt = edf.groupby([COL_CLIENT, COL_ACCOUNT])[COL_DEBIT].sum().unstack(fill_value=0)
+    exp_acct_cols = epvt.sum(axis=0).sort_values(ascending=False).index.tolist()
+    epvt = epvt[exp_acct_cols]
+    epvt.insert(0, '비용_금액', epvt.sum(axis=1))
+    epvt = epvt.reset_index().rename(columns={COL_CLIENT: '거래처명'})
+
+    merged = pd.merge(gr, epvt, on='거래처명', how='inner').sort_values('매출_금액', ascending=False)
+    if merged.empty:
+        return {'매출비용교차': pd.DataFrame({'결과':['동시 발생 거래처 없음']})}
+    return {'매출비용교차': merged}
 
 
 # ── 14. 심층분석 (계정별 Top) ─────────────────────────────────────────────────
