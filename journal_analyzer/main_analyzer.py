@@ -1092,6 +1092,15 @@ def _depreciation_rollforward(df: pd.DataFrame, dep_summary: pd.DataFrame) -> di
     # 전기명세 파일 (있으면 기초잔액용)
     prev_file = _find_prev_detail_file(os.path.join(_COMPANY_DIR, 'data', 'previous'))
     prev_xl = pd.ExcelFile(prev_file) if prev_file else None
+    # data/previous 전기명세 파일이 없거나 해당 계정 시트가 없을 때를 대비해, 당기
+    # 계정별원장(data/current)에 이미 있는 기초잔액(전기이월/기초잔액 행)을 대체
+    # 소스로 사용 — 별도의 전기 파일을 준비하지 않아도 당기 계정별원장만 업로드돼
+    # 있으면 기초잔액이 채워지도록 함 (2026-09-01, blue sky 문의)
+    current_ledger_balances = _current_ledger_open_balances(_COMPANY_DIR)
+
+    def _open_balance(acct_name: str):
+        v = _prev_balance_total(prev_xl, acct_name)
+        return v if v is not None else _current_ledger_open_balance(current_ledger_balances, acct_name)
 
     # _depreciation_counterpart_summary()의 전표단위 중복제거 집계에서
     # {감가상각누계액계정명: 당기감가상각비} 조회 테이블 구성
@@ -1157,7 +1166,7 @@ def _depreciation_rollforward(df: pd.DataFrame, dep_summary: pd.DataFrame) -> di
         a_decr_xfer = _transfer_amount(asset_acct, transfer_partner, COL_CREDIT)
         a_incr_etc  = a_incr_total - a_incr_xfer
         a_decr_etc  = a_decr_total - a_decr_xfer
-        a_open  = _prev_balance_total(prev_xl, asset_acct)
+        a_open  = _open_balance(asset_acct)
         a_close = (a_open + a_incr_xfer + a_incr_etc - a_decr_xfer - a_decr_etc + cost_manual
                    if a_open is not None else None)
 
@@ -1179,7 +1188,7 @@ def _depreciation_rollforward(df: pd.DataFrame, dep_summary: pd.DataFrame) -> di
             d_incr_xfer = _transfer_amount(dep_acct, dep_partner_accts, COL_CREDIT)
             d_decr_xfer = _transfer_amount(dep_acct, dep_partner_accts, COL_DEBIT)
             d_decr_etc  = d_debit_total - d_decr_xfer
-            d_open  = _prev_balance_total(prev_xl, dep_acct)
+            d_open  = _open_balance(dep_acct)
             d_unexplained = d_credit_total - d_dep_expense - d_incr_xfer
             d_close = (d_open + d_dep_expense + d_incr_xfer - d_decr_xfer - d_decr_etc + dep_manual
                        if d_open is not None else None)
@@ -1870,6 +1879,42 @@ def _prev_balance_total(prev_xl, acct_name: str):
     if not sheet:
         return None
     return sum(_load_prev_balances(prev_xl, sheet).values())
+
+
+def _current_ledger_open_balances(company_dir: str) -> dict:
+    """data/current 폴더의 당기 계정별원장 파일(들)에서 계정별 기초잔액을 모아
+    {계정명: 기초잔액} 딕셔너리로 반환한다 (4번 데이터개요의 '계정별원장_잔액표'와
+    동일한 추출 로직 재사용 — 각 계정 시트의 '전기이월'/'기초잔액' 행 기준).
+    data/previous 전기명세 파일이 없어도, 당기 계정별원장만 업로드돼 있으면
+    유형자산 롤포워드(Phase 2)의 기초잔액을 채울 수 있도록 함(2026-09-01).
+    파일이 없으면 빈 딕셔너리.
+    """
+    if not company_dir:
+        return {}
+    ledger_paths = _find_current_ledger_files(os.path.join(company_dir, 'data', 'current'))
+    balances: dict = {}
+    for path in ledger_paths:
+        t = _build_ledger_balance_table(path)
+        if t.empty or '계정명' not in t.columns:
+            continue
+        for _, r in t.iterrows():
+            name = str(r['계정명']).strip()
+            balances[name] = balances.get(name, 0) + (r['기초잔액'] or 0)
+    return balances
+
+
+def _current_ledger_open_balance(balances: dict, acct_name: str):
+    """_current_ledger_open_balances() 결과에서 계정명(공백/괄호 정규화 후) 조회.
+    없으면 None."""
+    if not balances:
+        return None
+    if acct_name in balances:
+        return balances[acct_name]
+    norm = re.sub(r'[\s()（）]', '', acct_name)
+    for k, v in balances.items():
+        if re.sub(r'[\s()（）]', '', k) == norm:
+            return v
+    return None
 
 
 # ── 20. 당기증감분석 (계정별 거래처별) ───────────────────────────────────────
