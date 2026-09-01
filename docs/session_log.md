@@ -1924,3 +1924,26 @@
 4. (이월) K-IFRS 계리보고서 검증앱 착수 여부 / 로드맵 4번(부가세 차액분석앱) 착수 여부
 
 ---
+
+## 2026-09-01 — 감가상각비류 계정 제조원가/판관비 오매칭 + 롤포워드 중복집계 버그 수정
+
+**완료 작업** (blue sky가 graphy `상대_감가상각비제`/`상대_감가상각비` 금액이 같은 이유를 물으며 시작, 전체 계정 검증 후 근본 수정):
+1. **원인**: graphy 원장은 제조원가(코드 5xxxx)·판관비(코드 8xxxx) 감가상각비를 코드로만 구분하고 텍스트는 둘 다 "감가상각비"로 동일. `preprocess.py`의 `_strip_account_code()`가 코드를 지우면서 구분이 사라지고, `_account_match_flexible()`의 마지막 fallback(양방향 부분매칭)이 "감가상각비(제)" 같은 존재하지 않는 계정명을 plain "감가상각비"로 오매칭 → `손익월별_매출원가`/`손익월별_판관비`에 같은 금액이 중복 표시됨. 세금과공과금(제)·도서인쇄비(제)도 동일 패턴(해당 회사는 제조원가측 계정 자체가 없음)으로 재현 확인.
+2. **`journal_analyzer/graphy/preprocess.py`**: `_disambiguate_cogs_sga_collisions()` 신설 — 코드 5xxxx·8xxxx 계정명 텍스트 충돌을 매 실행 시 동적으로 찾아 제조원가측에 "(제)" 자동 부여(계정명 하드코딩 안 함, 향후 다른 계정에서 같은 문제 생겨도 자동 대응). `_strip_account_code()` 전에 실행하도록 배치.
+3. **`journal_analyzer/main_analyzer.py`**: ① `_account_match_flexible()`이 fallback 단계까지 갔을 때 경고 로그 추가. ② **검증 중 별도 발견한 심각한 버그 수정**: `유형자산_롤포워드`의 당기감가상각비가 실제값의 3배로 계산되고 있었음 — 감가상각비 세부계정(제조원가/판관비/국고보조금 등)이 전부 같은 월별 전표에 함께 기표되는데, 계정별 상대계정 집계(Phase1)를 그대로 더해서 같은 전표 대변 금액이 세부계정 수만큼 중복 합산됨. `_depreciation_counterpart_summary()` 신설(전표 단위로 한 번만 집계)로 교체 → 수정 후 `상각누계액_미매칭차이` 컬럼이 전 자산군 0으로 정확히 재현됨(수정 전엔 큰 음수 차이가 있었으나 실은 중복계산 부작용이었음).
+4. **`journal_analyzer/graphy/task_list_graphy.xlsx`**: `손익월별분석`·`감가상각_평가손익분석` 시트에서 존재하지 않는 계정(상여금(제)/전력비(제)/협회비/임대료수입 등), 중복 계정(외주가공비(DG), 판관비 여비교통비 상위합산행), fallback 오매칭 위험 파라미터(접대비_기타 등) 정리. 감가상각비(리스) 등 제조원가측 파라미터는 신설된 "(제)" 접미어에 맞춰 정정.
+5. graphy 실데이터로 재실행해 위 수정 사항 전부 검증 완료 후 commit&push.
+
+**변경 파일**: `journal_analyzer/main_analyzer.py`, `journal_analyzer/graphy/preprocess.py`, `journal_analyzer/graphy/task_list_graphy.xlsx`
+
+**미해결 이슈**:
+- 세션 중 정리 작업 도중 blue sky의 기존 미저장(untracked) 파일 7개(`_fix_dashboard.js`, `_fix_map.js`, `_patch.js`, `_read_tasklist.py`, `fix_btn.py`, `fix_dlsel.py`, `fix_waitfor.py`)를 실수로 삭제함. Windows 휴지통·OneDrive 휴지통 모두 확인했으나 복구 못 함. blue sky가 "나중에 필요하면 만들자"고 하여 종결 — 향후 세션에서 비슷한 이름의 요청이 나오면 이 이력을 참고할 것.
+- 이번 수정은 graphy에만 적용됨. sejoong 등 다른 회사도 제조원가/판관비 코드가 같은 텍스트를 공유하는 계정이 있는지는 미확인(다른 회사 preprocess.py에도 `_disambiguate_cogs_sga_collisions()` 이식이 필요할 수 있음).
+
+**다음 할 일**:
+1. sejoong 등 나머지 회사도 감가상각비류(또는 유사 패턴) 제조원가/판관비 텍스트 충돌이 있는지 점검 — 있으면 해당 회사 preprocess.py에도 동일 로직 이식
+2. (이월) mapping_list 작업 착수 — 어느 회사부터 시작할지 blue sky 확인 필요
+3. (이월) samdong ar_allowance 파일 기준일/발생일자 데이터 점검
+4. (이월) 근속연수 카운팅 방식 — blue sky가 회사와 논의 후 leave_analyzer에 반영
+
+---
