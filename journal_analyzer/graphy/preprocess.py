@@ -15,12 +15,22 @@ main_analyzer.py 의 load_data() 완료 직후,
                               (전표번호/차변/대변/거래처명/적요/계정과목은
                                이미 표준 컬럼명과 일치하거나 main_analyzer의
                                자동 매핑 목록에 있어 그대로 인식됨)
-  2. _strip_account_code()  : 계정과목 앞의 '[코드]' 접두어 제거
+  2. _disambiguate_cogs_sga_collisions() : 코드는 다른데 계정명 텍스트가
+                              완전히 같은 제조원가(코드 5로 시작)·판관비
+                              (코드 8로 시작) 계정 쌍을 찾아, 제조원가측에
+                              '(제)' 접미어를 자동으로 붙여 구분
+                              (예: [53700]감가상각비 -> [53700]감가상각비(제),
+                               [81800]감가상각비 는 그대로)
+                              — 반드시 코드 접두어 제거 전에 실행해야 함
+                                (2026-09-01 발견: 코드를 제거하면 두 계정이
+                                 텍스트상 하나로 합쳐져 8번 상대계정분석·25번
+                                 손익월별분석 등에서 서로의 금액이 섞임)
+  3. _strip_account_code()  : 계정과목 앞의 '[코드]' 접두어 제거
                               (예: '[25402]국민연금_예수금' -> '국민연금_예수금')
                               — 코드가 붙은 채로 둬도 contains 폴백으로 매칭은
                                 되지만, _account_match_flexible() 의 접두어
                                 오매칭 위험(2026-08-12 발견)을 줄이기 위함
-  3. preprocess()            : 위 두 단계를 순서대로 호출하는 공개 진입점
+  4. preprocess()            : 위 단계들을 순서대로 호출하는 공개 진입점
 """
 
 import re
@@ -51,6 +61,9 @@ COLUMN_MAP: dict[str, str] = {
 # 계정과목 앞에 붙은 '[코드]' 접두어 제거용 정규식
 _ACCOUNT_CODE_PREFIX = re.compile(r'^\[[^\]]*\]\s*')
 
+# '[코드]계정명' 형식에서 코드/계정명을 분리 추출하는 정규식
+_ACCOUNT_CODE_SPLIT = re.compile(r'^\[([^\]]*)\]\s*(.+)$')
+
 
 # =============================================================================
 # 2. 내부 헬퍼 함수
@@ -80,6 +93,45 @@ def _map_columns(df: pd.DataFrame) -> pd.DataFrame:
             rename_dict[orig] = target
 
     return df.rename(columns=rename_dict)
+
+
+def _disambiguate_cogs_sga_collisions(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    제조원가/제조경비(계정코드 5로 시작)와 판관비(계정코드 8로 시작) 중
+    코드는 다른데 계정명 텍스트가 완전히 같은 계정 쌍을 자동으로 찾아,
+    제조원가측 계정명 뒤에 '(제)' 접미어를 붙여 구분한다.
+
+    왜 필요한가
+    -----------
+    이 회사 원장은 대부분의 제조경비 계정에 이미 '(제)' 접미어가 붙어 있어
+    (예: '급여(제)' vs '직원급여') 코드 접두어를 제거해도 구분이 유지되지만,
+    일부 계정(예: '감가상각비')은 제조원가측과 판관비측 계정명 텍스트가
+    코드([53700] vs [81800])만 다르고 완전히 동일하다. 이 상태로 코드를
+    제거하면 두 계정이 텍스트상 하나로 합쳐져, 8번 상대계정분석·25번
+    손익월별분석 등에서 한쪽 금액이 다른 쪽에 그대로 섞여 들어간다.
+
+    하드코딩 대신 코드 자릿수(5xxxx / 8xxxx) 기준으로 매 실행 시 충돌을
+    동적으로 탐지하므로, 향후 다른 계정에서 같은 충돌이 생겨도(계정 신설/
+    변경) 코드 수정 없이 자동으로 대응된다.
+    """
+    df = df.copy()
+    for col in ('계정과목', '계정명'):
+        if col not in df.columns:
+            continue
+        parsed = df[col].fillna('').astype(str).str.extract(_ACCOUNT_CODE_SPLIT)
+        codes, names = parsed[0], parsed[1].str.strip()
+        valid = codes.notna() & names.notna() & (names != '')
+        if not valid.any():
+            continue
+        cogs_names = set(names[valid & codes.str.startswith('5')])
+        sga_names  = set(names[valid & codes.str.startswith('8')])
+        collisions = {n for n in (cogs_names & sga_names) if not n.endswith('(제)')}
+        if not collisions:
+            continue
+        print(f'  [graphy/preprocess] 제조경비/판관비 계정명 충돌 {len(collisions)}건 자동 구분(제조경비측에 "(제)" 부여): {sorted(collisions)}')
+        target = valid & codes.str.startswith('5') & names.isin(collisions)
+        df.loc[target, col] = '[' + codes[target] + ']' + names[target] + '(제)'
+    return df
 
 
 def _strip_account_code(df: pd.DataFrame) -> pd.DataFrame:
@@ -117,7 +169,10 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df = _map_columns(df)
     print(f'  [graphy/preprocess] 최종 컬럼: {list(df.columns)}')
 
-    # Step 2 — 계정과목 코드 접두어 제거
+    # Step 2 — 제조원가/판관비 계정명 텍스트 충돌 자동 구분 (코드 제거 전 실행 필수)
+    df = _disambiguate_cogs_sga_collisions(df)
+
+    # Step 3 — 계정과목 코드 접두어 제거
     df = _strip_account_code(df)
 
     return df

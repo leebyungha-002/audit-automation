@@ -219,7 +219,13 @@ def _account_match_flexible(acct_series, acct_str):
         nv = _normalize_account_for_match(str(val) if pd.notna(val) else '')
         if not nv: return False
         return norm_user in nv or nv in norm_user
-    return acct_series.fillna('').apply(_row)
+    mask = acct_series.fillna('').apply(_row)
+    if mask.any():
+        # 정확/시작/포함 매칭 실패 후 양방향 부분문자열로만 걸린 경우 —
+        # 의도한 계정이 아닌 다른 계정을 잘못 물어올 위험이 있어 경고 (2026-09-01)
+        matched = sorted(acct_series[mask].astype(str).unique().tolist())
+        print(f'    [경고] "{acct_str}" 정확한 계정명을 찾지 못해 유사매칭으로 대체됨 → {matched} — 매칭 결과 검토 필요')
+    return mask
 
 def _to_numeric_amount(series):
     s = series.astype(str).str.strip()
@@ -1000,16 +1006,58 @@ def analyze_depreciation_valuation(df: pd.DataFrame, params_list: list) -> dict:
     추가한다. (Phase 3)
     """
     out = analyze_counterpart(df, params_list)
-    out.update(_depreciation_rollforward(df, out))
+    dep_summary = _depreciation_counterpart_summary(df, params_list)
+    out.update(_depreciation_rollforward(df, dep_summary))
     out.update(_disposal_schedule(df))
     return out
 
 
-def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
+def _depreciation_counterpart_summary(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
+    """감가상각비류 계정(제조원가/판관비/리스/국고보조금 등 세부계정 전부) 전표 단위
+    상대계정(대변) 합계를 '전표 1건당 1회'만 집계한다.
+
+    왜 필요한가
+    -----------
+    이전에는 Phase 1에서 만든 계정별 '상대_감가상각비*' 시트를 그대로 하나씩 더해
+    감가상각누계액의 당기감가상각비를 구했는데, 한 회사가 월별 감가상각을 세부계정
+    (감가상각비(제)/감가상각비[판관비]/감가상각비(국) 등) 구분 없이 전표 1건에 묶어서
+    계상하면, 그 전표의 대변(감가상각누계액 증가)이 세부계정 수만큼(예: 3개 세부계정이
+    한 전표에 같이 있으면 3배) 중복 합산되는 문제가 있었다(2026-09-01 발견 — 감가상각비
+    (제)/(리스)/plain/(국) 계정명 정리 작업 중 감가상각누계액(건물) 당기증가가 실제의
+    3배로 나오는 것을 확인).
+    이 함수는 파라미터의 모든 감가상각비류 계정을 먼저 하나의 마스크로 합쳐 대상 전표
+    집합(전표그룹키)을 중복 없이 구한 뒤, 그 전표들의 대변만 한 번씩 집계하므로 세부
+    계정이 몇 개든, 같은 전표를 공유하든 안 하든 항상 정확한 합계가 나온다.
+    """
+    default_group_col = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
+    combined_mask = pd.Series(False, index=df.index)
+    for p in params_list:
+        acct = _nv(p.get('계정과목', ''))
+        if not acct:
+            continue
+        direction = (_nv(p.get('금액열', ''), blank_vals=('nan', 'none', ''))
+                     or _nv(p.get('구분', ''), blank_vals=('nan', 'none', ''))
+                     or '차변')
+        if direction not in ('차변', '대변'):
+            direction = '차변'
+        tcol = COL_DEBIT if direction == '차변' else COL_CREDIT
+        combined_mask |= _account_match_flexible(df[COL_ACCOUNT], acct) & (df[tcol] != 0)
+    if not combined_mask.any():
+        return pd.DataFrame(columns=['상대계정명', '대변합계'])
+    jids = df.loc[combined_mask, default_group_col].unique()
+    related = df[df[default_group_col].isin(jids)]
+    summary = (related[related[COL_CREDIT] != 0]
+               .groupby(COL_ACCOUNT)[[COL_CREDIT]].sum().reset_index())
+    summary.columns = ['상대계정명', '대변합계']
+    return summary
+
+
+def _depreciation_rollforward(df: pd.DataFrame, dep_summary: pd.DataFrame) -> dict:
     """유형자산계정별 취득원가·감가상각누계액 롤포워드.
 
     취득원가        : 기초 + 당기증가(대체+기타) - 당기감소(대체+기타) = 기말
-    감가상각누계액  : 기초 + 당기감가상각비(Phase1 상대_감가상각* 매칭분) + 당기증가_대체
+    감가상각누계액  : 기초 + 당기감가상각비(_depreciation_counterpart_summary 전표단위
+                      중복제거 집계분) + 당기증가_대체
                       - 당기감소_대체 - 당기감소_기타 + 수동조정 = 기말
     - '대체'분: 파라미터의 대체상대계정과 같은 전표에서 함께 나타나는 금액만 전표 매칭으로
       분리(예: 건물→투자부동산_건물 계정대체, 건설중인자산→본계정 완성대체).
@@ -1045,17 +1093,13 @@ def _depreciation_rollforward(df: pd.DataFrame, phase1_results: dict) -> dict:
     prev_file = _find_prev_detail_file(os.path.join(_COMPANY_DIR, 'data', 'previous'))
     prev_xl = pd.ExcelFile(prev_file) if prev_file else None
 
-    # Phase 1 '상대_감가상각*' 결과에서 {감가상각누계액계정명: 당기감가상각비} 집계
+    # _depreciation_counterpart_summary()의 전표단위 중복제거 집계에서
+    # {감가상각누계액계정명: 당기감가상각비} 조회 테이블 구성
     dep_lookup: dict = {}
-    for sname, sdf in phase1_results.items():
-        if not sname.startswith('상대_감가상각') or '상대계정명' not in sdf.columns:
-            continue
-        amt_col = next((c for c in sdf.columns if c.endswith('합계')), None)
-        if amt_col is None:
-            continue
-        for _, r in sdf.iterrows():
+    if dep_summary is not None and not dep_summary.empty:
+        for _, r in dep_summary.iterrows():
             key = str(r['상대계정명']).strip()
-            dep_lookup[key] = dep_lookup.get(key, 0) + (r[amt_col] or 0)
+            dep_lookup[key] = dep_lookup.get(key, 0) + (r['대변합계'] or 0)
 
     # 유형자산계정명 -> 감가상각누계액계정명 (대체상대계정의 상각누계액계정 역참조용)
     asset_to_dep: dict = {}
