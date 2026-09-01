@@ -2030,3 +2030,33 @@
    startswith/contains 단계에도 확대 적용 검토
 
 ---
+
+## 2026-09-01 (4차) — 거래처분석 월별합산 시트에 거래처명·계정명별 구분 추가 + mapping_list "계정명" 열 문의 답변
+
+**완료 작업**:
+1. **거래처분석(17번) 월별합산 재구성**(blue sky 요청): 기존 `analyze_client_detail()`의
+   `_월별합산` 시트가 파라미터에 걸린 계정을 전부 합쳐 월별 1줄로만 보여주고 거래처명도
+   빠져 있었음. `(거래처명, 계정명) × 실제 발생월(YM)` 피벗으로 재구성해 계정별로 행이
+   분리되고 거래처명이 각 행에 표기되도록 수정, 행 끝에 기간 전체 차변합계·대변합계·합계
+   유지. graphy 재실행 검증(거래처_분01/02_월별합산에서 Frontier Inc·Corefront 등 거래처×
+   계정별 정상 분리 확인) 후 commit&push(`48f815f`).
+2. **mapping_list "계정명" 열 관련 blue sky 문의 답변**(코드 변경 없음): `workpaper_tools/
+   report/data_injector.py`의 `load_mapping()`을 확인한 결과, A열(계정명)은 콘솔 로그·
+   에러 메시지 라벨용으로만 쓰이고 실제 매핑/주입 로직(B~I열)에는 관여하지 않음. 단,
+   `load_mapping()`이 헤더 텍스트가 아니라 **A~I 컬럼 위치**로 값을 읽으므로, 셀 값만
+   비우는 건 안전하지만 **열 자체를 삭제하면 뒤 열이 밀려 매핑이 완전히 깨짐**을 안내함
+   (열을 실제로 없애려면 `load_mapping()`의 컬럼 언패킹도 같이 수정해야 함 — blue sky가
+   당장 진행 요청은 안 함, 답변만).
+
+**변경 파일**: `journal_analyzer/main_analyzer.py`
+
+**미해결 이슈**: 없음(1번은 실데이터 검증 후 commit&push 완료, 2번은 코드 변경 없이 답변만)
+
+**다음 할 일**:
+1. (이월) mapping_list 작업 착수 — 어느 회사부터 시작할지 blue sky 확인 필요
+2. (이월) samdong ar_allowance 파일 기준일/발생일자 데이터 점검
+3. (이월) 근속연수 카운팅 방식 — blue sky가 회사와 논의 후 leave_analyzer에 반영
+4. (이월) sejoong 손익구분 작업 착수 시 감가상각비류 등 부서코드 계정명 텍스트충돌 방어 로직 검토
+5. (이월) `_account_match_flexible()`의 startswith/contains 단계 경고 로그 확대 적용 검토
+
+---
