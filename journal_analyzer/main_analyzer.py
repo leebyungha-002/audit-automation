@@ -202,6 +202,21 @@ def _normalize_account_for_match(s):
     s = s.replace('권','').lower()
     return s
 
+def _account_match_exact(acct_series, acct_str):
+    """정규화 후 완전일치만 인정(startswith/contains/양방향부분매칭 폴백 없음).
+    유형자산 롤포워드(_period_sum/_transfer_amount)처럼 '이 계정에 해당 기간 거래가
+    없으면 0이 맞는' 정밀 조회에 사용 — _account_match_flexible()의 폴백 단계가
+    당기 거래가 전혀 없는 계정(예: '건물'이 이번 기간 취득/처분 없음)을 다른 계정
+    (건물관리비, 감가상각누계액(시설장치) 등)으로 잘못 대체해버리는 문제 방지
+    (2026-09-01, blue sky 지적으로 발견 — 상세는 _depreciation_rollforward 주석 참고)."""
+    acct_str = str(acct_str).strip()
+    if not acct_str:
+        return pd.Series(False, index=acct_series.index)
+    norm_series = acct_series.fillna('').astype(str).apply(_normalize_account_for_match)
+    norm_user   = _normalize_account_for_match(acct_str)
+    return norm_series == norm_user
+
+
 def _account_match_flexible(acct_series, acct_str):
     acct_str = str(acct_str).strip()
     if not acct_str:
@@ -1118,7 +1133,10 @@ def _depreciation_rollforward(df: pd.DataFrame, dep_summary: pd.DataFrame) -> di
             asset_to_dep[an] = _nv(pr.get('감가상각누계액계정명', ''))
 
     def _period_sum(acct_name: str):
-        mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
+        # 유형자산·감가상각누계액계정명은 task_list에 직접 지정하는 정밀 계정명이므로
+        # 완전일치만 사용 — 해당 기간 거래가 없으면(당기 취득/처분 없음) 0/0이 맞는
+        # 정답이지, 이름이 겹치는 다른 계정으로 대체해서는 안 됨 (아래 주석 참고)
+        mask = _account_match_exact(df[COL_ACCOUNT], acct_name)
         sub = df[mask]
         return sub[COL_DEBIT].sum(), sub[COL_CREDIT].sum()
 
@@ -1136,12 +1154,12 @@ def _depreciation_rollforward(df: pd.DataFrame, dep_summary: pd.DataFrame) -> di
         names = [n for n in names if n]
         if not names:
             return 0
-        mask_this = _account_match_flexible(df[COL_ACCOUNT], acct_name) & (df[col] != 0)
+        mask_this = _account_match_exact(df[COL_ACCOUNT], acct_name) & (df[col] != 0)
         if not mask_this.any():
             return 0
         counterpart_mask = pd.Series(False, index=df.index)
         for n in names:
-            counterpart_mask = counterpart_mask | _account_match_flexible(df[COL_ACCOUNT], n)
+            counterpart_mask = counterpart_mask | _account_match_exact(df[COL_ACCOUNT], n)
         jkey = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
         valid_jids = set(df.loc[counterpart_mask, jkey].unique())
         sub = df[mask_this & df[jkey].isin(valid_jids)]
