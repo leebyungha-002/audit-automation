@@ -1762,9 +1762,23 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         if filtered.empty: continue
 
         filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
-        monthly = filtered.groupby('YM').agg({COL_DEBIT:'sum',COL_CREDIT:'sum'}).reset_index()
-        monthly.columns = ['YM','차변합계','대변합계']
-        monthly['합계'] = monthly['차변합계'] + monthly['대변합계']
+
+        # 월별합산: 거래처명·계정명별로 나눠서 집계(2026-09-01 blue sky 요청 —
+        # 기존엔 파라미터에 걸린 계정을 전부 합쳐 월별 1줄로만 보여줘 계정별 구분이
+        # 안 되고 거래처명도 빠져 있었음). 행 = 거래처명×계정명, 열 = 실제 발생월(YM)
+        # + 기간 전체 차변/대변/합계.
+        ym_cols = sorted(filtered['YM'].dropna().unique().tolist())
+        filtered['순액'] = filtered[COL_DEBIT].fillna(0) + filtered[COL_CREDIT].fillna(0)
+        pivot = (filtered.pivot_table(index=[COL_CLIENT, COL_ACCOUNT], columns='YM',
+                                       values='순액', aggfunc='sum', fill_value=0)
+                 .reindex(columns=ym_cols, fill_value=0)
+                 .reset_index())
+        totals = (filtered.groupby([COL_CLIENT, COL_ACCOUNT])
+                  .agg(차변합계=(COL_DEBIT, 'sum'), 대변합계=(COL_CREDIT, 'sum'))
+                  .reset_index())
+        totals['합계'] = totals['차변합계'] + totals['대변합계']
+        monthly = pivot.merge(totals, on=[COL_CLIENT, COL_ACCOUNT], how='left')
+        monthly = monthly.sort_values([COL_CLIENT, '합계'], ascending=[True, False]).reset_index(drop=True)
 
         dc = [c for c in ['구분', COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT,
                            COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC] if c in filtered.columns]
