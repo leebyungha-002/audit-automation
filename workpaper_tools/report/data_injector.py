@@ -1086,7 +1086,14 @@ def main():
                 except Exception as e:
                     print(f'  [경고] xlwings 재저장 실패 ({os.path.basename(out_path)}): {e}')
         finally:
-            xl_app.quit()
+            try:
+                xl_app.quit()
+            except Exception as e:
+                # 재저장 단계에서 Excel COM이 응답 없음 상태가 되면 quit()도 같은
+                # 오류로 실패할 수 있음 — 이미 openpyxl 저장은 끝난 뒤라 여기서 죽으면
+                # 이후 win32com 후처리·요약까지 통째로 못 돌게 됨(2026-09-02, blue sky
+                # graphy 실행 중 재현). 무시하고 계속 진행.
+                print(f'  [경고] Excel 프로세스 종료 실패(무시하고 진행): {e}')
 
     # ── 6. win32com 후처리 (EMF/WMF 이미지) ─────────────────────────────────
     if win32com_pending:
