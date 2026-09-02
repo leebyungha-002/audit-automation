@@ -1882,14 +1882,23 @@ def _find_prev_sheet(prev_sheets: list, acct_name: str):
     return None
 
 
-def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str) -> dict:
-    """전기명세 시트에서 {거래처명: 잔액} 딕셔너리 로드."""
+def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str, acct_name: str = None) -> dict:
+    """전기명세 시트에서 {거래처명: 잔액} 딕셔너리 로드.
+    시트 안에 '계정명' 열이 있으면(한 시트에 여러 계정이 섞여 있는 경우 — 예:
+    '외상매출금(상품)' 시트가 상품-3D/PLM/S&C/정보기술 등 하위계정을 계정명 열로만
+    구분해 함께 담고 있는 경우) acct_name과 일치하는 행만 남기고, 계정명 열이 없거나
+    acct_name이 주어지지 않으면 기존처럼 시트 전체를 대상으로 한다."""
     pdf = pd.read_excel(prev_xl, sheet_name=sheet_name, header=0)
     pdf.columns = [str(c).strip() for c in pdf.columns]
     vendor_col = next((c for c in pdf.columns if '거래처' in c), None)
     bal_col = next((c for c in pdf.columns if '잔' in c), None)
     if not vendor_col or not bal_col:
         return {}
+    acct_col = next((c for c in pdf.columns if c == '계정명'), None)
+    if acct_col is not None and acct_name:
+        target = _normalize_account_for_match(acct_name)
+        pdf = pdf[pdf[acct_col].apply(
+            lambda v: _normalize_account_for_match(v) == target if pd.notna(v) else False)]
     balances = {}
     for _, row in pdf.iterrows():
         vendor = str(row[vendor_col]).strip() if pd.notna(row[vendor_col]) else ''
@@ -1903,14 +1912,38 @@ def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str) -> dict:
     return balances
 
 
+def _find_prev_account_balances(prev_xl, acct_name: str):
+    """계정명을 기준으로 전기명세 파일 전체에서 {거래처명: 잔액}을 찾는다.
+    1) 시트명이 계정명과 일치하는 시트를 우선 시도(시트 안에 계정명 열이 더 있으면
+       그걸로 한 번 더 필터링 — 여러 계정이 한 시트에 섞여 있어도 정확히 구분됨).
+    2) 실패하면 모든 시트를 훑어 계정명 열 값이 일치하는 행을 모아 합산한다 —
+       계정별로 시트를 나누지 않고 계정명/거래처명/잔액을 한 시트에 죽 나열한
+       형식(회사가 그렇게 통합해서 제출하는 경우)도 이 경로로 지원된다.
+    못 찾으면 빈 딕셔너리."""
+    if prev_xl is None:
+        return {}
+    sheet = _find_prev_sheet(prev_xl.sheet_names, acct_name)
+    if sheet:
+        balances = _load_prev_balances(prev_xl, sheet, acct_name)
+        if balances:
+            return balances
+
+    merged = {}
+    for s in prev_xl.sheet_names:
+        b = _load_prev_balances(prev_xl, s, acct_name)
+        for k, v in b.items():
+            merged[k] = merged.get(k, 0) + v
+    return merged
+
+
 def _prev_balance_total(prev_xl, acct_name: str):
-    """전기명세에서 계정명 전체 합산 잔액. 시트가 없으면 None (표시 안 함)."""
+    """전기명세에서 계정명 전체 합산 잔액. 못 찾으면 None (표시 안 함)."""
     if prev_xl is None:
         return None
-    sheet = _find_prev_sheet(prev_xl.sheet_names, acct_name)
-    if not sheet:
+    balances = _find_prev_account_balances(prev_xl, acct_name)
+    if not balances:
         return None
-    return sum(_load_prev_balances(prev_xl, sheet).values())
+    return sum(balances.values())
 
 
 def _current_ledger_open_balances(company_dir: str) -> dict:
@@ -2026,7 +2059,6 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
 
     # ── 전기 명세 ExcelFile ──
     prev_xl = pd.ExcelFile(prev_file)
-    prev_sheets = prev_xl.sheet_names
 
     # ── 계정별 분석 실행 ──
     all_results = {}
@@ -2034,12 +2066,11 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     for acct_name, gubun in targets:
         is_asset = gubun in ('차변', '자산')
 
-        prev_sheet = _find_prev_sheet(prev_sheets, acct_name)
-        prev_balances = _load_prev_balances(prev_xl, prev_sheet) if prev_sheet else {}
-        if prev_sheet:
-            print(f'      {acct_name}: 전기 {len(prev_balances)}건 (시트: {prev_sheet})')
+        prev_balances = _find_prev_account_balances(prev_xl, acct_name)
+        if prev_balances:
+            print(f'      {acct_name}: 전기 {len(prev_balances)}건')
         else:
-            print(f'      {acct_name}: 전기 시트 없음')
+            print(f'      {acct_name}: 전기 명세 없음')
 
         mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
         current = df[mask].copy()
