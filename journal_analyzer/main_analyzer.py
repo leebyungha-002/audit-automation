@@ -1876,38 +1876,100 @@ def _find_prev_sheet(prev_sheets: list, acct_name: str):
     for s in prev_sheets:
         if re.sub(r'[\s()（）]', '', s) == norm2:
             return s
+    # graphy류: "15_상품(14600)"처럼 앞에 "번호_" 접두, 끝에 "(계정코드)" 접미가
+    # 붙는 시트명 — 접두/접미를 뗀 핵심 계정명이 정확히 일치하는지 먼저 확인한다.
+    # 아래 느슨한 부분매칭(포함관계)보다 우선해야, '상품' 조회가 '15_상품(14600)'
+    # 대신 '12_파생상품자산(14000)'처럼 부분 포함하는 다른 시트로 잘못 매칭되는
+    # 사고를 막을 수 있다 (2026-09-02, graphy 파일 인식 확인 중 발견).
+    for s in prev_sheets:
+        core = re.sub(r'\(\d+\)$', '', re.sub(r'^\d+_', '', s))
+        if re.sub(r'[\s()（）]', '', core) == norm2:
+            return s
     for s in prev_sheets:
         if acct_name in s or s in acct_name:
             return s
     return None
 
 
-def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str, acct_name: str = None) -> dict:
+def _find_prev_header_row(raw: pd.DataFrame) -> int:
+    """엑셀 상단에 회사명/기간 등 안내행이 섞여 있어도(예: graphy '거래처원장(잔액)'
+    export는 실제 헤더가 5번째 행) '거래처'·'잔' 키워드가 모두 있는 헤더 행을 찾는다.
+    ERP export는 '거 래 처 명'처럼 글자 사이에 공백이 끼기도 해서 셀마다 공백을
+    전부 제거한 뒤 비교한다. 못 찾으면 0(첫 행이 헤더인 기존 sejoong 형식 그대로)."""
+    limit = min(len(raw), 20)
+    for i in range(limit):
+        cells = [re.sub(r'\s+', '', str(v)) for v in raw.iloc[i] if pd.notna(v)]
+        if len(cells) < 3:
+            continue  # 제목행("거래처원장(잔액)" 등 셀 1~2개)은 헤더가 아니므로 제외
+        vendor_cells = [c for c in cells if '거래처' in c]
+        bal_cells = [c for c in cells if c and '잔' in c and c not in vendor_cells]
+        if vendor_cells and bal_cells:
+            return i
+    return 0
+
+
+def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str, acct_name: str = None,
+                         require_acct_col: bool = False, sheet_confirmed: bool = False) -> dict:
     """전기명세 시트에서 {거래처명: 잔액} 딕셔너리 로드.
-    시트 안에 '계정명' 열이 있으면(한 시트에 여러 계정이 섞여 있는 경우 — 예:
-    '외상매출금(상품)' 시트가 상품-3D/PLM/S&C/정보기술 등 하위계정을 계정명 열로만
-    구분해 함께 담고 있는 경우) acct_name과 일치하는 행만 남기고, 계정명 열이 없거나
-    acct_name이 주어지지 않으면 기존처럼 시트 전체를 대상으로 한다."""
-    pdf = pd.read_excel(prev_xl, sheet_name=sheet_name, header=0)
-    pdf.columns = [str(c).strip() for c in pdf.columns]
-    vendor_col = next((c for c in pdf.columns if '거래처' in c), None)
-    bal_col = next((c for c in pdf.columns if '잔' in c), None)
+    - 상단에 안내행(회사명/기간 등)이 섞여 있어도 실제 헤더 행을 자동 탐색한다
+      (graphy '거래처원장(잔액)' export처럼 헤더가 5번째 행에 있는 경우 대응).
+    - 헤더 글자 사이 공백(예: '거 래 처 명')도 제거한 뒤 매칭한다.
+    - 시트 안에 '계정명' 열이 있으면(한 시트에 여러 계정이 섞여 있는 경우 — 예:
+      sejoong '외상매출금(상품)' 시트가 상품-3D/PLM/S&C/정보기술 등 하위계정을
+      계정명 열로만 구분해 함께 담고 있는 경우) acct_name과 일치하는 행만 남기고,
+      계정명 열이 없거나 acct_name이 주어지지 않으면 시트 전체를 대상으로 한다.
+    - require_acct_col=True면 계정명 열이 없는 시트는 통째로 {} 반환한다 — 시트명이
+      계정명과 이미 일치해서 호출된 게 아니라 여러 시트를 훑는 상황(계정명 열 없이
+      '사업부구분/거래처/잔액'만 있고 실제 계정명은 상단 '계정과목 :' 안내행에만
+      적힌 sejoong '선급금'/'미수대매금' 같은 시트 등)에서, 소속 계정을 확인할 길이
+      없는 시트 데이터를 엉뚱한 계정에 잘못 합산하는 사고를 막기 위함
+      (2026-09-02, graphy 파일 인식 확인 중 발견).
+    - sheet_confirmed=True(시트명 자체가 이미 acct_name과 일치해서 호출된 경우)면서
+      계정명 열에 서로 다른 값이 실제로 여러 개 섞여 있지 않고 사실상 1개뿐이면
+      acct_name과 글자가 완전히 같지 않아도(오탈자·표기차 — 예: sejoong 일부 시트는
+      시트명은 '미수금(...)'인데 계정명 열엔 '미수대매금(...)'으로 적혀있음) 필터링
+      하지 않고 시트 전체를 그대로 쓴다 — 시트명 매칭이 이미 계정을 특정했다고
+      신뢰하는 것. 계정명 열에 서로 다른 값이 여러 개 섞여 있는 진짜 번들 시트는
+      sheet_confirmed 여부와 무관하게 항상 정확히 필터링한다.
+    - '코드'는 있는데 거래처명이 비어있는 행(graphy의 'NOCODE' 조정성 잔액 등)은
+      거래처명 없이 버리지 않고 '(거래처미지정)'으로 남긴다 — 합계 행(코드란에
+      '합계' 표기)만 제외한다."""
+    raw = pd.read_excel(prev_xl, sheet_name=sheet_name, header=None)
+    if raw.empty:
+        return {}
+    header_row = _find_prev_header_row(raw)
+    header_vals = [re.sub(r'\s+', '', str(v)) if pd.notna(v) else '' for v in raw.iloc[header_row]]
+    pdf = raw.iloc[header_row + 1:].copy()
+    pdf.columns = header_vals
+
+    vendor_col = next((c for c in pdf.columns if c and '거래처' in c), None)
+    bal_col = next((c for c in pdf.columns if c and '잔' in c), None)
     if not vendor_col or not bal_col:
         return {}
+    code_col = next((c for c in pdf.columns if c and '코드' in c), None)
     acct_col = next((c for c in pdf.columns if c == '계정명'), None)
+    if acct_col is None and require_acct_col:
+        return {}
     if acct_col is not None and acct_name:
-        target = _normalize_account_for_match(acct_name)
-        pdf = pdf[pdf[acct_col].apply(
-            lambda v: _normalize_account_for_match(v) == target if pd.notna(v) else False)]
+        distinct_accts = pdf[acct_col].dropna().unique().tolist()
+        if len(distinct_accts) > 1 or not sheet_confirmed:
+            target = _normalize_account_for_match(acct_name)
+            pdf = pdf[pdf[acct_col].apply(
+                lambda v: _normalize_account_for_match(v) == target if pd.notna(v) else False)]
+
     balances = {}
     for _, row in pdf.iterrows():
         vendor = str(row[vendor_col]).strip() if pd.notna(row[vendor_col]) else ''
-        if not vendor or vendor.replace(' ', '') in ('합계:', '합계', 'nan', ''):
+        code = str(row[code_col]).strip() if code_col and pd.notna(row[code_col]) else ''
+        label = re.sub(r'\s+', '', vendor) or re.sub(r'\s+', '', code)
+        if label in ('합계:', '합계', 'nan', ''):
             continue
         try:
             bal = float(row[bal_col]) if pd.notna(row[bal_col]) else 0
         except (ValueError, TypeError):
             bal = 0
+        if not vendor:
+            vendor = '(거래처미지정)'
         balances[vendor] = balances.get(vendor, 0) + bal
     return balances
 
@@ -1924,13 +1986,13 @@ def _find_prev_account_balances(prev_xl, acct_name: str):
         return {}
     sheet = _find_prev_sheet(prev_xl.sheet_names, acct_name)
     if sheet:
-        balances = _load_prev_balances(prev_xl, sheet, acct_name)
+        balances = _load_prev_balances(prev_xl, sheet, acct_name, sheet_confirmed=True)
         if balances:
             return balances
 
     merged = {}
     for s in prev_xl.sheet_names:
-        b = _load_prev_balances(prev_xl, s, acct_name)
+        b = _load_prev_balances(prev_xl, s, acct_name, require_acct_col=True)
         for k, v in b.items():
             merged[k] = merged.get(k, 0) + v
     return merged
