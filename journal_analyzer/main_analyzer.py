@@ -1005,6 +1005,8 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
                    .groupby(COL_ACCOUNT)[[counter_col]]
                    .agg(['sum','count']).reset_index())
         summary.columns = ['상대계정명', sum_label, cnt_label]
+        summary.insert(0, '전표방향', direction)
+        summary.insert(0, '계정명', acct)
         summary = summary.sort_values(sum_label, ascending=False)
         sname   = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}')
         out[sname] = summary
