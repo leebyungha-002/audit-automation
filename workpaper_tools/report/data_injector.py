@@ -889,7 +889,10 @@ def main():
 
     # ── 2. 매핑 읽기 ─────────────────────────────────────────────────────────
     mapping_rows = load_mapping(mapping_path)
-    print(f'  매핑 항목 수  : {len(mapping_rows)}건\n')
+    total_rows = len(mapping_rows)
+    print(f'  매핑 항목 수  : {total_rows}건')
+    print('  진행 순서     : [1/3] 데이터 주입 → [2/3] 저장 → [3/3] xlwings 정합성 복구\n')
+    print(f'[1/3] 데이터 주입 시작 ({total_rows}건)')
 
     # ── 3. 대상 워크북 캐시 (동일 파일 중복 로드 방지) ──────────────────────
     tgt_book_cache   = {}   # real_path → Workbook
@@ -900,7 +903,7 @@ def main():
     success = 0
 
     # ── 4. 매핑 처리 ─────────────────────────────────────────────────────────
-    for row in mapping_rows:
+    for row_idx, row in enumerate(mapping_rows, 1):
         label      = row['label']
         src_kw     = row['src_kw']
         src_sheet  = row['src_sheet']
@@ -912,7 +915,7 @@ def main():
         threshold  = row['threshold']
 
         mode_tag = f' [{remarks}]' if remarks else ''
-        print(f'  [{label}]{mode_tag} {src_kw}!{src_sheet} → {tgt_kw}!{tgt_sheet} @ {start_cell}')
+        print(f'  [{row_idx}/{total_rows}] [{label}]{mode_tag} {src_kw}!{src_sheet} → {tgt_kw}!{tgt_sheet} @ {start_cell}')
 
         # ── 소스 파일 탐색 ─────────────────────────────────────────────────
         src_path = find_file_by_keyword([results_dir, raw_dir, company_dir], src_kw)
@@ -1015,7 +1018,9 @@ def main():
         # ── 대상 워크북 로드 (캐시) ───────────────────────────────────────
         if tgt_path not in tgt_book_cache:
             try:
+                print('    ⏳ 대상 파일 로딩 중... (파일이 크면 수 분 걸릴 수 있습니다)')
                 tgt_book_cache[tgt_path] = load_workbook(tgt_path, keep_links=False)
+                print('    ✓ 대상 파일 로딩 완료')
             except Exception as e:
                 msg = f'대상 파일 오픈 실패: {e}'
                 print(f'    [오류] {msg}')
@@ -1061,20 +1066,21 @@ def main():
         wb_src.close()
 
     # ── 5. 결과 저장 ─────────────────────────────────────────────────────────
-    print('\n─── 저장 ───')
+    print(f'\n[2/3] 저장 중... (아직 끝난 게 아닙니다 — 저장 뒤 [3/3] 정합성 복구가 이어집니다)')
     saved_paths = []
     for tgt_path, wb in tgt_book_cache.items():
         out_path = updated_path(tgt_path)
         try:
+            print(f'  ⏳ 저장 중: {os.path.relpath(out_path, company_dir)} (대용량 파일은 시간이 걸릴 수 있습니다)')
             wb.save(out_path)
-            print(f'  저장 완료: {os.path.relpath(out_path, company_dir)}')
+            print(f'  ✓ 저장 완료: {os.path.relpath(out_path, company_dir)}')
             saved_paths.append(out_path)
         except Exception as e:
             print(f'  [오류] 저장 실패 ({os.path.basename(tgt_path)}): {e}')
 
     # ── 5-1. xlwings 재저장 (Named Range·Drawing 손상 복구) ──────────────────
     if _XLWINGS_OK and saved_paths:
-        print('\n─── xlwings 재저장 (XML 정합성 복구) ───')
+        print('\n[3/3] xlwings 재저장 중 (Named Range·차트 정합성 복구 — 대용량 파일은 수 분 소요될 수 있습니다, 이 단계가 끝나야 전체 작업이 종료됩니다)...')
         xl_app = xw.App(visible=False, add_book=False)
         try:
             for out_path in saved_paths:
@@ -1097,7 +1103,7 @@ def main():
 
     # ── 6. win32com 후처리 (EMF/WMF 이미지) ─────────────────────────────────
     if win32com_pending:
-        print('\n─── win32com 이미지 후처리 ───')
+        print(f'\n[추가] win32com 이미지 후처리 중... ({len(win32com_pending)}건, 마지막 단계입니다)')
         for src_p, src_s, tgt_p, tgt_s, cell, lbl in win32com_pending:
             if not os.path.exists(tgt_p):
                 print(f'  [{lbl}] 대상 파일 없음 (저장 실패?): {os.path.basename(tgt_p)}')
@@ -1118,6 +1124,7 @@ def main():
             print(f'    - {err}')
     else:
         print('  오류 없음')
+    print('\n✅ 모든 작업이 종료되었습니다.')
 
 
 if __name__ == '__main__':
