@@ -855,7 +855,49 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                 t.insert(0, '출처파일', os.path.basename(path))
                 ledger_tables.append(t)
         if ledger_tables:
-            out['계정별원장_잔액표'] = pd.concat(ledger_tables, axis=0, ignore_index=True)
+            ledger_all = pd.concat(ledger_tables, axis=0, ignore_index=True)
+            out['계정별원장_잔액표'] = ledger_all
+
+            if not stats.empty:
+                # 계정별 기말잔액(A-test): 기초잔액은 계정별원장, 차변합계·대변합계는
+                # 분개장(당기 전표)에서 가져와 별도로 재계산 — 계정별원장_잔액표의
+                # '기말잔액(계산)'(원장 자체 차대변 기준)과는 출처가 다르다.
+                ledger_open = (ledger_all.groupby('계정명')
+                               .agg(기초잔액=('기초잔액', 'sum'),
+                                    구분=('구분', lambda s: s.mode().iat[0] if not s.mode().empty else '검증필요'))
+                               .reset_index())
+
+                atest = pd.merge(stats[['계정명', '차변합계', '대변합계']], ledger_open,
+                                  on='계정명', how='outer')
+                for col in ('차변합계', '대변합계', '기초잔액'):
+                    atest[col] = atest[col].fillna(0.0)
+                atest['구분'] = atest['구분'].fillna('원장매칭안됨')
+
+                def _calc_ending(row):
+                    if row['구분'] == '부채/자본/수익':
+                        return row['기초잔액'] - row['차변합계'] + row['대변합계']
+                    return row['기초잔액'] + row['차변합계'] - row['대변합계']
+
+                atest['기말잔액(분개장기준)'] = atest.apply(_calc_ending, axis=1)
+                atest = atest.sort_values('계정명').reset_index(drop=True)
+                out['계정별_기말잔액(Atest)'] = atest[
+                    ['계정명', '구분', '기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)']]
+                out.setdefault('_column_notes', {})['계정별_기말잔액(Atest)'] = {
+                    '기초잔액':
+                        '출처: 계정별원장(data/current 원장 파일)\n'
+                        "각 계정 시트의 '전기이월'/'기초잔액' 행 차변·대변에서 추출.",
+                    '차변합계':
+                        '출처: 분개장(당기 전표)\n'
+                        "'데이터개요_계정별' 시트와 동일한 합계(계정별원장이 아님).",
+                    '대변합계':
+                        '출처: 분개장(당기 전표)\n'
+                        "'데이터개요_계정별' 시트와 동일한 합계(계정별원장이 아님).",
+                    '기말잔액(분개장기준)':
+                        '계산식(구분에 따라 자동 선택):\n'
+                        '자산/비용 = 기초잔액 + 차변합계 - 대변합계\n'
+                        '부채/자본/수익 = 기초잔액 - 차변합계 + 대변합계\n'
+                        "원장 자체 차대변으로 계산한 '계정별원장_잔액표'의 '기말잔액(계산)'과는 별개 값임.",
+                }
 
     return out
 
@@ -2825,6 +2867,7 @@ def save_results(results: dict, output_dir: str, company_name: str,
     # 특수 키 사전 추출 (ExcelWriter에 넘기지 않음)
     benford_images = results.pop('_benford_images', None)
     decoder        = results.pop('_암호해독표', None)
+    column_notes   = results.pop('_column_notes', None)  # {시트명: {컬럼명: 메모text}}
 
     # startrow=2: 1~2행을 비워두고 3행부터 컬럼헤더+데이터 기록
     with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
@@ -2845,6 +2888,30 @@ def save_results(results: dict, output_dir: str, company_name: str,
         ws.cell(1, 1).font  = bold
         if header_line2:
             ws.cell(2, 1).value = header_line2
+
+    # 컬럼별 메모(출처/계산식 설명) 삽입 — startrow=2 이므로 헤더는 3행.
+    # 마우스오버 메모(Comment)는 그대로 두고, 4행에 같은 내용을 보이는 셀 텍스트로도 삽입
+    # (데이터는 4행만큼 아래로 밀림).
+    if column_notes:
+        from openpyxl.comments import Comment
+        note_font = Font(size=9, italic=True, color='808080')
+        for sheet, notes in column_notes.items():
+            sname = _safe_sheet(sheet)
+            if sname not in wb.sheetnames or not notes:
+                continue
+            ws = wb[sname]
+            col_to_note = {}
+            for cell in next(ws.iter_rows(min_row=3, max_row=3)):
+                note = notes.get(cell.value)
+                if note:
+                    cell.comment = Comment(note, '감사자동화')
+                    col_to_note[cell.column] = note
+            if col_to_note:
+                ws.insert_rows(4, 1)
+                for col_idx, note in col_to_note.items():
+                    note_cell = ws.cell(row=4, column=col_idx)
+                    note_cell.value = note.replace('\n', ' ')
+                    note_cell.font  = note_font
 
     if benford_images:
         for _acct, _dir, img_buf in benford_images:
