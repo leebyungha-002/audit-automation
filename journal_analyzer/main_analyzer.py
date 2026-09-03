@@ -699,9 +699,16 @@ def _compute_ledger_balance(records: list) -> dict:
                 actual = float(balance)
                 last_balance = actual
                 TOL = 1
-                if abs(running_signed - actual) <= TOL:
+                asset_match = abs(running_signed - actual) <= TOL
+                liab_match  = abs(-running_signed - actual) <= TOL
+                # 잔액이 정확히 0인 행은 자산식·부채식이 둘 다 들어맞아(0=0) 구분에
+                # 정보를 주지 못한다. 예전엔 if/elif 순서 때문에 이런 동률이 항상
+                # 자산 쪽에 표를 던져, 부채 계정도 당기 중 잔액이 0으로 떨어지면
+                # 자산/비용으로 잘못 판정되곤 했다(예: 보증예수금 전액 반환 케이스).
+                # 정확히 한쪽만 들어맞을 때만 표를 던지고, 둘 다 맞으면 기권한다.
+                if asset_match and not liab_match:
                     votes_asset += 1
-                elif abs(-running_signed - actual) <= TOL:
+                elif liab_match and not asset_match:
                     votes_liab += 1
             except (TypeError, ValueError):
                 pass
