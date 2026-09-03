@@ -651,6 +651,12 @@ def _clean_ledger_account_name(sheet_name: str) -> str:
     name = _LEDGER_SHEET_CODE_RE.sub('', name).strip()
     return name
 
+def _acct_match_key(name) -> str:
+    """계정명 매칭용 정규화 키. 엑셀 시트명은 '/'를 못 쓰기 때문에 원장 파일에서
+    'A/S매출' 같은 계정이 'A S매출'(슬래시→공백)로 저장되는 경우가 있어, 분개장
+    계정명과 원장 계정명을 대사할 때 공백·슬래시 차이를 무시하고 비교한다."""
+    return re.sub(r'[\s/]', '', str(name))
+
 def _clean_ledger_text(s) -> str:
     """적요란 텍스트에서 공백·대괄호 제거 (예: '[ 전 기 이 월 ]' -> '전기이월')."""
     if s is None:
@@ -877,14 +883,26 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                     구분=('구분', lambda s: s.mode().iat[0] if not s.mode().empty else '검증필요'),
                 ).reset_index().rename(columns={'기말잔액_원장': '기말잔액(원장)'})
 
-                atest = pd.merge(stats[['계정명', '차변합계', '대변합계']], ledger_open,
-                                  on='계정명', how='outer')
+                # 계정명 매칭: 엑셀 시트명 제약으로 원장의 'A/S매출'이 'A S매출'처럼
+                # 저장돼 분개장 계정명과 글자가 달라지는 경우가 있어, 정규화 키로 대사한다.
+                stats_j = stats[['계정명', '차변합계', '대변합계']].copy()
+                stats_j['_key'] = stats_j['계정명'].map(_acct_match_key)
+                ledger_open['_key'] = ledger_open['계정명'].map(_acct_match_key)
+
+                atest = pd.merge(stats_j, ledger_open, on='_key', how='outer',
+                                  suffixes=('_분개장', '_원장'))
+                atest['계정명'] = atest['계정명_분개장'].fillna(atest['계정명_원장'])
+                atest = atest.drop(columns=['계정명_분개장', '계정명_원장', '_key'])
                 for col in ('차변합계', '대변합계', '기초잔액', '기말잔액(원장)'):
                     atest[col] = atest[col].fillna(0.0)
                 atest['구분'] = atest['구분'].fillna('원장매칭안됨')
 
+                # 대변 증가(신용 잔액) 성격: 부채/자본/수익뿐 아니라 자산차감 계정
+                # (예: 감가상각누계액)도 대변에서 늘어나므로 같은 계산식을 쓴다.
+                _CREDIT_INCREASE_GUBUN = ('부채/자본/수익', '자산차감')
+
                 def _calc_ending(row):
-                    if row['구분'] == '부채/자본/수익':
+                    if row['구분'] in _CREDIT_INCREASE_GUBUN:
                         return row['기초잔액'] - row['차변합계'] + row['대변합계']
                     return row['기초잔액'] + row['차변합계'] - row['대변합계']
 
@@ -920,6 +938,12 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                 gubun_value_notes = {
                     '자산/비용':      '차변 증가 계정 — 기말잔액 = 기초잔액+차변합계-대변합계',
                     '부채/자본/수익': '대변 증가 계정 — 기말잔액 = 기초잔액-차변합계+대변합계',
+                    '자산차감':       '차감적 평가계정(예: 감가상각누계액) — 자산이지만 대변에서 '
+                                      '늘어나 부채/자본/수익과 같은 식 적용: '
+                                      '기말잔액 = 기초잔액-차변합계+대변합계',
+                    '부채차감':       '차감적 평가계정(예: 사채할인발행차금) — 부채이지만 차변에서 '
+                                      '늘어나 자산/비용과 같은 식 적용: '
+                                      '기말잔액 = 기초잔액+차변합계-대변합계',
                     '검증필요':       '원장상 잔액이 자산형·부채형 계산식 어느 쪽과도 맞지 않아 '
                                       '자동판정 실패(원장 데이터 확인 필요).',
                     '데이터없음':     '당기 계정별원장에 기초잔액도 당기 거래도 없는 휴면 계정.',
