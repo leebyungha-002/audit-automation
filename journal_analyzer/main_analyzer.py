@@ -877,10 +877,21 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                 # '기말잔액(계산)'(원장 자체 차대변 기준)과는 출처가 다르다. 재계산한
                 # 기말잔액(분개장기준)과 원장의 실제 기말잔액을 대사(차이)해서 수기 검증 없이
                 # 바로 불일치 계정을 걸러낼 수 있게 한다.
+                def _pick_gubun(s: pd.Series) -> str:
+                    # sejoong 계열처럼 계정 하나가 사업부/블록별로 원장에 여러 번 나열되는
+                    # 경우, 해당 블록에 그 계정 활동이 없으면 '전월이월' 0행 하나짜리
+                    # 유령 블록(구분='데이터없음')이 생긴다. 다수결(mode)에서 이 유령
+                    # 블록이 실제 데이터를 가진 블록과 동률·역전되지 않도록, 실제 값이
+                    # 하나라도 있으면 '데이터없음'은 후보에서 제외하고 다수결을 낸다.
+                    real = s[s != '데이터없음']
+                    pool = real if not real.empty else s
+                    m = pool.mode()
+                    return m.iat[0] if not m.empty else '검증필요'
+
                 ledger_open = ledger_all.groupby('계정명').agg(
                     기초잔액=('기초잔액', 'sum'),
                     기말잔액_원장=('최종표시잔액(원장)', 'sum'),
-                    구분=('구분', lambda s: s.mode().iat[0] if not s.mode().empty else '검증필요'),
+                    구분=('구분', _pick_gubun),
                 ).reset_index().rename(columns={'기말잔액_원장': '기말잔액(원장)'})
 
                 # 계정명 매칭: 엑셀 시트명 제약으로 원장의 'A/S매출'이 'A S매출'처럼
