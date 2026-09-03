@@ -880,24 +880,43 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
 
                 atest['기말잔액(분개장기준)'] = atest.apply(_calc_ending, axis=1)
                 atest = atest.sort_values('계정명').reset_index(drop=True)
-                out['계정별_기말잔액(Atest)'] = atest[
-                    ['계정명', '구분', '기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)']]
-                out.setdefault('_column_notes', {})['계정별_기말잔액(Atest)'] = {
+
+                field_notes = {
                     '기초잔액':
-                        '출처: 계정별원장(data/current 원장 파일)\n'
-                        "각 계정 시트의 '전기이월'/'기초잔액' 행 차변·대변에서 추출.",
+                        "출처: 계정별원장(data/current 원장 파일) — 각 계정 시트의 "
+                        "'전기이월'/'기초잔액' 행 차변·대변에서 추출.",
                     '차변합계':
-                        '출처: 분개장(당기 전표)\n'
-                        "'데이터개요_계정별' 시트와 동일한 합계(계정별원장이 아님).",
+                        "출처: 분개장(당기 전표) — '데이터개요_계정별' 시트와 동일한 합계"
+                        "(계정별원장이 아님).",
                     '대변합계':
-                        '출처: 분개장(당기 전표)\n'
-                        "'데이터개요_계정별' 시트와 동일한 합계(계정별원장이 아님).",
+                        "출처: 분개장(당기 전표) — '데이터개요_계정별' 시트와 동일한 합계"
+                        "(계정별원장이 아님).",
                     '기말잔액(분개장기준)':
-                        '계산식(구분에 따라 자동 선택):\n'
-                        '자산/비용 = 기초잔액 + 차변합계 - 대변합계\n'
-                        '부채/자본/수익 = 기초잔액 - 차변합계 + 대변합계\n'
-                        "원장 자체 차대변으로 계산한 '계정별원장_잔액표'의 '기말잔액(계산)'과는 별개 값임.",
+                        "계산식(구분에 따라 자동 선택): 자산/비용 = 기초잔액+차변합계-대변합계 / "
+                        "부채/자본/수익 = 기초잔액-차변합계+대변합계. 원장 자체 차대변으로 계산한 "
+                        "'계정별원장_잔액표'의 '기말잔액(계산)'과는 별개 값임.",
+                    '구분':
+                        "당기 계정별원장의 거래·기초잔액 부호로 자동 판정한 계정 성격.",
                 }
+                gubun_value_notes = {
+                    '자산/비용':      '차변 증가 계정 — 기말잔액 = 기초잔액+차변합계-대변합계',
+                    '부채/자본/수익': '대변 증가 계정 — 기말잔액 = 기초잔액-차변합계+대변합계',
+                    '검증필요':       '원장상 잔액이 자산형·부채형 계산식 어느 쪽과도 맞지 않아 '
+                                      '자동판정 실패(원장 데이터 확인 필요).',
+                    '데이터없음':     '당기 계정별원장에 기초잔액도 당기 거래도 없는 휴면 계정.',
+                    '원장매칭안됨':   '분개장에는 있으나 계정별원장에서 동일 계정명을 찾지 못해 '
+                                      '매칭 실패(기초잔액 0으로 처리됨).',
+                }
+
+                sheet_name = '계정별_기말잔액(TB_TO_GL_TEST)'
+                out[sheet_name] = atest[
+                    ['계정명', '구분', '기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)']]
+                out.setdefault('_column_notes', {})[sheet_name] = field_notes
+                out.setdefault('_legend_rows', {})[sheet_name] = (
+                    [(k, field_notes[k]) for k in
+                     ('기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)', '구분')]
+                    + [(f'구분={v}', d) for v, d in gubun_value_notes.items()]
+                )
 
     return out
 
@@ -2868,6 +2887,7 @@ def save_results(results: dict, output_dir: str, company_name: str,
     benford_images = results.pop('_benford_images', None)
     decoder        = results.pop('_암호해독표', None)
     column_notes   = results.pop('_column_notes', None)  # {시트명: {컬럼명: 메모text}}
+    legend_rows    = results.pop('_legend_rows', None)   # {시트명: [(항목, 설명), ...]}
 
     # startrow=2: 1~2행을 비워두고 3행부터 컬럼헤더+데이터 기록
     with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
@@ -2889,29 +2909,36 @@ def save_results(results: dict, output_dir: str, company_name: str,
         if header_line2:
             ws.cell(2, 1).value = header_line2
 
-    # 컬럼별 메모(출처/계산식 설명) 삽입 — startrow=2 이므로 헤더는 3행.
-    # 마우스오버 메모(Comment)는 그대로 두고, 4행에 같은 내용을 보이는 셀 텍스트로도 삽입
-    # (데이터는 4행만큼 아래로 밀림).
-    if column_notes:
+    # 범례(항목|설명) 블록 + 컬럼별 메모(Comment) 삽입 — startrow=2 이므로 헤더는 원래 3행.
+    # 범례가 있는 시트는 A/B열에 "항목 | 설명"을 3행부터 세로로 나열하고, 그만큼
+    # 실제 헤더+데이터 테이블을 아래로 밀어낸 뒤(먼저 삽입), 이동한 헤더 행에
+    # 마우스오버 메모(Comment)를 붙인다(범례 삽입을 먼저 해야 메모가 밀린 헤더를 따라감).
+    if column_notes or legend_rows:
         from openpyxl.comments import Comment
-        note_font = Font(size=9, italic=True, color='808080')
-        for sheet, notes in column_notes.items():
+        label_font = Font(bold=True, size=9)
+        desc_font  = Font(size=9, italic=True, color='595959')
+        sheets = set((column_notes or {}).keys()) | set((legend_rows or {}).keys())
+        for sheet in sheets:
             sname = _safe_sheet(sheet)
-            if sname not in wb.sheetnames or not notes:
+            if sname not in wb.sheetnames:
                 continue
             ws = wb[sname]
-            col_to_note = {}
-            for cell in next(ws.iter_rows(min_row=3, max_row=3)):
-                note = notes.get(cell.value)
-                if note:
-                    cell.comment = Comment(note, '감사자동화')
-                    col_to_note[cell.column] = note
-            if col_to_note:
-                ws.insert_rows(4, 1)
-                for col_idx, note in col_to_note.items():
-                    note_cell = ws.cell(row=4, column=col_idx)
-                    note_cell.value = note.replace('\n', ' ')
-                    note_cell.font  = note_font
+            rows = (legend_rows or {}).get(sheet) or []
+            header_row = 3
+            if rows:
+                ws.insert_rows(3, len(rows))
+                for i, (label, desc) in enumerate(rows):
+                    r = 3 + i
+                    ws.cell(row=r, column=1, value=label).font = label_font
+                    ws.cell(row=r, column=2, value=desc).font  = desc_font
+                header_row = 3 + len(rows)
+
+            notes = (column_notes or {}).get(sheet) or {}
+            if notes:
+                for cell in next(ws.iter_rows(min_row=header_row, max_row=header_row)):
+                    note = notes.get(cell.value)
+                    if note:
+                        cell.comment = Comment(note, '감사자동화')
 
     if benford_images:
         for _acct, _dir, img_buf in benford_images:
