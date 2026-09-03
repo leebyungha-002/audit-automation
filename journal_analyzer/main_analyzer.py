@@ -700,6 +700,13 @@ def _compute_ledger_balance(records: list) -> dict:
             except (TypeError, ValueError):
                 pass
 
+    # 원장 마지막 행의 잔액 칸이 비어 있으면(더존류 ERP가 잔액이 정확히 0일 때
+    # 숫자 0 대신 공백으로 표시하는 관행) 그 앞 행의 잔액을 그대로 끌어오지 않고
+    # 0으로 처리한다. 마지막 행 자체에 값이 있으면 위 루프에서 이미 반영됨.
+    last_raw = records[-1][3]
+    if last_raw is None or (isinstance(last_raw, str) and not last_raw.strip()):
+        last_balance = 0.0
+
     calc_asset = running_signed          # 자산/비용: 기초+차변-대변 누적
     calc_liab  = -running_signed         # 부채/자본/수익: 기초-차변+대변 누적
 
@@ -859,17 +866,20 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
             out['계정별원장_잔액표'] = ledger_all
 
             if not stats.empty:
-                # 계정별 기말잔액(A-test): 기초잔액은 계정별원장, 차변합계·대변합계는
-                # 분개장(당기 전표)에서 가져와 별도로 재계산 — 계정별원장_잔액표의
-                # '기말잔액(계산)'(원장 자체 차대변 기준)과는 출처가 다르다.
-                ledger_open = (ledger_all.groupby('계정명')
-                               .agg(기초잔액=('기초잔액', 'sum'),
-                                    구분=('구분', lambda s: s.mode().iat[0] if not s.mode().empty else '검증필요'))
-                               .reset_index())
+                # 계정별 기말잔액(TB_TO_GL_TEST): 기초잔액·원장기말잔액은 계정별원장,
+                # 차변합계·대변합계는 분개장(당기 전표)에서 가져와 재계산 — 계정별원장_잔액표의
+                # '기말잔액(계산)'(원장 자체 차대변 기준)과는 출처가 다르다. 재계산한
+                # 기말잔액(분개장기준)과 원장의 실제 기말잔액을 대사(차이)해서 수기 검증 없이
+                # 바로 불일치 계정을 걸러낼 수 있게 한다.
+                ledger_open = ledger_all.groupby('계정명').agg(
+                    기초잔액=('기초잔액', 'sum'),
+                    기말잔액_원장=('최종표시잔액(원장)', 'sum'),
+                    구분=('구분', lambda s: s.mode().iat[0] if not s.mode().empty else '검증필요'),
+                ).reset_index().rename(columns={'기말잔액_원장': '기말잔액(원장)'})
 
                 atest = pd.merge(stats[['계정명', '차변합계', '대변합계']], ledger_open,
                                   on='계정명', how='outer')
-                for col in ('차변합계', '대변합계', '기초잔액'):
+                for col in ('차변합계', '대변합계', '기초잔액', '기말잔액(원장)'):
                     atest[col] = atest[col].fillna(0.0)
                 atest['구분'] = atest['구분'].fillna('원장매칭안됨')
 
@@ -879,6 +889,7 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                     return row['기초잔액'] + row['차변합계'] - row['대변합계']
 
                 atest['기말잔액(분개장기준)'] = atest.apply(_calc_ending, axis=1)
+                atest['차이'] = (atest['기말잔액(분개장기준)'] - atest['기말잔액(원장)']).round(2)
                 atest = atest.sort_values('계정명').reset_index(drop=True)
 
                 field_notes = {
@@ -895,6 +906,14 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                         "계산식(구분에 따라 자동 선택): 자산/비용 = 기초잔액+차변합계-대변합계 / "
                         "부채/자본/수익 = 기초잔액-차변합계+대변합계. 원장 자체 차대변으로 계산한 "
                         "'계정별원장_잔액표'의 '기말잔액(계산)'과는 별개 값임.",
+                    '기말잔액(원장)':
+                        "출처: 계정별원장 — 각 계정 시트 마지막 거래행의 표시잔액(여러 원장 "
+                        "파일에 계정이 걸쳐 있으면 합산). 마지막 행 잔액 칸이 비어 있으면 0으로 "
+                        "처리(더존류 ERP가 잔액이 정확히 0일 때 공백으로 표시하는 관행).",
+                    '차이':
+                        "기말잔액(분개장기준) - 기말잔액(원장). 0이 아니면 분개장 합계와 원장 "
+                        "표시잔액이 불일치 — 전기말수정분개·원장 갱신 누락·계정명 매칭 실패 등 "
+                        "원인 확인 필요.",
                     '구분':
                         "당기 계정별원장의 거래·기초잔액 부호로 자동 판정한 계정 성격.",
                 }
@@ -905,16 +924,18 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                                       '자동판정 실패(원장 데이터 확인 필요).',
                     '데이터없음':     '당기 계정별원장에 기초잔액도 당기 거래도 없는 휴면 계정.',
                     '원장매칭안됨':   '분개장에는 있으나 계정별원장에서 동일 계정명을 찾지 못해 '
-                                      '매칭 실패(기초잔액 0으로 처리됨).',
+                                      '매칭 실패(기초잔액·기말잔액(원장) 0으로 처리됨).',
                 }
 
                 sheet_name = '계정별_기말잔액(TB_TO_GL_TEST)'
                 out[sheet_name] = atest[
-                    ['계정명', '구분', '기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)']]
+                    ['계정명', '구분', '기초잔액', '차변합계', '대변합계',
+                     '기말잔액(분개장기준)', '기말잔액(원장)', '차이']]
                 out.setdefault('_column_notes', {})[sheet_name] = field_notes
                 out.setdefault('_legend_rows', {})[sheet_name] = (
                     [(k, field_notes[k]) for k in
-                     ('기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)', '구분')]
+                     ('기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)',
+                      '기말잔액(원장)', '차이', '구분')]
                     + [(f'구분={v}', d) for v, d in gubun_value_notes.items()]
                 )
 
