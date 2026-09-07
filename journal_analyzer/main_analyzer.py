@@ -489,8 +489,11 @@ def load_data(company_dir: str) -> pd.DataFrame:
 
 # ── 2. 거래처 전기/당기 비교 ──────────────────────────────────────────────────
 def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
-    # 계정별 방향 매핑 (금액열 → 구분 순으로 fallback)
-    acct_dir = {}
+    UNIT_COL = '전표관리단위'
+    # 계정별 방향(금액열 → 구분 순 fallback) + 관리단위 구분 여부(선택, samdong 등
+    # 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는 회사에서만 파라미터 시트에
+    # '관리단위' 열을 Y로 채워 사용 — 계정마다 개별 지정, 없으면 기존과 동일하게 미적용)
+    acct_dir, acct_split_unit = {}, {}
     for p in params_list:
         acct = _nv(p.get('계정과목',''))
         if not acct: continue
@@ -499,6 +502,9 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
                  or '차변')
         if vtype not in ('차변','대변','both'): vtype = '차변'
         acct_dir[acct] = vtype
+        unit_key = next((k for k in p.keys() if '관리단위' in str(k)), None)
+        acct_split_unit[acct] = bool(unit_key) and \
+            _nv(str(p.get(unit_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
     if not acct_dir: acct_dir = {'접대비': '차변'}
 
     if COL_ACCOUNT not in df.columns or COL_CLIENT not in df.columns: return {}
@@ -507,9 +513,10 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     df_w = df.copy()
     gc = _get_gubun_col(df_w)
     if gc: df_w[gc] = df_w[gc].astype(str).str.strip()
+    has_unit_col = UNIT_COL in df_w.columns
 
-    # 계정별로 개별 방향 적용 후 합치기
-    parts = []
+    # 계정별로 개별 방향 적용 + (지정 시) 전표관리단위별로 분리 집계
+    out = {}
     for acct, vtype in acct_dir.items():
         sub = df_w[_account_match_flexible(df_w[COL_ACCOUNT], acct)].copy()
         if sub.empty: continue
@@ -520,43 +527,35 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
         else:
             sub['_amt'] = (pd.to_numeric(sub[COL_DEBIT], errors='coerce').fillna(0)
                           + pd.to_numeric(sub[COL_CREDIT], errors='coerce').fillna(0))
-        parts.append(sub)
-    if not parts: return {}
-    filtered = pd.concat(parts, ignore_index=True)
 
-    pivot = filtered.pivot_table(index=[COL_ACCOUNT, COL_CLIENT], columns='구분',
+        split_unit = acct_split_unit.get(acct, False) and has_unit_col
+        index_cols = [COL_ACCOUNT, COL_CLIENT] + ([UNIT_COL] if split_unit else [])
+        if split_unit:
+            sub[UNIT_COL] = sub[UNIT_COL].astype(str).str.strip()
+
+        pivot = sub.pivot_table(index=index_cols, columns='구분',
                                  values='_amt', aggfunc=['sum','count'], fill_value=0)
-    if pivot.empty: return {}
+        if pivot.empty: continue
 
-    result = pd.DataFrame(index=pivot.index)
-    for col in ['전기금액','당기금액','전기전표수','당기전표수']: result[col] = 0
-    for (agg_fn, gubun) in pivot.columns:
-        g = str(gubun).strip()
-        col_key = f'{g}금액' if agg_fn == 'sum' else f'{g}전표수'
-        result[col_key] = pivot[(agg_fn, gubun)].reindex(result.index).fillna(0)
-    result = result.fillna(0)
-    for c in ['전기전표수','당기전표수']:
-        if c in result.columns: result[c] = result[c].astype(int)
-    result['증감금액'] = result.get('당기금액', 0) - result.get('전기금액', 0)
-    result['증감비율(%)'] = result.apply(
-        lambda r: (r['증감금액']/r['전기금액']*100) if r.get('전기금액',0) != 0 else 0.0, axis=1)
-    result = (result.assign(_abs=result['증감금액'].abs())
-                    .sort_values([COL_ACCOUNT,'_abs','당기금액'], ascending=[True,False,False])
-                    .drop(columns=['_abs']).reset_index())
-    cols = list(result.columns)
-    renames = {}
-    if cols[0] != '계정명': renames[cols[0]] = '계정명'
-    if len(cols)>1 and cols[1] != '거래처명': renames[cols[1]] = '거래처명'
-    if renames: result = result.rename(columns=renames)
+        result = pd.DataFrame(index=pivot.index)
+        for col in ['전기금액','당기금액','전기전표수','당기전표수']: result[col] = 0
+        for (agg_fn, gubun) in pivot.columns:
+            g = str(gubun).strip()
+            col_key = f'{g}금액' if agg_fn == 'sum' else f'{g}전표수'
+            result[col_key] = pivot[(agg_fn, gubun)].reindex(result.index).fillna(0)
+        result = result.fillna(0)
+        for c in ['전기전표수','당기전표수']:
+            if c in result.columns: result[c] = result[c].astype(int)
+        result['증감금액'] = result.get('당기금액', 0) - result.get('전기금액', 0)
+        result['증감비율(%)'] = result.apply(
+            lambda r: (r['증감금액']/r['전기금액']*100) if r.get('전기금액',0) != 0 else 0.0, axis=1)
+        result = (result.assign(_abs=result['증감금액'].abs())
+                        .sort_values(['_abs','당기금액'], ascending=[False,False])
+                        .drop(columns=['_abs']).reset_index())
+        result = result.rename(columns={COL_ACCOUNT: '계정명', COL_CLIENT: '거래처명'}).drop(columns=['계정명'])
 
-    out = {}
-    if '계정명' in result.columns:
-        for acct in result['계정명'].unique():
-            sub   = result[result['계정명'] == acct].drop(columns=['계정명'])
-            sname = _safe_sheet(f'비교_{re.sub(r"[^가-힣a-zA-Z0-9]","",str(acct))[:20]}')
-            out[sname] = sub
-    else:
-        out['거래처_전기당기비교'] = result
+        sname = _safe_sheet(f'비교_{re.sub(r"[^가-힣a-zA-Z0-9]","",str(acct))[:20]}')
+        out[sname] = result
     return out
 
 
@@ -2776,6 +2775,10 @@ def load_active_tasks(task_list_path: str) -> list:
     col_flag   = next((c for c in df.columns if '여부' in str(c)), None)
     col_period = next((c for c in df.columns if '대상' in str(c)), None)
     col_month  = next((c for c in df.columns if '기준월' in str(c) or '종료월' in str(c)), None)
+    # '관리단위' 컬럼(선택): 분석목록 시트에 있을 때만 적용되는 회사별 특수 필터.
+    # samdong처럼 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는 회사에서만 채워 쓴다 —
+    # 컬럼 자체가 없는 다른 회사 task_list는 col_unit=None이라 영향 없음 (기준월과 동일한 패턴).
+    col_unit   = next((c for c in df.columns if '관리단위' in str(c)), None)
     if not all([col_no, col_nm, col_flag]):
         raise ValueError(f'분석번호/분석명/실행여부 컬럼 없음. 실제 컬럼: {df.columns.tolist()}')
 
@@ -2787,15 +2790,20 @@ def load_active_tasks(task_list_path: str) -> list:
         except (ValueError, TypeError):
             return None
 
+    def _parse_unit(val):
+        s = str(val).strip()
+        return s if s and s not in ('nan', 'None', '전체') else None
+
     flag   = df[col_flag].astype(str).str.strip().str.upper()
     active = df[flag.isin(['Y','O'])].dropna(subset=[col_no])
     tasks  = [
         (int(row[col_no]), str(row[col_nm]).strip(),
          str(row[col_period]).strip() if col_period and str(row[col_period]).strip() not in ('nan', '') else '당기',
-         _parse_month(row[col_month]) if col_month else None)
+         _parse_month(row[col_month]) if col_month else None,
+         _parse_unit(row[col_unit]) if col_unit else None)
         for _, row in active.iterrows()
     ]
-    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" + (f"(~{m}월)" if m else "") for n,nm,p,m in tasks]}')
+    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" + (f"(~{m}월)" if m else "") + (f"({u})" if u else "") for n,nm,p,m,u in tasks]}')
     return tasks
 
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
@@ -3045,7 +3053,7 @@ def main():
     except (FileNotFoundError, ValueError) as e:
         print(f'[오류] {e}'); sys.exit(1)
     if args.task:
-        active_tasks = [(n, nm, p, m) for n, nm, p, m in active_tasks if n in args.task]
+        active_tasks = [(n, nm, p, m, u) for n, nm, p, m, u in active_tasks if n in args.task]
         print(f'  [필터] --task {args.task} → {len(active_tasks)}개 실행')
     if not active_tasks:
         print('실행할 분석이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
@@ -3066,7 +3074,7 @@ def main():
     # 3) 분석 순차 실행
     print('\n[분석 실행]')
     all_results: dict = {}
-    for task_no, task_name, 분석대상, end_month in active_tasks:
+    for task_no, task_name, 분석대상, end_month, 관리단위 in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
             continue
@@ -3080,7 +3088,12 @@ def main():
         # 기준월 필터: task_list 분석목록 시트 '기준월' 열에 숫자(1~12) 기재 시 해당 월까지만 사용
         if end_month and COL_DATE in task_df.columns:
             task_df = task_df[task_df[COL_DATE].dt.month <= end_month].copy()
-        period_label = 분석대상 + (f' ~{end_month}월' if end_month else '')
+        # 관리단위 필터: task_list 분석목록 시트 '관리단위' 열에 값 기재 시(예: 본사/2공장)
+        # 원장의 '전표관리단위' 컬럼이 그 값과 일치하는 행만 사용 (samdong 전용, 다른 회사는
+        # 해당 컬럼이 없어 그대로 통과)
+        if 관리단위 and '전표관리단위' in task_df.columns:
+            task_df = task_df[task_df['전표관리단위'].astype(str).str.strip() == 관리단위].copy()
+        period_label = 분석대상 + (f' ~{end_month}월' if end_month else '') + (f' [{관리단위}]' if 관리단위 else '')
         print(f'  [{task_no:>3}] {task_name} [{period_label} {len(task_df):,}행]', flush=True)
         try:
             result = func(task_df, params_list)
@@ -3108,7 +3121,7 @@ def main():
     if args.task and active_tasks:
         import datetime as _dt
         _date_str = _dt.datetime.now().strftime('%Y%m%d')
-        _non_sep = [(n, nm) for n, nm, p, m in active_tasks if n not in _SEPARATE_FILE_TASKS]
+        _non_sep = [(n, nm) for n, nm, p, m, u in active_tasks if n not in _SEPARATE_FILE_TASKS]
         if _non_sep:
             _parts = []
             for _n, _nm in _non_sep:
