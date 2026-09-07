@@ -114,6 +114,10 @@ COL_EMPLOYEE   = '사원명'
 # 전표번호 대신 이 컬럼을 사용한다. 화면 표시용 전표번호(COL_JOURNAL_ID)는 그대로 둔다.
 COL_JOURNAL_KEY = '전표그룹키'
 
+# 22번(은행조회서완전성) 전용 선택적 컬럼 — 회사별 preprocess.py가 채워두면(예: samdong의
+# 관리항목2) 거래처명 대신 이 컬럼에서 금융기관명을 추출한다. 없으면 거래처명 사용(기존 동작)
+FI_SOURCE_COL = '금융기관명_원본'
+
 # 분석 상수
 BENFORD_MIN_ROWS        = 5
 BENFORD_PROBS           = {1:0.301,2:0.176,3:0.125,4:0.097,5:0.079,6:0.067,7:0.058,8:0.051,9:0.046}
@@ -2543,9 +2547,13 @@ def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
 
     combined = pd.concat(all_rows, ignore_index=True)
 
-    # 금융기관명 추출 (거래처명 바로 뒤에 컬럼 삽입)
-    if COL_CLIENT in combined.columns:
-        combined['금융기관명'] = combined[COL_CLIENT].apply(_extract_fi)
+    # 금융기관명 추출 (거래처명 바로 뒤에 컬럼 삽입). 회사별 전용 전처리(preprocess.py)가
+    # FI_SOURCE_COL(금융기관명_원본)을 채워뒀으면 그걸 우선 사용 — samdong처럼 거래처명
+    # (관리항목1)에 계좌번호만 있고 실제 금융기관명은 다른 관리항목 슬롯(관리항목2 등)에
+    # 있는 회사 전용 (2026-09-07 blue sky 확인). 없으면 기존처럼 거래처명에서 추출.
+    fi_source = FI_SOURCE_COL if FI_SOURCE_COL in combined.columns else COL_CLIENT
+    if fi_source in combined.columns:
+        combined['금융기관명'] = combined[fi_source].apply(_extract_fi)
     else:
         combined['금융기관명'] = ''
 
