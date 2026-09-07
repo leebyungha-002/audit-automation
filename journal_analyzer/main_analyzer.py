@@ -2814,6 +2814,11 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
                 row['합계'] = monthly.sum()
                 rows.append(row)
         if rows:
+            # 비용구분(판관/제조)이 섞인 시트는 판관 → 제조 순으로 묶어서 정렬
+            # (2026-09-07 blue sky 요청 — 계정별로 판관/제조가 번갈아 나와 보기 불편함).
+            # 안정정렬이라 같은 구분 안에서는 원래(입력) 순서가 그대로 유지된다.
+            _cost_order = {'판관': 0, '제조': 1}
+            rows.sort(key=lambda r: _cost_order.get(str(r.get(COST_COL, '')).strip(), 2))
             out[_safe_sheet(f'손익월별_{cat}')] = pd.DataFrame(rows)
 
     return out or {'손익월별분석': pd.DataFrame({'결과': ['손익구분에 해당하는 계정 데이터 없음']})}
