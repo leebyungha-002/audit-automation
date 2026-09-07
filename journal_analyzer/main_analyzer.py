@@ -1863,6 +1863,8 @@ def analyze_header_check(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
 
 # ── 17. 거래처 분석 ───────────────────────────────────────────────────────────
 def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
+    UNIT_COL = '전표관리단위'
+    has_unit_col = UNIT_COL in df.columns
     out = {}
     for i, p in enumerate(params_list, 1):
         accts    = [a.strip() for a in str(p.get('계정과목','')).split(',')
@@ -1872,6 +1874,11 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         vtype    = _nv(p.get('금액열',''), blank_vals=('nan','none','')) or 'both'
         if vtype not in ('차변','대변','both'): vtype = 'both'
         job_name = _nv(p.get('작업명','')) or f'거래처{i:02d}'
+        # 관리단위(선택, samdong 등 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는
+        # 회사 전용): 작업(행)별로 Y 지정 시 월별합산을 전표관리단위별로도 나눠서 추출
+        unit_key = next((k for k in p.keys() if '관리단위' in str(k)), None)
+        split_unit = has_unit_col and bool(unit_key) and \
+            _nv(str(p.get(unit_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
         if not clients: continue
 
         mask_a = pd.Series(True, index=df.index) if not accts else pd.Series(False, index=df.index)
@@ -1885,28 +1892,31 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         if vtype == '차변': filtered = filtered[filtered[COL_DEBIT]  != 0]
         elif vtype == '대변': filtered = filtered[filtered[COL_CREDIT] != 0]
         if filtered.empty: continue
+        if split_unit: filtered[UNIT_COL] = filtered[UNIT_COL].astype(str).str.strip()
 
         filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
 
         # 월별합산: 거래처명·계정명별로 나눠서 집계(2026-09-01 blue sky 요청 —
         # 기존엔 파라미터에 걸린 계정을 전부 합쳐 월별 1줄로만 보여줘 계정별 구분이
-        # 안 되고 거래처명도 빠져 있었음). 행 = 거래처명×계정명, 열 = 실제 발생월(YM)
-        # + 기간 전체 차변/대변/합계.
+        # 안 되고 거래처명도 빠져 있었음). 행 = 거래처명×계정명(×관리단위, 지정 시),
+        # 열 = 실제 발생월(YM) + 기간 전체 차변/대변/합계.
         ym_cols = sorted(filtered['YM'].dropna().unique().tolist())
         filtered['순액'] = filtered[COL_DEBIT].fillna(0) + filtered[COL_CREDIT].fillna(0)
-        pivot = (filtered.pivot_table(index=[COL_CLIENT, COL_ACCOUNT], columns='YM',
+        group_cols = [COL_CLIENT, COL_ACCOUNT] + ([UNIT_COL] if split_unit else [])
+        pivot = (filtered.pivot_table(index=group_cols, columns='YM',
                                        values='순액', aggfunc='sum', fill_value=0)
                  .reindex(columns=ym_cols, fill_value=0)
                  .reset_index())
-        totals = (filtered.groupby([COL_CLIENT, COL_ACCOUNT])
+        totals = (filtered.groupby(group_cols)
                   .agg(차변합계=(COL_DEBIT, 'sum'), 대변합계=(COL_CREDIT, 'sum'))
                   .reset_index())
         totals['합계'] = totals['차변합계'] + totals['대변합계']
-        monthly = pivot.merge(totals, on=[COL_CLIENT, COL_ACCOUNT], how='left')
+        monthly = pivot.merge(totals, on=group_cols, how='left')
         monthly = monthly.sort_values([COL_CLIENT, '합계'], ascending=[True, False]).reset_index(drop=True)
 
         dc = [c for c in ['구분', COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT,
-                           COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC] if c in filtered.columns]
+                           COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC]
+              + ([UNIT_COL] if split_unit else []) if c in filtered.columns]
         sname = _safe_sheet(f'거래처_{re.sub(r"[^가-힣a-zA-Z0-9]","",job_name)[:18]}')
         out[sname]               = filtered[dc]
         out[sname + '_월별합산'] = monthly
