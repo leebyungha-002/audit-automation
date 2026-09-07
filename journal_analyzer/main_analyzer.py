@@ -2775,10 +2775,6 @@ def load_active_tasks(task_list_path: str) -> list:
     col_flag   = next((c for c in df.columns if '여부' in str(c)), None)
     col_period = next((c for c in df.columns if '대상' in str(c)), None)
     col_month  = next((c for c in df.columns if '기준월' in str(c) or '종료월' in str(c)), None)
-    # '관리단위' 컬럼(선택): 분석목록 시트에 있을 때만 적용되는 회사별 특수 필터.
-    # samdong처럼 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는 회사에서만 채워 쓴다 —
-    # 컬럼 자체가 없는 다른 회사 task_list는 col_unit=None이라 영향 없음 (기준월과 동일한 패턴).
-    col_unit   = next((c for c in df.columns if '관리단위' in str(c)), None)
     if not all([col_no, col_nm, col_flag]):
         raise ValueError(f'분석번호/분석명/실행여부 컬럼 없음. 실제 컬럼: {df.columns.tolist()}')
 
@@ -2790,20 +2786,15 @@ def load_active_tasks(task_list_path: str) -> list:
         except (ValueError, TypeError):
             return None
 
-    def _parse_unit(val):
-        s = str(val).strip()
-        return s if s and s not in ('nan', 'None', '전체') else None
-
     flag   = df[col_flag].astype(str).str.strip().str.upper()
     active = df[flag.isin(['Y','O'])].dropna(subset=[col_no])
     tasks  = [
         (int(row[col_no]), str(row[col_nm]).strip(),
          str(row[col_period]).strip() if col_period and str(row[col_period]).strip() not in ('nan', '') else '당기',
-         _parse_month(row[col_month]) if col_month else None,
-         _parse_unit(row[col_unit]) if col_unit else None)
+         _parse_month(row[col_month]) if col_month else None)
         for _, row in active.iterrows()
     ]
-    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" + (f"(~{m}월)" if m else "") + (f"({u})" if u else "") for n,nm,p,m,u in tasks]}')
+    print(f'  [태스크] {len(tasks)}개: {[f"{n}_{nm}[{p}]" + (f"(~{m}월)" if m else "") for n,nm,p,m in tasks]}')
     return tasks
 
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
@@ -3053,7 +3044,7 @@ def main():
     except (FileNotFoundError, ValueError) as e:
         print(f'[오류] {e}'); sys.exit(1)
     if args.task:
-        active_tasks = [(n, nm, p, m, u) for n, nm, p, m, u in active_tasks if n in args.task]
+        active_tasks = [(n, nm, p, m) for n, nm, p, m in active_tasks if n in args.task]
         print(f'  [필터] --task {args.task} → {len(active_tasks)}개 실행')
     if not active_tasks:
         print('실행할 분석이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
@@ -3074,7 +3065,7 @@ def main():
     # 3) 분석 순차 실행
     print('\n[분석 실행]')
     all_results: dict = {}
-    for task_no, task_name, 분석대상, end_month, 관리단위 in active_tasks:
+    for task_no, task_name, 분석대상, end_month in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
             continue
@@ -3088,12 +3079,7 @@ def main():
         # 기준월 필터: task_list 분석목록 시트 '기준월' 열에 숫자(1~12) 기재 시 해당 월까지만 사용
         if end_month and COL_DATE in task_df.columns:
             task_df = task_df[task_df[COL_DATE].dt.month <= end_month].copy()
-        # 관리단위 필터: task_list 분석목록 시트 '관리단위' 열에 값 기재 시(예: 본사/2공장)
-        # 원장의 '전표관리단위' 컬럼이 그 값과 일치하는 행만 사용 (samdong 전용, 다른 회사는
-        # 해당 컬럼이 없어 그대로 통과)
-        if 관리단위 and '전표관리단위' in task_df.columns:
-            task_df = task_df[task_df['전표관리단위'].astype(str).str.strip() == 관리단위].copy()
-        period_label = 분석대상 + (f' ~{end_month}월' if end_month else '') + (f' [{관리단위}]' if 관리단위 else '')
+        period_label = 분석대상 + (f' ~{end_month}월' if end_month else '')
         print(f'  [{task_no:>3}] {task_name} [{period_label} {len(task_df):,}행]', flush=True)
         try:
             result = func(task_df, params_list)
@@ -3121,7 +3107,7 @@ def main():
     if args.task and active_tasks:
         import datetime as _dt
         _date_str = _dt.datetime.now().strftime('%Y%m%d')
-        _non_sep = [(n, nm) for n, nm, p, m, u in active_tasks if n not in _SEPARATE_FILE_TASKS]
+        _non_sep = [(n, nm) for n, nm, p, m in active_tasks if n not in _SEPARATE_FILE_TASKS]
         if _non_sep:
             _parts = []
             for _n, _nm in _non_sep:
