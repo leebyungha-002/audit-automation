@@ -2905,8 +2905,11 @@ def load_active_tasks(task_list_path: str) -> list:
 def load_analysis_params(task_list_path: str, analysis_name: str) -> list:
     xl = pd.ExcelFile(task_list_path)
     # 시트명 공백 normalize 후 매칭 (예: "심층분析 (계정별 Top) " → "심층분析(계정별Top)",
-    # "은행조회서 완전성" → "은행조회서완전성" — 중간 공백까지 전부 제거해 비교)
+    # "은행조회서 완전성" → "은행조회서완전성" — 중간 공백까지 전부 제거해 비교).
+    # 시트 탭에 "02_" 같은 분석번호 접두가 붙어 있어도(2026-09-07 정리 작업) 매칭되도록
+    # 앞의 숫자+구분자 접두를 먼저 제거한다.
     def _norm_sheet(s: str) -> str:
+        s = re.sub(r'^\d+[_\-\.\s]+', '', str(s))
         return re.sub(r'\s+', '', s)
     norm_map = {_norm_sheet(s): s for s in xl.sheet_names}
     for candidate in [analysis_name, f'{analysis_name}_파라미터']:
