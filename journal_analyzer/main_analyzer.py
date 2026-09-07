@@ -2650,13 +2650,17 @@ _PL_CATEGORIES = ['매출', '매출원가', '판관비', '영업외수익', '영
 def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
     """25. 손익항목 월별 추이 (당기, 손익구분별 시트)
     task_list 파라미터: 계정과목 / 구분(차변·대변·both) / 손익구분(매출·매출원가·판관비·
-        영업외수익·영업외비용) / 실행여부
+        영업외수익·영업외비용) / 실행여부 / 관리단위(선택)
     결과: 손익구분마다 시트 1개(행=계정명, 열=1월~12월+합계)로 정리.
     손익구분을 안 적으면 구분(차변/대변)으로 매출·판관비만 추정해 채움 — 매출원가/
     영업외수익/영업외비용으로 분류하려면 손익구분 값을 직접 적어야 함.
     (2026-08-31: 기존엔 계정 1개당 시트 1개(전기/당기 비교)였는데, 계정이 많은 회사는
     시트가 수십 개로 늘어나 보기 불편하다는 요청으로 손익구분별 1개 시트·월별 매트릭스로 변경)
+    관리단위(선택, samdong 등 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는 회사 전용):
+    Y로 지정한 계정은 월별 금액을 전표관리단위별로 나눈 행을 함께 추출 (계정별 개별 지정,
+    없으면 기존과 동일하게 단위 구분 없이 1행).
     """
+    UNIT_COL = '전표관리단위'
     targets = []
     for p in params_list:
         acct = _nv(p.get('계정과목', ''))
@@ -2669,20 +2673,24 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
         cat = _nv(p.get('손익구분', ''))
         if cat not in _PL_CATEGORIES:
             cat = '매출' if direction == '대변' else '판관비'
-        targets.append((acct, direction, cat))
+        unit_key = next((k for k in p.keys() if '관리단위' in str(k)), None)
+        split_unit = bool(unit_key) and \
+            _nv(str(p.get(unit_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
+        targets.append((acct, direction, cat, split_unit))
 
     if not targets:
         return {'손익월별분석': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
 
     cur = df[df['구분'] == '당기'] if '구분' in df.columns else df
+    has_unit_col = UNIT_COL in cur.columns
 
     out = {}
     for cat in _PL_CATEGORIES:
-        cat_targets = [(a, d) for a, d, c in targets if c == cat]
+        cat_targets = [(a, d, u) for a, d, c, u in targets if c == cat]
         if not cat_targets:
             continue
         rows = []
-        for acct_name, direction in cat_targets:
+        for acct_name, direction, split_unit in cat_targets:
             mask = _account_match_flexible(cur[COL_ACCOUNT], acct_name)
             sub = cur[mask]
             if sub.empty:
@@ -2694,12 +2702,23 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             else:
                 amt = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
             month = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
-            monthly = amt.groupby(month).sum()
-            row = {'계정명': acct_name}
-            for m in range(1, 13):
-                row[f'{m}월'] = monthly.get(m, 0)
-            row['합계'] = monthly.sum()
-            rows.append(row)
+
+            if split_unit and has_unit_col:
+                unit = sub[UNIT_COL].astype(str).str.strip()
+                monthly = amt.groupby([unit, month]).sum()
+                for u in sorted(monthly.index.get_level_values(0).unique()):
+                    row = {'계정명': acct_name, UNIT_COL: u}
+                    for m in range(1, 13):
+                        row[f'{m}월'] = monthly.get((u, m), 0)
+                    row['합계'] = monthly.loc[u].sum()
+                    rows.append(row)
+            else:
+                monthly = amt.groupby(month).sum()
+                row = {'계정명': acct_name}
+                for m in range(1, 13):
+                    row[f'{m}월'] = monthly.get(m, 0)
+                row['합계'] = monthly.sum()
+                rows.append(row)
         if rows:
             out[_safe_sheet(f'손익월별_{cat}')] = pd.DataFrame(rows)
 
