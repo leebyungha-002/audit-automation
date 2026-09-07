@@ -490,10 +490,12 @@ def load_data(company_dir: str) -> pd.DataFrame:
 # ── 2. 거래처 전기/당기 비교 ──────────────────────────────────────────────────
 def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     UNIT_COL = '전표관리단위'
-    # 계정별 방향(금액열 → 구분 순 fallback) + 관리단위 구분 여부(선택, samdong 등
-    # 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는 회사에서만 파라미터 시트에
-    # '관리단위' 열을 Y로 채워 사용 — 계정마다 개별 지정, 없으면 기존과 동일하게 미적용)
-    acct_dir, acct_split_unit = {}, {}
+    COST_COL = '비용구분'
+    # 계정별 방향(금액열 → 구분 순 fallback) + 관리단위/비용구분 분리 여부(선택,
+    # samdong 등 원장에 '전표관리단위'(본사/2공장 등)·'비용구분'(판관/제조 등) 컬럼이
+    # 있는 회사에서만 파라미터 시트에 같은 이름의 열을 Y로 채워 사용 — 계정마다
+    # 개별 지정, 없으면 기존과 동일하게 미적용)
+    acct_dir, acct_split_unit, acct_split_cost = {}, {}, {}
     for p in params_list:
         acct = _nv(p.get('계정과목',''))
         if not acct: continue
@@ -505,6 +507,9 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
         unit_key = next((k for k in p.keys() if '관리단위' in str(k)), None)
         acct_split_unit[acct] = bool(unit_key) and \
             _nv(str(p.get(unit_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
+        cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
+        acct_split_cost[acct] = bool(cost_key) and \
+            _nv(str(p.get(cost_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
     if not acct_dir: acct_dir = {'접대비': '차변'}
 
     if COL_ACCOUNT not in df.columns or COL_CLIENT not in df.columns: return {}
@@ -514,8 +519,9 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     gc = _get_gubun_col(df_w)
     if gc: df_w[gc] = df_w[gc].astype(str).str.strip()
     has_unit_col = UNIT_COL in df_w.columns
+    has_cost_col = COST_COL in df_w.columns
 
-    # 계정별로 개별 방향 적용 + (지정 시) 전표관리단위별로 분리 집계
+    # 계정별로 개별 방향 적용 + (지정 시) 전표관리단위/비용구분별로 분리 집계
     out = {}
     for acct, vtype in acct_dir.items():
         sub = df_w[_account_match_flexible(df_w[COL_ACCOUNT], acct)].copy()
@@ -529,9 +535,13 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
                           + pd.to_numeric(sub[COL_CREDIT], errors='coerce').fillna(0))
 
         split_unit = acct_split_unit.get(acct, False) and has_unit_col
-        index_cols = [COL_ACCOUNT, COL_CLIENT] + ([UNIT_COL] if split_unit else [])
+        split_cost = acct_split_cost.get(acct, False) and has_cost_col
+        index_cols = [COL_ACCOUNT, COL_CLIENT] + ([UNIT_COL] if split_unit else []) \
+                     + ([COST_COL] if split_cost else [])
         if split_unit:
             sub[UNIT_COL] = sub[UNIT_COL].astype(str).str.strip()
+        if split_cost:
+            sub[COST_COL] = sub[COST_COL].astype(str).str.strip()
 
         pivot = sub.pivot_table(index=index_cols, columns='구분',
                                  values='_amt', aggfunc=['sum','count'], fill_value=0)
@@ -1537,15 +1547,27 @@ def analyze_asset_liability_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
 
 # ── 13. 매출 vs 비용 교차 ────────────────────────────────────────────────────
 def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
+    COST_COL = '비용구분'
+    has_cost_col = COST_COL in df.columns
+
+    def _cost_flag(p):
+        key = next((k for k in p.keys() if '비용구분' in str(k)), None)
+        return has_cost_col and bool(key) and \
+            _nv(str(p.get(key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
+
     # '매출' 외에 '수익'도 매출측 구분값으로 허용 (2026-08-31 graphy에서 '수익'으로
     # 기재해 매칭 실패 확인 — 매출/수익은 회사마다 혼용되는 표기라 둘 다 인정)
-    revs = [_nv(p.get('계정과목','')) for p in params_list
-            if str(p.get('구분','')).strip() in ('매출','수익') and _nv(p.get('계정과목',''))]
-    exps = [_nv(p.get('계정과목','')) for p in params_list
-            if str(p.get('구분','')).strip() == '비용' and _nv(p.get('계정과목',''))]
-    if not revs or not exps:
+    # 비용구분(선택, samdong 등 원장에 '비용구분'(판관/제조 등) 컬럼이 있는 회사 전용):
+    # 행별로 Y 지정 시 해당 계정의 상세를 비용구분별로도 나눠서 추출
+    rev_targets = [(_nv(p.get('계정과목','')), _cost_flag(p)) for p in params_list
+                   if str(p.get('구분','')).strip() in ('매출','수익') and _nv(p.get('계정과목',''))]
+    exp_targets = [(_nv(p.get('계정과목','')), _cost_flag(p)) for p in params_list
+                   if str(p.get('구분','')).strip() == '비용' and _nv(p.get('계정과목',''))]
+    if not rev_targets or not exp_targets:
         return {'매출비용교차': pd.DataFrame(
             {'안내':['task_list 매출비용교차 시트에 구분(매출/비용)·계정과목을 입력하세요.']})}
+    revs = [a for a, _ in rev_targets]
+    exps = [a for a, _ in exp_targets]
     rm = pd.Series(False, index=df.index)
     for r in revs: rm |= df[COL_ACCOUNT].str.contains(r, na=False, regex=False)
     em = pd.Series(False, index=df.index)
@@ -1555,13 +1577,25 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     if rdf.empty or edf.empty:
         return {'매출비용교차': pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})}
 
-    # 계정별 상세(건수/금액)를 매출·비용 각각 거래처×계정 단위로 집계 (2026-08-31 요청:
-    # 비용 계정을 옆으로 쭉 펼친 넓은 표라 보기 어려움 → 매출계정/비용계정을 각각 한 줄씩
-    # 세로로 나열하고, 같은 거래처끼리는 두 목록을 나란히(짧은 쪽은 빈칸) 배치)
-    r_detail = rdf.groupby([COL_CLIENT, COL_ACCOUNT])[COL_CREDIT].agg(['sum', 'count'])
-    r_detail.columns = ['매출계정별금액', '매출계정별건수']
-    e_detail = edf.groupby([COL_CLIENT, COL_ACCOUNT])[COL_DEBIT].agg(['sum', 'count'])
-    e_detail.columns = ['비용계정별금액', '비용계정별건수']
+    def _account_client_detail(sub_df, targets, value_col, col_sum, col_count):
+        split_accts = [a for a, f in targets if f]
+        if split_accts:
+            mask = pd.Series(False, index=sub_df.index)
+            for a in split_accts: mask |= sub_df[COL_ACCOUNT].str.contains(a, na=False, regex=False)
+            sub_df = sub_df.copy()
+            sub_df[COST_COL] = np.where(mask, sub_df[COST_COL].astype(str).str.strip(), '')
+            grp = sub_df.groupby([COL_CLIENT, COL_ACCOUNT, COST_COL])[value_col].agg(['sum', 'count'])
+        else:
+            grp = sub_df.groupby([COL_CLIENT, COL_ACCOUNT])[value_col].agg(['sum', 'count'])
+        grp.columns = [col_sum, col_count]
+        return grp
+
+    # 계정별 상세(건수/금액)를 매출·비용 각각 거래처×계정(×비용구분, 지정 시) 단위로
+    # 집계 (2026-08-31 요청: 비용 계정을 옆으로 쭉 펼친 넓은 표라 보기 어려움 →
+    # 매출계정/비용계정을 각각 한 줄씩 세로로 나열하고, 같은 거래처끼리는 두 목록을
+    # 나란히(짧은 쪽은 빈칸) 배치)
+    r_detail = _account_client_detail(rdf, rev_targets, COL_CREDIT, '매출계정별금액', '매출계정별건수')
+    e_detail = _account_client_detail(edf, exp_targets, COL_DEBIT, '비용계정별금액', '비용계정별건수')
     r_total = rdf.groupby(COL_CLIENT)[COL_CREDIT].agg(['sum', 'count'])
     r_total.columns = ['매출합계금액', '매출합계건수']
     e_total = edf.groupby(COL_CLIENT)[COL_DEBIT].agg(['sum', 'count'])
@@ -1574,6 +1608,9 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     # 정렬하면 빈칸 거래처명 때문에 그룹이 깨져 여기서 미리 순서를 정한다
     clients = r_total.loc[list(common), '매출합계금액'].sort_values(ascending=False).index.tolist()
 
+    r_has_cost = COST_COL in r_detail.index.names
+    e_has_cost = COST_COL in e_detail.index.names
+
     rows = []
     for cli in clients:
         r_sub = r_detail.loc[[cli]].sort_values('매출계정별금액', ascending=False).reset_index()
@@ -1582,7 +1619,7 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
             # 거래처명·합계 열은 그룹 첫 행에만 표시(2026-08-31 요청: 매 행 반복이 보기
             # 불편함) — 나머지 행은 빈칸으로 두어 그룹 경계만 시각적으로 드러나게 함
             first = (i == 0)
-            rows.append({
+            row = {
                 '거래처명':      cli if first else '',
                 '매출계정':      r_sub.loc[i, COL_ACCOUNT]    if i < len(r_sub) else '',
                 '매출계정별건수': r_sub.loc[i, '매출계정별건수'] if i < len(r_sub) else '',
@@ -1594,11 +1631,19 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
                 '비용계정별금액': e_sub.loc[i, '비용계정별금액'] if i < len(e_sub) else '',
                 '비용합계건수':  e_total.loc[cli, '비용합계건수'] if first else '',
                 '비용합계금액':  e_total.loc[cli, '비용합계금액'] if first else '',
-            })
+            }
+            if r_has_cost:
+                row['매출_비용구분'] = r_sub.loc[i, COST_COL] if i < len(r_sub) else ''
+            if e_has_cost:
+                row['비용_비용구분'] = e_sub.loc[i, COST_COL] if i < len(e_sub) else ''
+            rows.append(row)
 
-    result = pd.DataFrame(rows, columns=[
-        '거래처명', '매출계정', '매출계정별건수', '매출계정별금액', '매출합계건수', '매출합계금액',
-        '비용계정', '비용계정별건수', '비용계정별금액', '비용합계건수', '비용합계금액'])
+    cols = ['거래처명', '매출계정']
+    if r_has_cost: cols.append('매출_비용구분')
+    cols += ['매출계정별건수', '매출계정별금액', '매출합계건수', '매출합계금액', '비용계정']
+    if e_has_cost: cols.append('비용_비용구분')
+    cols += ['비용계정별건수', '비용계정별금액', '비용합계건수', '비용합계금액']
+    result = pd.DataFrame(rows, columns=cols)
     return {'매출비용교차': result}
 
 
@@ -1864,7 +1909,9 @@ def analyze_header_check(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
 # ── 17. 거래처 분석 ───────────────────────────────────────────────────────────
 def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
     UNIT_COL = '전표관리단위'
+    COST_COL = '비용구분'
     has_unit_col = UNIT_COL in df.columns
+    has_cost_col = COST_COL in df.columns
     out = {}
     for i, p in enumerate(params_list, 1):
         accts    = [a.strip() for a in str(p.get('계정과목','')).split(',')
@@ -1874,11 +1921,15 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         vtype    = _nv(p.get('금액열',''), blank_vals=('nan','none','')) or 'both'
         if vtype not in ('차변','대변','both'): vtype = 'both'
         job_name = _nv(p.get('작업명','')) or f'거래처{i:02d}'
-        # 관리단위(선택, samdong 등 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는
-        # 회사 전용): 작업(행)별로 Y 지정 시 월별합산을 전표관리단위별로도 나눠서 추출
+        # 관리단위/비용구분(선택, samdong 등 원장에 '전표관리단위'(본사/2공장 등)·
+        # '비용구분'(판관/제조 등) 컬럼이 있는 회사 전용): 작업(행)별로 Y 지정 시
+        # 월별합산을 해당 컬럼별로도 나눠서 추출
         unit_key = next((k for k in p.keys() if '관리단위' in str(k)), None)
         split_unit = has_unit_col and bool(unit_key) and \
             _nv(str(p.get(unit_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
+        cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
+        split_cost = has_cost_col and bool(cost_key) and \
+            _nv(str(p.get(cost_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
         if not clients: continue
 
         mask_a = pd.Series(True, index=df.index) if not accts else pd.Series(False, index=df.index)
@@ -1893,16 +1944,18 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         elif vtype == '대변': filtered = filtered[filtered[COL_CREDIT] != 0]
         if filtered.empty: continue
         if split_unit: filtered[UNIT_COL] = filtered[UNIT_COL].astype(str).str.strip()
+        if split_cost: filtered[COST_COL] = filtered[COST_COL].astype(str).str.strip()
 
         filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
 
         # 월별합산: 거래처명·계정명별로 나눠서 집계(2026-09-01 blue sky 요청 —
         # 기존엔 파라미터에 걸린 계정을 전부 합쳐 월별 1줄로만 보여줘 계정별 구분이
-        # 안 되고 거래처명도 빠져 있었음). 행 = 거래처명×계정명(×관리단위, 지정 시),
-        # 열 = 실제 발생월(YM) + 기간 전체 차변/대변/합계.
+        # 안 되고 거래처명도 빠져 있었음). 행 = 거래처명×계정명(×관리단위·비용구분,
+        # 지정 시), 열 = 실제 발생월(YM) + 기간 전체 차변/대변/합계.
         ym_cols = sorted(filtered['YM'].dropna().unique().tolist())
         filtered['순액'] = filtered[COL_DEBIT].fillna(0) + filtered[COL_CREDIT].fillna(0)
-        group_cols = [COL_CLIENT, COL_ACCOUNT] + ([UNIT_COL] if split_unit else [])
+        extra_cols = ([UNIT_COL] if split_unit else []) + ([COST_COL] if split_cost else [])
+        group_cols = [COL_CLIENT, COL_ACCOUNT] + extra_cols
         pivot = (filtered.pivot_table(index=group_cols, columns='YM',
                                        values='순액', aggfunc='sum', fill_value=0)
                  .reindex(columns=ym_cols, fill_value=0)
@@ -1916,7 +1969,7 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
 
         dc = [c for c in ['구분', COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT,
                            COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC]
-              + ([UNIT_COL] if split_unit else []) if c in filtered.columns]
+              + extra_cols if c in filtered.columns]
         sname = _safe_sheet(f'거래처_{re.sub(r"[^가-힣a-zA-Z0-9]","",job_name)[:18]}')
         out[sname]               = filtered[dc]
         out[sname + '_월별합산'] = monthly
@@ -2660,17 +2713,19 @@ _PL_CATEGORIES = ['매출', '매출원가', '판관비', '영업외수익', '영
 def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
     """25. 손익항목 월별 추이 (당기, 손익구분별 시트)
     task_list 파라미터: 계정과목 / 구분(차변·대변·both) / 손익구분(매출·매출원가·판관비·
-        영업외수익·영업외비용) / 실행여부 / 관리단위(선택)
+        영업외수익·영업외비용) / 실행여부 / 관리단위(선택) / 비용구분(선택)
     결과: 손익구분마다 시트 1개(행=계정명, 열=1월~12월+합계)로 정리.
     손익구분을 안 적으면 구분(차변/대변)으로 매출·판관비만 추정해 채움 — 매출원가/
     영업외수익/영업외비용으로 분류하려면 손익구분 값을 직접 적어야 함.
     (2026-08-31: 기존엔 계정 1개당 시트 1개(전기/당기 비교)였는데, 계정이 많은 회사는
     시트가 수십 개로 늘어나 보기 불편하다는 요청으로 손익구분별 1개 시트·월별 매트릭스로 변경)
-    관리단위(선택, samdong 등 원장에 '전표관리단위'(본사/2공장 등) 컬럼이 있는 회사 전용):
-    Y로 지정한 계정은 월별 금액을 전표관리단위별로 나눈 행을 함께 추출 (계정별 개별 지정,
-    없으면 기존과 동일하게 단위 구분 없이 1행).
+    관리단위/비용구분(선택, samdong 등 원장에 '전표관리단위'(본사/2공장 등)·'비용구분'
+    (판관/제조 등) 컬럼이 있는 회사 전용): Y로 지정한 계정은 월별 금액을 해당 컬럼별로
+    나눈 행을 함께 추출 (계정별 개별 지정, 둘 다 Y면 두 컬럼 조합별로 나눔, 없으면
+    기존과 동일하게 단위 구분 없이 1행).
     """
     UNIT_COL = '전표관리단위'
+    COST_COL = '비용구분'
     targets = []
     for p in params_list:
         acct = _nv(p.get('계정과목', ''))
@@ -2686,44 +2741,59 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
         unit_key = next((k for k in p.keys() if '관리단위' in str(k)), None)
         split_unit = bool(unit_key) and \
             _nv(str(p.get(unit_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
-        targets.append((acct, direction, cat, split_unit))
+        cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
+        split_cost = bool(cost_key) and \
+            _nv(str(p.get(cost_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
+        targets.append((acct, direction, cat, split_unit, split_cost))
 
     if not targets:
         return {'손익월별분석': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
 
     cur = df[df['구분'] == '당기'] if '구분' in df.columns else df
     has_unit_col = UNIT_COL in cur.columns
+    has_cost_col = COST_COL in cur.columns
 
     out = {}
     for cat in _PL_CATEGORIES:
-        cat_targets = [(a, d, u) for a, d, c, u in targets if c == cat]
+        cat_targets = [(a, d, u, c) for a, d, cc, u, c in targets if cc == cat]
         if not cat_targets:
             continue
         rows = []
-        for acct_name, direction, split_unit in cat_targets:
+        for acct_name, direction, split_unit, split_cost in cat_targets:
             mask = _account_match_flexible(cur[COL_ACCOUNT], acct_name)
-            sub = cur[mask]
+            sub = cur[mask].copy()
             if sub.empty:
                 continue
             if direction == '차변':
-                amt = sub[COL_DEBIT].fillna(0)
+                sub['_amt'] = sub[COL_DEBIT].fillna(0)
             elif direction == '대변':
-                amt = sub[COL_CREDIT].fillna(0)
+                sub['_amt'] = sub[COL_CREDIT].fillna(0)
             else:
-                amt = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
-            month = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
+                sub['_amt'] = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
+            sub['_month'] = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
 
+            extra_cols = []
             if split_unit and has_unit_col:
-                unit = sub[UNIT_COL].astype(str).str.strip()
-                monthly = amt.groupby([unit, month]).sum()
-                for u in sorted(monthly.index.get_level_values(0).unique()):
-                    row = {'계정명': acct_name, UNIT_COL: u}
+                sub[UNIT_COL] = sub[UNIT_COL].astype(str).str.strip()
+                extra_cols.append(UNIT_COL)
+            if split_cost and has_cost_col:
+                sub[COST_COL] = sub[COST_COL].astype(str).str.strip()
+                extra_cols.append(COST_COL)
+
+            if extra_cols:
+                grouped = sub.groupby(extra_cols + ['_month'])['_amt'].sum()
+                combos = grouped.reset_index()[extra_cols].drop_duplicates()
+                for _, combo_row in combos.iterrows():
+                    key_prefix = tuple(combo_row[c] for c in extra_cols)
+                    row = {'계정명': acct_name}
+                    for c, v in zip(extra_cols, key_prefix):
+                        row[c] = v
                     for m in range(1, 13):
-                        row[f'{m}월'] = monthly.get((u, m), 0)
-                    row['합계'] = monthly.loc[u].sum()
+                        row[f'{m}월'] = grouped.get(key_prefix + (m,), 0)
+                    row['합계'] = grouped.loc[key_prefix].sum()
                     rows.append(row)
             else:
-                monthly = amt.groupby(month).sum()
+                monthly = sub.groupby('_month')['_amt'].sum()
                 row = {'계정명': acct_name}
                 for m in range(1, 13):
                     row[f'{m}월'] = monthly.get(m, 0)
