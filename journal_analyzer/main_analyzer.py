@@ -612,8 +612,10 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
         result['증감금액'] = result.get('당기금액', 0) - result.get('전기금액', 0)
         result['증감비율(%)'] = result.apply(
             lambda r: (r['증감금액']/r['전기금액']*100) if r.get('전기금액',0) != 0 else 0.0, axis=1)
+        sort_cols = ([UNIT_COL] if split_unit else []) + ['_abs', '당기금액']
+        sort_asc  = ([True] if split_unit else []) + [False, False]
         result = (result.assign(_abs=result['증감금액'].abs())
-                        .sort_values(['_abs','당기금액'], ascending=[False,False])
+                        .sort_values(sort_cols, ascending=sort_asc)
                         .drop(columns=['_abs']).reset_index())
         result = result.rename(columns={COL_ACCOUNT: '계정명', COL_CLIENT: '거래처명'}).drop(columns=['계정명'])
 
