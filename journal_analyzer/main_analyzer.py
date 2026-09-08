@@ -2202,6 +2202,11 @@ def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str, acct_name: str =
         # 지원 — '관리번호' 열을 거래처 키로 대신 쓴다(2026-09-08).
         vendor_col = next((c for c in pdf.columns if c and '관리번호' in c), None)
     bal_col = next((c for c in pdf.columns if c and '잔' in c), None)
+    if not bal_col:
+        # samdong 장기차입금 시트처럼 잔액 컬럼명이 '기말잔액'이 아니라 '기말'
+        # 하나뿐인 경우도 지원(2026-09-08 — 이 시트만 다른 차입금 시트들과
+        # 헤더가 달라 '전기 명세 없음'으로 누락되던 문제).
+        bal_col = next((c for c in pdf.columns if c == '기말'), None)
     if not vendor_col or not bal_col:
         return {}
     code_col = next((c for c in pdf.columns if c and '코드' in c), None)
