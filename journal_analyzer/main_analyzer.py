@@ -391,6 +391,52 @@ def draw_benford_chart(account_name, direction, actual_probs, benford_probs):
     except Exception:
         return None
 
+def draw_general_ledger_chart(sheet_label, result_df):
+    """총계정원장 분석용: 월별 트렌드(선) + 월별 거래건수(막대) 차트를 한 이미지로 생성."""
+    try:
+        plot_df = result_df[result_df['월'] != '합  계'].reset_index(drop=True)
+        if plot_df.empty:
+            return None
+        x = plot_df['월'].astype(str)
+
+        amt_cols = [c for c in plot_df.columns if c.endswith('차변합계') or c.endswith('대변합계')]
+        cnt_cols = [c for c in plot_df.columns if c.endswith('차변건수') or c.endswith('대변건수')]
+        if not amt_cols and not cnt_cols:
+            return None
+
+        plt.rc('font', family='Malgun Gothic')
+        plt.rcParams['axes.unicode_minus'] = False
+        palette = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899']
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+
+        for i, col in enumerate(amt_cols):
+            ax1.plot(x, plot_df[col], marker='o', color=palette[i % len(palette)], label=col)
+        ax1.set_title(f'월별 트렌드 분석: {sheet_label}')
+        ax1.axhline(0, color='#999999', linewidth=0.8)
+        ax1.legend(); ax1.grid(axis='both', linestyle='--', alpha=0.4)
+
+        n = len(cnt_cols) or 1
+        idx = list(range(len(x)))
+        width = 0.8 / n
+        for i, col in enumerate(cnt_cols):
+            offset = (i - (n - 1) / 2) * width
+            ax2.bar([v + offset for v in idx], plot_df[col], width,
+                    color=palette[i % len(palette)], label=col)
+        ax2.set_xticks(idx); ax2.set_xticklabels(x)
+        ax2.set_title(f'월별 거래 건수: {sheet_label}')
+        ax2.legend(); ax2.grid(axis='y', linestyle='--', alpha=0.4)
+
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=110)
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+
 def _safe_sheet(name, max_len=31):
     s = re.sub(r'[\\/*?:\[\]]', '', str(name).strip())
     return s[:max_len]
@@ -2414,7 +2460,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
 def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
     """계정별 월별 차변/대변 집계. 연도 2개 이상이면 연도 비교 형식(행=월, 열=연도)으로 출력.
     구분(자산/부채/매출액)은 시트명 접두어로 사용."""
-    out = {}
+    out, images = {}, []
     for p in params_list:
         acct  = _nv(p.get('계정과목', ''))
         gubun = _nv(p.get('구분', ''))
@@ -2478,6 +2524,10 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
         sname  = _safe_sheet(f'총계정원장_{prefix}{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct)[:18]}')
         out[sname] = result
 
+        img = draw_general_ledger_chart(acct, result)
+        if img: images.append((sname, img))
+
+    if images: out['_general_ledger_images'] = images  # 특수 키: save_results에서 차트 삽입
     return out or {'총계정원장': pd.DataFrame({'결과': ['분석 대상 없음']})}
 
 
@@ -3068,6 +3118,7 @@ def save_results(results: dict, output_dir: str, company_name: str,
 
     # 특수 키 사전 추출 (ExcelWriter에 넘기지 않음)
     benford_images = results.pop('_benford_images', None)
+    gl_images      = results.pop('_general_ledger_images', None)
     decoder        = results.pop('_암호해독표', None)
     column_notes   = results.pop('_column_notes', None)  # {시트명: {컬럼명: 메모text}}
     legend_rows    = results.pop('_legend_rows', None)   # {시트명: [(항목, 설명), ...]}
@@ -3129,6 +3180,13 @@ def save_results(results: dict, output_dir: str, company_name: str,
             sname = _safe_sheet(f'벤포드_{_acct}_{_dir}')
             if sname in wb.sheetnames:
                 wb[sname].add_image(XLImage(img_buf), 'K4')
+
+    if gl_images:
+        from openpyxl.utils import get_column_letter
+        for sname, img_buf in gl_images:
+            if not img_buf or sname not in wb.sheetnames: continue
+            col = get_column_letter(wb[sname].max_column + 2)
+            wb[sname].add_image(XLImage(img_buf), f'{col}3')
 
     wb.save(out_path)
 
