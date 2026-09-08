@@ -62,6 +62,26 @@ def detect_interest_companies() -> list[str]:
     )
 
 
+def detect_interest_company_scripts() -> dict:
+    """interest_analyzer/<회사>/ 안에 회사 전용 스크립트(예: samdong의
+    interest_expense_analysis_samdong.py)가 있으면 {회사명: 스크립트경로}로 반환.
+    이런 회사는 journal_analyzer 분개장 데이터에서 직접 추출하므로
+    interest_analyzer/<회사>/input 폴더가 필요 없다 — dae_il처럼 감사인이 정리한
+    거래처원장을 input에 직접 넣어야 하는 공용 interest_expense_analysis.py <회사명>
+    방식과는 다르다(2026-09-08)."""
+    ia_dir = ROOT / "account_analyzer" / "interest_analyzer"
+    scripts = {}
+    if not ia_dir.exists():
+        return scripts
+    for p in ia_dir.iterdir():
+        if not p.is_dir() or p.name.startswith((".", "_", "__")):
+            continue
+        found = list(p.glob("interest_expense_analysis_*.py"))
+        if found:
+            scripts[p.name] = found[0]
+    return scripts
+
+
 def detect_lease_companies() -> list[str]:
     """lease_analyzer/input_data/ 의 파일명에서 회사명 추출"""
     in_dir = ROOT / "account_analyzer" / "lease_analyzer" / 'input_data'
@@ -289,7 +309,7 @@ TOOLS = [
     {
         "category": "적정성 분석",
         "name": "이자비용 적정성 분석 (interest_expense_analysis)",
-        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증 (account_analyzer/interest_analyzer/<회사>/input)",
+        "desc": "차입금 잔액 기반 일별 이자 계산 → 실제 이자비용과 비교 검증. dae_il처럼 감사인이 손으로 정리한 거래처원장은 account_analyzer/interest_analyzer/<회사>/input에 직접 넣어야 함.\n⚠ samdong처럼 journal_analyzer에 이미 분개장 데이터가 있는 회사는 input 폴더가 필요 없음 — 회사 폴더 안에 전용 스크립트(interest_expense_analysis_<회사>.py)가 있으면 그 스크립트가 journal_analyzer 원장에서 직접 추출해 자동 실행됨.",
         "cmd": ["python", str(ROOT / "account_analyzer" / "interest_analyzer" / "interest_expense_analysis.py")],
         "cwd": str(ROOT / "account_analyzer" / "interest_analyzer"),
         "company": "interest",
@@ -330,6 +350,7 @@ class Launcher(QMainWindow):
         self._js_companies = detect_js_companies()
         self._journal_companies = detect_journal_companies()
         self._interest_companies = detect_interest_companies()
+        self._interest_company_scripts = detect_interest_company_scripts()
         self._lease_companies = detect_lease_companies()
         self._lease_input_files: list[tuple[str, str]] = detect_lease_input_files()
         self._dep_input_files: list[tuple[str, str]] = detect_dep_input_files()
@@ -626,6 +647,7 @@ class Launcher(QMainWindow):
         t = TOOLS[idx]
 
         cmd = list(t["cmd"])
+        run_cwd = t["cwd"]
 
         # 회사명 인자 추가
         if t["company"] in ("js", "journal", "interest", "lease"):
@@ -633,7 +655,15 @@ class Launcher(QMainWindow):
             if not company:
                 self._log_line("⚠  회사를 선택하세요.", "#FBBF24")
                 return
-            if t.get("extra") == "company_flag":
+            dedicated_script = (self._interest_company_scripts.get(company)
+                                 if t["company"] == "interest" else None)
+            if dedicated_script:
+                # samdong처럼 journal_analyzer 분개장에서 직접 추출하는 회사 전용
+                # 스크립트 — input 폴더/공용 스크립트를 안 쓰므로 회사명 인자도
+                # 안 붙이고 스크립트 자체를 통째로 교체한다 (2026-09-08).
+                cmd = ["python", str(dedicated_script)]
+                run_cwd = str(dedicated_script.parent)
+            elif t.get("extra") == "company_flag":
                 cmd += ["--company", company]
             else:
                 cmd.append(company)
@@ -750,7 +780,7 @@ class Launcher(QMainWindow):
         env.insert("PYTHONIOENCODING", "utf-8")
         env.insert("PYTHONUTF8", "1")
         self._process.setProcessEnvironment(env)
-        self._process.setWorkingDirectory(t["cwd"])
+        self._process.setWorkingDirectory(run_cwd)
         self._process.readyReadStandardOutput.connect(self._on_stdout)
         self._process.readyReadStandardError.connect(self._on_stderr)
         self._process.finished.connect(self._on_finished)
