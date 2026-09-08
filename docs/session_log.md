@@ -2211,3 +2211,52 @@
    적용 검토
 
 ---
+
+## 2026-09-08 (2차)
+
+**완료 작업**:
+1. **총계정원장분석(21번) 그래프 자동삽입**: 월별 트렌드(선) + 거래건수(막대) 차트를
+   시트에 자동 임베드. y축 과학적표기(1e10) 제거 후 천원 단위 표시로 조정.
+2. **거래처 전기_당기 비교(2번) 관리단위 정렬**: 관리단위(전표관리단위) 지정된 계정은
+   결과를 관리단위별로 먼저 묶어서 정렬하도록 수정.
+3. **samdong 이자비용 적정성 분석 신규 개발**: `interest_expense_analysis_samdong.py`.
+   samdong 원장의 관리항목 슬롯에 차입금 관리번호+그 시점 실제 적용금리(변동금리)가
+   이미 기록돼 있는 걸 발견해, dae_il처럼 감사인이 고정 연이자율을 입력하는 대신
+   원장에 찍힌 월별 실제금리를 그대로 적용하는 구조로 설계. 구매자금대출(관리번호가
+   연중 계속 재채번돼 추적불가)은 테스트 대상에서 제외, 만기 차환 시 관리번호 재사용
+   으로 잔액이 이중계산되는 케이스는 '확인필요' 시트로 격리(21건, 그중 7건은
+   "기말=기초×2" 패턴 확인). 나머지는 원 단위 오차로 정확히 검증됨.
+4. **journal_analyzer 엔진 버그 2건 발견/수정**: (a) `load_data()`가 전기명세 파일을
+   분개장으로 착각해 로드 → samdong 등 거래처명이 통째로 빈 값이 되던 버그. (b) 20번
+   잔액증감분석이 "거래처" 대신 "관리번호"로 구분하는 전기명세(samdong 차입금류)를
+   못 읽던 문제 + 장기차입금 시트만 잔액 컬럼명이 "기말"(다른 시트는 "기말잔액")이라
+   못 찾던 문제. 관리번호 앞토큰 자동매칭 로직도 추가.
+5. **런처 이자비용분석 메뉴 개선**: 회사 폴더 안에 전용 스크립트가 있으면(samdong)
+   자동으로 그걸 실행하도록 라우팅 + input 폴더 불필요 안내문구 추가.
+6. **ar_allowance_analyzer(매출채권 대손충당금) samdong 1차 실데이터 실행/대사**:
+   입력 데이터 누락(차변발생내역 미기재, blue sky가 직접 보완) 발견 지원 + 코드
+   버그 발견/수정 — `(거래처명, 기준일)` 중복 시 뒤 행이 앞 행을 조용히 덮어써
+   잔액이 누락되던 버그(samdong 본사/2공장 동일거래처명 케이스에서 발견, 합산+경고로
+   수정).
+
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: `draw_general_ledger_chart()` 추가, 거래처
+  비교 관리단위 정렬, `load_data()` 명세파일 제외, `_load_prev_balances()`/
+  `_find_prev_header_row()` 관리번호·"기말" 컬럼 인식, `analyze_balance_movement()`
+  관리번호 앞토큰 매칭(`_leading_token`/`_is_code_like`)
+- `account_analyzer/interest_analyzer/samdong/interest_expense_analysis_samdong.py`: 신규
+- `account_analyzer/ar_allowance_analyzer/ar_allowance_schedule.py`: `load_balances()`/
+  `load_aging_table()` 중복 키 합산 처리 + 경고
+- `launcher.py`: `detect_interest_company_scripts()` 추가, 회사 전용 스크립트 자동 라우팅
+
+**미해결 이슈**:
+- 이자비용 분석 '확인필요' 21건(관리번호 차환) 처리 방법 미결정 — old↔new 매핑 자동화
+  여부 blue sky 판단 필요
+- 20번 잔액증감분석은 samdong task_list에서 아직 실행여부 N(파라미터도 미입력)
+- ar_allowance_analyzer samdong 결과의 대손율/설정률 비교 등 나머지 검토 안 끝남
+
+**다음 할 일**: [[project_samdong_next_session]] 메모리 참고 — 1) 관리번호 차환 21건
+처리방법 결정 2) 20번 활성화 여부 3) ar_allowance_analyzer 검증 계속. blue sky가
+오늘은 "회계자동화 앱은 여기까지" 하고 다른 앱으로 넘어감.
+
+---
