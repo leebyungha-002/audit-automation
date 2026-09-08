@@ -524,6 +524,16 @@ def load_data(company_dir: str) -> pd.DataFrame:
             if '계정별원장' in f:
                 print(f'   ℹ️ 계정별원장 파일은 분개장 로드에서 제외 (4번 메뉴 잔액표 전용): {f}')
                 continue
+            if '명세' in f or '거래처별' in f:
+                # 전기 계정별_거래처별_명세 파일(_find_prev_detail_file이 20번 등에서
+                # 별도로 읽음)이 여기 걸리면 첫 시트만 분개장에 섞여 들어가 컬럼이
+                # 오염된다 — 예: samdong은 이 파일의 '외상매출금' 시트에 있는
+                # '거래처명' 컬럼이 분개장에 끼어들어, preprocess.py의 "거래처명 없으면
+                # 관리항목1로 채운다" 폴백이 (이미 컬럼이 존재한다는 이유로) 실행되지
+                # 않아 진짜 분개장 행의 거래처명이 전부 빈 값으로 남는 사고가 있었다
+                # (2026-09-08 발견).
+                print(f'   ℹ️ 전기명세 파일은 분개장 로드에서 제외 (20번 메뉴 등 전용): {f}')
+                continue
             df = _read(os.path.join(dir_path, f), f)
             if df is not None and not df.empty:
                 df['구분'] = label
@@ -2144,9 +2154,9 @@ def _find_prev_header_row(raw: pd.DataFrame) -> int:
         cells = [re.sub(r'\s+', '', str(v)) for v in raw.iloc[i] if pd.notna(v)]
         if len(cells) < 3:
             continue  # 제목행("거래처원장(잔액)" 등 셀 1~2개)은 헤더가 아니므로 제외
-        vendor_cells = [c for c in cells if '거래처' in c]
-        bal_cells = [c for c in cells if c and '잔' in c and c not in vendor_cells]
-        if vendor_cells and bal_cells:
+        key_cells = [c for c in cells if '거래처' in c or '관리번호' in c]
+        bal_cells = [c for c in cells if c and '잔' in c and c not in key_cells]
+        if key_cells and bal_cells:
             return i
     return 0
 
@@ -2186,6 +2196,11 @@ def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str, acct_name: str =
     pdf.columns = header_vals
 
     vendor_col = next((c for c in pdf.columns if c and '거래처' in c), None)
+    if not vendor_col:
+        # '거래처' 열이 없는 시트(예: samdong 차입금 전기명세 — 은행명/종류/계좌번호/
+        # 관리번호/만기/기말잔액 구성, 거래처 개념 대신 '관리번호'로 항목을 구분)도
+        # 지원 — '관리번호' 열을 거래처 키로 대신 쓴다(2026-09-08).
+        vendor_col = next((c for c in pdf.columns if c and '관리번호' in c), None)
     bal_col = next((c for c in pdf.columns if c and '잔' in c), None)
     if not vendor_col or not bal_col:
         return {}
@@ -2288,6 +2303,21 @@ def _current_ledger_open_balance(balances: dict, acct_name: str):
 
 
 # ── 20. 당기증감분석 (계정별 거래처별) ───────────────────────────────────────
+_KOREAN_RE = re.compile(r'[가-힣]')
+
+
+def _is_code_like(s: str) -> bool:
+    """한글이 없고 공백도 없는 짧은 식별자(관리번호 등) 형태인지 — 실제 회사/거래처명
+    (항상 한글 포함)과 구분해, 코드형 값에만 접두 토큰 매칭을 적용하기 위함."""
+    s = str(s).strip()
+    return bool(s) and not _KOREAN_RE.search(s) and ' ' not in s
+
+
+def _leading_token(s: str) -> str:
+    s = str(s).strip()
+    return s.split(' ', 1)[0] if s else s
+
+
 def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     """전기 계정별_거래처별명세에서 기초잔액, 당기 분개장에서 증감 산출하여 기말잔액 계산.
     자산(차변): 기초잔액 + 당기증가(차변) - 당기감소(대변) = 기말잔액
@@ -2392,6 +2422,24 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
 
         if not prev_balances and not journal_vendors:
             continue
+
+        # 전기명세가 '거래처' 대신 '관리번호'(짧은 코드, 예: "#10925")로만 항목을
+        # 구분하는 시트(samdong 차입금류)일 때, 당기 거래처명(관리항목1: "#10925
+        # 기업구매자금"처럼 관리번호+설명이 붙은 텍스트)의 앞 토큰과 자동 매칭한다.
+        # 한글이 섞인 일반 거래처명(예: "삼성전자")은 코드형이 아니므로 대상에서
+        # 제외되어 기존 회사들의 매칭 방식에는 영향이 없다 (2026-09-08).
+        if prev_balances:
+            journal_token_index = {}
+            for jv in journal_vendors:
+                tok = _leading_token(jv)
+                if tok and tok != jv and _is_code_like(tok):
+                    journal_token_index.setdefault(tok, jv)
+            if journal_token_index:
+                merged_prev = {}
+                for pv, bal in prev_balances.items():
+                    canon = journal_token_index.get(pv, pv) if _is_code_like(pv) else pv
+                    merged_prev[canon] = merged_prev.get(canon, 0) + bal
+                prev_balances = merged_prev
 
         acct_map_j2p = {k[1]: v for k, v in vendor_mapping.items() if k[0] == acct_name}
         acct_map_p2j = {v: k[1] for k, v in vendor_mapping.items() if k[0] == acct_name}
