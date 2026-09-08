@@ -415,6 +415,9 @@ def draw_general_ledger_chart(sheet_label, result_df):
         ax1.set_title(f'월별 트렌드 분석: {sheet_label}')
         ax1.axhline(0, color='#999999', linewidth=0.8)
         ax1.legend(); ax1.grid(axis='both', linestyle='--', alpha=0.4)
+        ax1.ticklabel_format(style='plain', axis='y')  # 1e10 같은 과학적 표기법 방지
+        from matplotlib.ticker import FuncFormatter
+        ax1.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f'{v:,.0f}'))
 
         n = len(cnt_cols) or 1
         idx = list(range(len(x)))
