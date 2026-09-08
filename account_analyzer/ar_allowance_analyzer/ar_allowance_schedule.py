@@ -279,11 +279,15 @@ def load_customers(path: str) -> dict:
 
 
 def load_aging_table(path: str, labels: list) -> tuple:
-    """({(거래처명, 기준일): {연령구간: 금액}}, bad_rows) 반환. 연령구간 컬럼명은 '<label>(원)' 형식.
-    bad_rows: 기준일을 날짜로 해석할 수 없었던 (거래처명, 원본값) 목록 — 해당 행은 계산에서 제외된다."""
+    """({(거래처명, 기준일): {연령구간: 금액}}, bad_rows, dup_rows) 반환. 연령구간 컬럼명은
+    '<label>(원)' 형식. bad_rows: 기준일을 날짜로 해석할 수 없었던 (거래처명, 원본값) 목록 —
+    해당 행은 계산에서 제외된다. dup_rows: 같은 (거래처명, 기준일)이 두 번 이상 나온 경우 —
+    합산 처리하되(같은 거래처가 두 사업장 등으로 나뉘어 입력됐을 수 있어 한쪽을 버리는 것보다
+    안전) 원본에 실수로 중복 입력된 것일 수도 있으니 목록으로 남겨 확인을 유도한다."""
     rows = _load_rows(path, AGING_TABLE_SHEET)
     result = {}
     bad_rows = []
+    dup_rows = []
     for r in rows:
         거래처명 = r.get("거래처명")
         if not 거래처명:
@@ -297,15 +301,24 @@ def load_aging_table(path: str, labels: list) -> tuple:
         bucket_amounts = {}
         for label in labels:
             bucket_amounts[label] = _safe_float(r.get(f"{label}(원)"))
-        result[(str(거래처명).strip(), 기준일)] = bucket_amounts
-    return result, bad_rows
+        key = (str(거래처명).strip(), 기준일)
+        if key in result:
+            dup_rows.append((key[0], key[1]))
+            for label in labels:
+                result[key][label] += bucket_amounts[label]
+        else:
+            result[key] = bucket_amounts
+    return result, bad_rows, dup_rows
 
 
 def load_balances(path: str) -> tuple:
-    """({(거래처명, 기준일): 채권잔액총액}, bad_rows) 반환."""
+    """({(거래처명, 기준일): 채권잔액총액}, bad_rows, dup_rows) 반환. dup_rows: 같은
+    (거래처명, 기준일)이 두 번 이상 나온 경우 — 값을 합산 처리하고(뒤 행이 앞 행을 조용히
+    덮어써 잔액이 누락되는 사고를 막기 위함) 확인을 유도하는 목록으로 남긴다."""
     rows = _load_rows(path, BALANCE_SHEET)
     result = {}
     bad_rows = []
+    dup_rows = []
     for r in rows:
         거래처명 = r.get("거래처명")
         if not 거래처명:
@@ -316,8 +329,14 @@ def load_balances(path: str) -> tuple:
             if raw not in (None, ""):
                 bad_rows.append((str(거래처명).strip(), raw))
             continue
-        result[(str(거래처명).strip(), 기준일)] = _safe_float(r.get("채권잔액총액(원)"))
-    return result, bad_rows
+        key = (str(거래처명).strip(), 기준일)
+        amt = _safe_float(r.get("채권잔액총액(원)"))
+        if key in result:
+            dup_rows.append((key[0], key[1]))
+            result[key] += amt
+        else:
+            result[key] = amt
+    return result, bad_rows, dup_rows
 
 
 def load_transactions(path: str) -> tuple:
@@ -1005,8 +1024,8 @@ def main():
 
     customers = load_customers(input_path)
     rate_table = load_rate_table(input_path)
-    aging_table, aging_bad = (load_aging_table(input_path, labels) if method == "회사연령표" else ({}, []))
-    balances, balance_bad = (load_balances(input_path) if method == "차변발생내역" else ({}, []))
+    aging_table, aging_bad, aging_dup = (load_aging_table(input_path, labels) if method == "회사연령표" else ({}, [], []))
+    balances, balance_bad, balance_dup = (load_balances(input_path) if method == "차변발생내역" else ({}, [], []))
     transactions, txn_bad = (load_transactions(input_path) if method == "차변발생내역" else ({}, []))
 
     def _print_bad_dates(title: str, bad_rows: list):
@@ -1022,6 +1041,20 @@ def main():
     _print_bad_dates(f"'{AGING_TABLE_SHEET}' 시트의 기준일 파싱 실패", aging_bad)
     _print_bad_dates(f"'{BALANCE_SHEET}' 시트의 기준일 파싱 실패", balance_bad)
     _print_bad_dates(f"'{TRANSACTION_SHEET}' 시트의 발생일자 파싱 실패", txn_bad)
+
+    def _print_dup_rows(title: str, dup_rows: list):
+        if not dup_rows:
+            return
+        print(f"[경고] {title} {len(dup_rows)}건 — 같은 거래처×기준일이 두 번 이상 입력돼 "
+              f"값을 합산 처리함(뒤 행이 앞 행을 조용히 덮어써 잔액이 누락되는 걸 막기 위함). "
+              f"원본에 실수로 중복 입력된 것일 수 있으니 확인 필요:")
+        for name, 기준일 in dup_rows[:20]:
+            print(f"  - {name}: {기준일}")
+        if len(dup_rows) > 20:
+            print(f"  ... 외 {len(dup_rows) - 20}건")
+
+    _print_dup_rows(f"'{AGING_TABLE_SHEET}' 시트의 거래처×기준일 중복", aging_dup)
+    _print_dup_rows(f"'{BALANCE_SHEET}' 시트의 거래처×기준일 중복", balance_dup)
 
     result = compute_all(customers, 결산일, method, thresholds, labels, aging_table, balances, transactions,
                           rate_table, basis, listed)
