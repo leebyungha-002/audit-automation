@@ -1780,7 +1780,21 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
                 credit_top.insert(0, '계정명', acct_name)
 
         if direction == 'both':
-            combined = pd.concat([debit_top, credit_top], axis=1)
+            if not debit_top.empty and not credit_top.empty:
+                # 거래처명(+구분) 기준으로 합쳐야 같은 거래처의 차변·대변이 같은 행에
+                # 온다. 이전에는 pd.concat(axis=1)으로 붙여서 각자 독립적으로 정렬된
+                # pandas 기본 인덱스(0,1,2,...)끼리 우연히 같은 숫자면 옆에 붙는
+                # 구조라, 서로 무관한 거래처의 차변·대변이 같은 행에 섞여 나왔다
+                # (2026-09-09 samdong Top_1_외상매출금에서 blue sky가 발견).
+                merge_keys = [c for c in ('계정명', '구분', '거래처명') if c in debit_top.columns]
+                combined = pd.merge(debit_top, credit_top, on=merge_keys, how='outer')
+                sort_cols = [c for c in ('차변금액', '대변금액') if c in combined.columns]
+                if sort_cols:
+                    combined = combined.sort_values(sort_cols, ascending=False, na_position='last')
+            elif not debit_top.empty:
+                combined = debit_top
+            else:
+                combined = credit_top
         elif direction == '차변':
             combined = debit_top
         else:
