@@ -2285,9 +2285,11 @@ MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방�
 - `journal_analyzer/main_analyzer.py`: `analyze_benford()`가 만드는 모든
   벤포드_계정명_방향 시트 상단에 `_legend_rows` 재사용해 벤포드 법칙 설명 문구 추가
 - `journal_analyzer/main_analyzer.py`: `analyze_top_accounts()`(14번 심층분석)의
-  both(차변+대변) 병합을 `pd.concat(axis=1)`(pandas 인덱스 기준, 무관한 거래처끼리
-  같은 행에 섞임)에서 `pd.merge(..., on=거래처명/구분/계정명, how='outer')`로
-  교체 — samdong Top_1_외상매출금에서 blue sky가 발견
+  both(차변+대변) 배치 버그 수정 — 처음엔 거래처명 기준 outer merge로 고쳤다가
+  (커밋 5223784), blue sky 요청으로 최종엔 "차변 Top10/대변 Top10을 거래처명으로
+  맞추지 말고 순위(1~N)끼리만 가로로 나란히" 배치하는 방식으로 재변경(커밋
+  d4f9986) — `sort_values→head→reset_index` 순서로 인덱스를 실제 순위로 만든 뒤
+  `pd.concat(axis=1)`, 컬럼명에 (차)/(대) 접미사
 **미해결 이슈**: 기존 `journal_analyzer/graphy/results/분석결과_graphy.xlsx`는 구
 버전 실행 결과라 시트명·형식이 아직 옛 것임 — 다음 실행 전 main_analyzer.py를
 재실행해 결과 파일을 새로 생성해야 mapping list와 맞음(재실행하면 8번/27번 관련
