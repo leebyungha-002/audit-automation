@@ -2266,20 +2266,32 @@
 **완료 작업**: 그래프를 조서에 붙일 때의 mapping list 규칙(표 행과 그래프 행 분리 +
 MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방향이 없어 같은 계정을
 차변·대변 둘 다 분석하면 시트가 조용히 덮어써지는 문제 발견 후 벤포드 분석과 동일하게
-`상대_{계정명}_{방향}` 형식으로 수정.
+`상대_{계정명}_{방향}` 형식으로 수정. 이어서 blue sky가 첨부한 예시 이미지에 맞춰
+상대계정분석 결과 자체를 "분석 요약 정보 + 상대계정 목록(순위/상대계정/거래 건수/
+금액/비율(%))" 리포트 형식으로 재구성(비율은 금액 기준). kyungnam mapping list는
+상대계정분석을 아예 연결 안 해서 수정 대상 없음 확인.
 **변경 파일**:
-- `journal_analyzer/main_analyzer.py`: `analyze_counterpart()` 시트명에 `_{direction}`
-  suffix 추가 (1209행)
+- `journal_analyzer/main_analyzer.py`:
+  - `analyze_counterpart()` 시트명에 `_{direction}` suffix 추가
+  - `analyze_counterpart()` 반환 형식을 요약정보+순위표로 재구성(`_legend_rows`,
+    신규 `_number_format_cols` 특수 키 사용)
+  - `save_results()`에 `_number_format_cols` 처리 추가(금액·거래건수 `#,##0`,
+    비율 `0.00`)
+  - `main()`의 태스크별 결과 병합 로직 수정 — `_legend_rows`/`_column_notes`처럼
+    시트명→dict인 특수 키는 태스크마다 덮어쓰지 않고 병합(4번/8번/27번이 같은
+    특수 키를 씀에도 기존엔 나중 태스크가 이전 걸 통째로 덮어쓰는 잠재 버그가 있었음)
 - `journal_analyzer/graphy/감사조서/graphy_mapping_list_26년.xlsx`: 상대계정분석
   6개 행의 소스시트명을 새 명명규칙(`_차변`/`_대변`)에 맞게 갱신
 **미해결 이슈**: 기존 `journal_analyzer/graphy/results/분석결과_graphy.xlsx`는 구
-버전 실행 결과라 시트명이 아직 옛 이름(`상대_외상매출금` 등)임 — 다음 실행 전
-main_analyzer.py를 재실행해 결과 파일을 새로 생성해야 mapping list와 시트명이
-맞음. 다른 회사(kyungnam/samdong/sejoong) mapping list는 상대_ 시트를 참조하지
-않아 영향 없음 확인.
+버전 실행 결과라 시트명·형식이 아직 옛 것임 — 다음 실행 전 main_analyzer.py를
+재실행해 결과 파일을 새로 생성해야 mapping list와 맞음(재실행하면 8번/27번 관련
+상대_ 시트 모두 새 리포트 형식으로 바뀜). 27번(감가상각_평가손익분석) Phase1도
+analyze_counterpart()를 그대로 재사용해 같은 형식으로 바뀌는데, blue sky에게
+직접 확인은 안 받음 — 27번 결과지 형태가 달라진 걸 다음 세션에 확인 필요.
 **다음 할 일**:
-1. graphy task_list 재실행하여 `분석결과_graphy.xlsx` 갱신 (새 시트명 반영)
-2. 총계정원장(21번) 분석을 graphy mapping list에 표+그래프 행으로 추가할지 결정
-3. (보류) draw_general_ledger_chart의 트렌드/건수 그래프를 이미지 2장으로 분리할지 여부
+1. graphy task_list 재실행하여 `분석결과_graphy.xlsx` 갱신 (새 시트명·리포트 형식 반영)
+2. 27번 감가상각_평가손익분석 Phase1 결과 형식 변경이 문제없는지 blue sky 확인
+3. 총계정원장(21번) 분석을 graphy mapping list에 표+그래프 행으로 추가할지 결정
+4. (보류) draw_general_ledger_chart의 트렌드/건수 그래프를 이미지 2장으로 분리할지 여부
 
 ---
