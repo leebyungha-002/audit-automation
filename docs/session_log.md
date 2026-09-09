@@ -2282,6 +2282,8 @@ MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방�
     특수 키를 씀에도 기존엔 나중 태스크가 이전 걸 통째로 덮어쓰는 잠재 버그가 있었음)
 - `journal_analyzer/graphy/감사조서/graphy_mapping_list_26년.xlsx`: 상대계정분석
   6개 행의 소스시트명을 새 명명규칙(`_차변`/`_대변`)에 맞게 갱신
+- `journal_analyzer/main_analyzer.py`: `analyze_benford()`가 만드는 모든
+  벤포드_계정명_방향 시트 상단에 `_legend_rows` 재사용해 벤포드 법칙 설명 문구 추가
 **미해결 이슈**: 기존 `journal_analyzer/graphy/results/분석결과_graphy.xlsx`는 구
 버전 실행 결과라 시트명·형식이 아직 옛 것임 — 다음 실행 전 main_analyzer.py를
 재실행해 결과 파일을 새로 생성해야 mapping list와 맞음(재실행하면 8번/27번 관련
