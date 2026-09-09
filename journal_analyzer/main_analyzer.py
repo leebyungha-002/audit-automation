@@ -3314,14 +3314,21 @@ def save_results(results: dict, output_dir: str, company_name: str,
     # 바꾼다(위의 legend_rows·이미지 삽입은 전부 원래 시트명으로 이미 끝난 뒤라
     # 영향 없음). 원래 시트명을 접두어 뒤에 그대로 남겨서, mapping_list의
     # src_sheet(부분일치로 찾는 resolve_sheet)가 옛 이름 그대로 계속 동작한다
-    # (2026-09-09 blue sky 요청).
+    # (2026-09-09 blue sky 요청). Excel 시트명 31자 제한에 걸리면 접두어 쪽을
+    # 줄인다 — 뒤(원래 시트명)를 자르면 mapping_list가 더 이상 못 찾게 되므로
+    # 반드시 원래 시트명을 온전히 보존해야 한다(예: '상세거래_투자부동산건설중인
+    # 자산_대변/_차변'처럼 긴 이름 + 긴 분석명 조합에서 실제로 잘림 확인됨).
     if sheet_prefix_map:
         used_titles = {ws.title for ws in wb.worksheets}
         for ws in wb.worksheets:
             prefix = sheet_prefix_map.get(ws.title)
             if not prefix:
                 continue
-            new_title = _safe_sheet(f'{prefix}_{ws.title}')
+            orig = ws.title
+            budget = 31 - len(orig) - 1  # '_' 구분자 1글자
+            if budget <= 0:
+                continue  # 원래 시트명 자체가 이미 31자 근처 — 접두어 생략, 원본 유지
+            new_title = f'{prefix[:budget]}_{orig}'
             if new_title != ws.title and new_title in used_titles:
                 base = new_title[:28]
                 n = 2
