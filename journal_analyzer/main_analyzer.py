@@ -1206,7 +1206,7 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         summary.insert(0, '전표방향', direction)
         summary.insert(0, '계정명', acct)
         summary = summary.sort_values(sum_label, ascending=False)
-        sname   = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}')
+        sname   = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}_{direction}')
         out[sname] = summary
     return out or {'상대계정분석': pd.DataFrame({'안내':['파라미터에 계정과목이 없습니다.']})}
 

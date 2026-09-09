@@ -2260,3 +2260,26 @@
 오늘은 "회계자동화 앱은 여기까지" 하고 다른 앱으로 넘어감.
 
 ---
+
+## 2026-09-09
+
+**완료 작업**: 그래프를 조서에 붙일 때의 mapping list 규칙(표 행과 그래프 행 분리 +
+MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방향이 없어 같은 계정을
+차변·대변 둘 다 분석하면 시트가 조용히 덮어써지는 문제 발견 후 벤포드 분석과 동일하게
+`상대_{계정명}_{방향}` 형식으로 수정.
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py`: `analyze_counterpart()` 시트명에 `_{direction}`
+  suffix 추가 (1209행)
+- `journal_analyzer/graphy/감사조서/graphy_mapping_list_26년.xlsx`: 상대계정분석
+  6개 행의 소스시트명을 새 명명규칙(`_차변`/`_대변`)에 맞게 갱신
+**미해결 이슈**: 기존 `journal_analyzer/graphy/results/분석결과_graphy.xlsx`는 구
+버전 실행 결과라 시트명이 아직 옛 이름(`상대_외상매출금` 등)임 — 다음 실행 전
+main_analyzer.py를 재실행해 결과 파일을 새로 생성해야 mapping list와 시트명이
+맞음. 다른 회사(kyungnam/samdong/sejoong) mapping list는 상대_ 시트를 참조하지
+않아 영향 없음 확인.
+**다음 할 일**:
+1. graphy task_list 재실행하여 `분석결과_graphy.xlsx` 갱신 (새 시트명 반영)
+2. 총계정원장(21번) 분석을 graphy mapping list에 표+그래프 행으로 추가할지 결정
+3. (보류) draw_general_ledger_chart의 트렌드/건수 그래프를 이미지 2장으로 분리할지 여부
+
+---
