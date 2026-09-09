@@ -2285,13 +2285,11 @@ MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방�
 **미해결 이슈**: 기존 `journal_analyzer/graphy/results/분석결과_graphy.xlsx`는 구
 버전 실행 결과라 시트명·형식이 아직 옛 것임 — 다음 실행 전 main_analyzer.py를
 재실행해 결과 파일을 새로 생성해야 mapping list와 맞음(재실행하면 8번/27번 관련
-상대_ 시트 모두 새 리포트 형식으로 바뀜). 27번(감가상각_평가손익분석) Phase1도
-analyze_counterpart()를 그대로 재사용해 같은 형식으로 바뀌는데, blue sky에게
-직접 확인은 안 받음 — 27번 결과지 형태가 달라진 걸 다음 세션에 확인 필요.
+상대_ 시트 모두 새 리포트 형식으로 바뀜). (27번 결과 형식 변경은 blue sky가 직접
+27번을 돌려 확인 완료 — "이대로 사용해도 될 것 같다" 승인함.)
 **다음 할 일**:
 1. graphy task_list 재실행하여 `분석결과_graphy.xlsx` 갱신 (새 시트명·리포트 형식 반영)
-2. 27번 감가상각_평가손익분석 Phase1 결과 형식 변경이 문제없는지 blue sky 확인
-3. 총계정원장(21번) 분석을 graphy mapping list에 표+그래프 행으로 추가할지 결정
-4. (보류) draw_general_ledger_chart의 트렌드/건수 그래프를 이미지 2장으로 분리할지 여부
+2. 총계정원장(21번) 분석을 graphy mapping list에 표+그래프 행으로 추가할지 결정
+3. (보류) draw_general_ledger_chart의 트렌드/건수 그래프를 이미지 2장으로 분리할지 여부
 
 ---
