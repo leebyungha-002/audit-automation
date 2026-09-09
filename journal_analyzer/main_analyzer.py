@@ -1197,17 +1197,30 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         related = df[df[group_col].isin(jids)].copy()
         # 지정 방향의 반대 측(상대계정) 금액만 집계
         counter_col = COL_CREDIT if direction == '차변' else COL_DEBIT
-        sum_label   = '대변합계' if direction == '차변' else '차변합계'
-        cnt_label   = '대변건수' if direction == '차변' else '차변건수'
         summary = (related[related[counter_col] != 0]
                    .groupby(COL_ACCOUNT)[[counter_col]]
                    .agg(['sum','count']).reset_index())
-        summary.columns = ['상대계정명', sum_label, cnt_label]
-        summary.insert(0, '전표방향', direction)
-        summary.insert(0, '계정명', acct)
-        summary = summary.sort_values(sum_label, ascending=False)
-        sname   = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}_{direction}')
+        summary.columns = ['상대계정', '금액', '거래 건수']
+        summary = summary.sort_values('금액', ascending=False).reset_index(drop=True)
+        total_amt = summary['금액'].sum()
+        # 비율은 금액 기준(상대계정 금액 합계 대비 각 상대계정 금액의 비중)
+        summary['비율(%)'] = (summary['금액'] / total_amt * 100).round(2) if total_amt else 0
+        summary.insert(0, '순위', range(1, len(summary) + 1))
+        summary = summary[['순위', '상대계정', '거래 건수', '금액', '비율(%)']]
+
+        sname = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}_{direction}')
         out[sname] = summary
+        out.setdefault('_legend_rows', {})[sname] = [
+            ('분석 요약 정보', None),
+            ('총 분석 계정', f'{acct} ({direction})'),
+            ('총 거래 건수', len(target)),
+            ('식별된 상대계정 수', len(summary)),
+            ('', ''),
+            ('상대계정 목록', None),
+        ]
+        out.setdefault('_number_format_cols', {})[sname] = {
+            '거래 건수': '#,##0', '금액': '#,##0', '비율(%)': '0.00',
+        }
     return out or {'상대계정분석': pd.DataFrame({'안내':['파라미터에 계정과목이 없습니다.']})}
 
 
@@ -3180,6 +3193,7 @@ def save_results(results: dict, output_dir: str, company_name: str,
     decoder        = results.pop('_암호해독표', None)
     column_notes   = results.pop('_column_notes', None)  # {시트명: {컬럼명: 메모text}}
     legend_rows    = results.pop('_legend_rows', None)   # {시트명: [(항목, 설명), ...]}
+    number_formats = results.pop('_number_format_cols', None)  # {시트명: {컬럼명: 서식}}
 
     # startrow=2: 1~2행을 비워두고 3행부터 컬럼헤더+데이터 기록
     with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
@@ -3205,11 +3219,12 @@ def save_results(results: dict, output_dir: str, company_name: str,
     # 범례가 있는 시트는 A/B열에 "항목 | 설명"을 3행부터 세로로 나열하고, 그만큼
     # 실제 헤더+데이터 테이블을 아래로 밀어낸 뒤(먼저 삽입), 이동한 헤더 행에
     # 마우스오버 메모(Comment)를 붙인다(범례 삽입을 먼저 해야 메모가 밀린 헤더를 따라감).
-    if column_notes or legend_rows:
+    if column_notes or legend_rows or number_formats:
         from openpyxl.comments import Comment
         label_font = Font(bold=True, size=9)
         desc_font  = Font(size=9, italic=True, color='595959')
-        sheets = set((column_notes or {}).keys()) | set((legend_rows or {}).keys())
+        sheets = (set((column_notes or {}).keys()) | set((legend_rows or {}).keys())
+                  | set((number_formats or {}).keys()))
         for sheet in sheets:
             sname = _safe_sheet(sheet)
             if sname not in wb.sheetnames:
@@ -3231,6 +3246,19 @@ def save_results(results: dict, output_dir: str, company_name: str,
                     note = notes.get(cell.value)
                     if note:
                         cell.comment = Comment(note, '감사자동화')
+
+            fmts = (number_formats or {}).get(sheet) or {}
+            if fmts:
+                header_cols = {cell.value: cell.column
+                               for cell in next(ws.iter_rows(min_row=header_row, max_row=header_row))}
+                for col_name, fmt in fmts.items():
+                    col_idx = header_cols.get(col_name)
+                    if not col_idx:
+                        continue
+                    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row,
+                                             min_col=col_idx, max_col=col_idx):
+                        for cell in row:
+                            cell.number_format = fmt
 
     if benford_images:
         for _acct, _dir, img_buf in benford_images:
@@ -3325,7 +3353,13 @@ def main():
                 print(f'       → 별도 파일 저장')
             elif isinstance(result, dict):
                 for sname, sub_df in result.items():
-                    all_results[sname] = sub_df
+                    # _legend_rows/_column_notes/_number_format_cols 등 시트명→dict
+                    # 형태의 특수 키는 태스크마다 덮어쓰지 않고 병합(여러 분석이 같은
+                    # 특수 키를 쓸 수 있음 — 예: 4번 데이터개요_요약, 8번 상대계정분석).
+                    if sname.startswith('_') and isinstance(sub_df, dict):
+                        all_results.setdefault(sname, {}).update(sub_df)
+                    else:
+                        all_results[sname] = sub_df
                 print(f'       → 시트 {len(result)}개 생성')
             elif isinstance(result, pd.DataFrame):
                 all_results[_safe_sheet(task_name)] = result
