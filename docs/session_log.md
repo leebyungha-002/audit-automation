@@ -2284,6 +2284,10 @@ MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방�
   6개 행의 소스시트명을 새 명명규칙(`_차변`/`_대변`)에 맞게 갱신
 - `journal_analyzer/main_analyzer.py`: `analyze_benford()`가 만드는 모든
   벤포드_계정명_방향 시트 상단에 `_legend_rows` 재사용해 벤포드 법칙 설명 문구 추가
+- `journal_analyzer/main_analyzer.py`: `analyze_top_accounts()`(14번 심층분석)의
+  both(차변+대변) 병합을 `pd.concat(axis=1)`(pandas 인덱스 기준, 무관한 거래처끼리
+  같은 행에 섞임)에서 `pd.merge(..., on=거래처명/구분/계정명, how='outer')`로
+  교체 — samdong Top_1_외상매출금에서 blue sky가 발견
 **미해결 이슈**: 기존 `journal_analyzer/graphy/results/분석결과_graphy.xlsx`는 구
 버전 실행 결과라 시트명·형식이 아직 옛 것임 — 다음 실행 전 main_analyzer.py를
 재실행해 결과 파일을 새로 생성해야 mapping list와 맞음(재실행하면 8번/27번 관련
@@ -2293,5 +2297,7 @@ MOVE_IMAGE는 비고란) 확인, 8번 상대계정분석 시트명에 전표방�
 1. graphy task_list 재실행하여 `분석결과_graphy.xlsx` 갱신 (새 시트명·리포트 형식 반영)
 2. 총계정원장(21번) 분석을 graphy mapping list에 표+그래프 행으로 추가할지 결정
 3. (보류) draw_general_ledger_chart의 트렌드/건수 그래프를 이미지 2장으로 분리할지 여부
+4. samdong `main_analyzer.py` 재실행하여 `분석결과_samdong.xlsx`의 Top_1~9 시트를
+   병합 버그 수정 반영해서 갱신 (기존 파일은 여전히 잘못 섞인 상태)
 
 ---
