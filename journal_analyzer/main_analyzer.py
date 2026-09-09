@@ -3210,7 +3210,8 @@ def _save_lease_completeness_file(results: dict, output_dir: str, company_name: 
 
 
 def save_results(results: dict, output_dir: str, company_name: str,
-                 settings: dict = None, out_path: str = None) -> str:
+                 settings: dict = None, out_path: str = None,
+                 sheet_prefix_map: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     if out_path is None:
         out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
@@ -3309,6 +3310,28 @@ def save_results(results: dict, output_dir: str, company_name: str,
             col = get_column_letter(wb[sname].max_column + 2)
             wb[sname].add_image(XLImage(img_buf), f'{col}3')
 
+    # 시트 탭 이름에 "분석번호_분석명" 접두어 부착 — 맨 마지막에만 ws.title을
+    # 바꾼다(위의 legend_rows·이미지 삽입은 전부 원래 시트명으로 이미 끝난 뒤라
+    # 영향 없음). 원래 시트명을 접두어 뒤에 그대로 남겨서, mapping_list의
+    # src_sheet(부분일치로 찾는 resolve_sheet)가 옛 이름 그대로 계속 동작한다
+    # (2026-09-09 blue sky 요청).
+    if sheet_prefix_map:
+        used_titles = {ws.title for ws in wb.worksheets}
+        for ws in wb.worksheets:
+            prefix = sheet_prefix_map.get(ws.title)
+            if not prefix:
+                continue
+            new_title = _safe_sheet(f'{prefix}_{ws.title}')
+            if new_title != ws.title and new_title in used_titles:
+                base = new_title[:28]
+                n = 2
+                while f'{base}~{n}' in used_titles:
+                    n += 1
+                new_title = f'{base}~{n}'
+            used_titles.discard(ws.title)
+            used_titles.add(new_title)
+            ws.title = new_title
+
     wb.save(out_path)
 
     # 암호해독표 → 별도 파일
@@ -3365,6 +3388,13 @@ def main():
     # 3) 분석 순차 실행
     print('\n[분석 실행]')
     all_results: dict = {}
+    # 시트명 → "분석번호_분석명" 접두어. save_results()가 맨 마지막에 시트 탭
+    # 이름에만 덧붙인다(내부 로직은 원래 시트명 그대로 사용하므로 legend_rows·
+    # 이미지 삽입 등 기존 코드는 안 건드림) — mapping_list의 src_sheet는 부분
+    # 일치(resolve_sheet)로 찾으므로 원래 시트명이 접두어 뒤에 그대로 남아있는 한
+    # 기존 mapping_list를 하나도 안 고쳐도 계속 동작한다 (2026-09-09 blue sky 요청 —
+    # 분석결과 파일만 봐서는 어떤 분석 번호인지 알기 어렵다는 피드백).
+    sheet_prefix_map: dict = {}
     for task_no, task_name, 분석대상, end_month in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
@@ -3395,9 +3425,12 @@ def main():
                         all_results.setdefault(sname, {}).update(sub_df)
                     else:
                         all_results[sname] = sub_df
+                        sheet_prefix_map[sname] = f'{task_no:02d}_{task_name}'
                 print(f'       → 시트 {len(result)}개 생성')
             elif isinstance(result, pd.DataFrame):
-                all_results[_safe_sheet(task_name)] = result
+                sname = _safe_sheet(task_name)
+                all_results[sname] = result
+                sheet_prefix_map[sname] = f'{task_no:02d}_{task_name}'
                 print(f'       → 시트 1개 생성')
         except Exception as e:
             import traceback
@@ -3424,7 +3457,7 @@ def main():
 
     if all_results:
         out_path = save_results(all_results, paths['output'], company_name, settings,
-                                out_path=partial_out_path)
+                                out_path=partial_out_path, sheet_prefix_map=sheet_prefix_map)
         print(f'\n  ✅ 완료: {out_path}')
         print(f'  시트 수: {len(all_results)}개')
     else:
