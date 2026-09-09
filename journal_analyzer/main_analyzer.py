@@ -635,6 +635,12 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
 
 
 # ── 3. 벤포드 분석 ────────────────────────────────────────────────────────────
+_BENFORD_EXPLANATION = (
+    '자연 발생 데이터의 첫 자리 수는 1부터 9까지의 숫자가 균등하게 분포하지 않고, '
+    '1이 약 30%, 9가 약 4.6%의 확률로 나타난다는 법칙입니다. 실제 분포가 이와 크게 '
+    '다를 경우 인위적인 조작이나 이상 징후를 의심할 수 있습니다.'
+)
+
 def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
     targets = []
     for p in params_list:
@@ -655,6 +661,7 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
             out[sheet_key] = pd.DataFrame([{'계정':acct,'방향':direction,'숫자':'-','발생건수':0,
                                             '실제비율(%)':0,'이론비율(%)':0,'차이(%p)':0,
                                             '비고':f'데이터 부족({n}건)'}])
+            out.setdefault('_legend_rows', {})[sheet_key] = [(_BENFORD_EXPLANATION, None)]
             continue
         subset['Digit'] = subset[tcol].apply(get_first_digit)
         dg     = subset[subset['Digit'] >= 1]['Digit']
@@ -671,6 +678,7 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
                          '차이(%p)':round((actual-theory)*100,2),
                          '이상여부':'Y' if abs(actual-theory)>0.05 else ''})
         out[sheet_key] = pd.DataFrame(rows)
+        out.setdefault('_legend_rows', {})[sheet_key] = [(_BENFORD_EXPLANATION, None)]
 
     if images: out['_benford_images'] = images   # 특수 키: save_results에서 차트 삽입
     return out
