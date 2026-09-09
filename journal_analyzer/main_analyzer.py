@@ -1754,53 +1754,50 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
         if filtered.empty: continue
         sname     = _safe_sheet(f'Top_{idx}_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct_name)[:16]}')
         grp_cols  = [gc, COL_CLIENT] if has_g else [COL_CLIENT]
+        both_dir  = direction == 'both'
+
+        def _top_side(rows_df, cnt_label, amt_label, suffix):
+            if rows_df.empty or COL_CLIENT not in df.columns:
+                return pd.DataFrame()
+            # sort_values→head→reset_index 순서가 중요: reset_index를 먼저 하면
+            # 정렬 전 groupby 순서의 인덱스가 그대로 남아, 나중에 다른 쪽 표와
+            # axis=1로 나란히 붙일 때 "순위"가 아니라 이 잔재 인덱스로 정렬돼버려
+            # 서로 무관한 거래처가 같은 행에 섞이는 버그가 있었다(2026-09-09
+            # samdong Top_1_외상매출금에서 blue sky가 발견). sort+head를 먼저 끝내고
+            # 마지막에 reset_index를 호출해야 0..N-1이 실제 순위 순서가 된다.
+            t = (rows_df.groupby(grp_cols)[amt_label[0]].agg(['count', 'sum'])
+                        .sort_values('sum', ascending=False)
+                        .head(top_n)
+                        .reset_index())
+            rn = {grp_cols[-1]: f'거래처명{suffix}', 'count': cnt_label, 'sum': amt_label[1]}
+            if has_g: rn[gc] = f'구분{suffix}'
+            return t.rename(columns=rn)
 
         debit_top = pd.DataFrame()
         if direction in ('차변', 'both'):
             d_rows = filtered[filtered[COL_DEBIT] != 0]
-            if not d_rows.empty and COL_CLIENT in df.columns:
-                debit_top = (d_rows.groupby(grp_cols)[COL_DEBIT].agg(['count','sum'])
-                                   .reset_index().sort_values('sum', ascending=False)
-                                   .head(top_n*(2 if has_g else 1)))
-                rn = {grp_cols[-1]:'거래처명','count':'전표수(차)','sum':'차변금액'}
-                if has_g: rn[gc] = '구분'
-                debit_top = debit_top.rename(columns=rn)
-                debit_top.insert(0, '계정명', acct_name)
+            debit_top = _top_side(d_rows, '전표수(차)', (COL_DEBIT, '차변금액'),
+                                   '(차)' if both_dir else '')
 
         credit_top = pd.DataFrame()
         if direction in ('대변', 'both'):
             c_rows = filtered[filtered[COL_CREDIT] != 0]
-            if not c_rows.empty and COL_CLIENT in df.columns:
-                credit_top = (c_rows.groupby(grp_cols)[COL_CREDIT].agg(['count','sum'])
-                                    .reset_index().sort_values('sum', ascending=False)
-                                    .head(top_n*(2 if has_g else 1)))
-                rn = {grp_cols[-1]:'거래처명','count':'전표수(대)','sum':'대변금액'}
-                if has_g: rn[gc] = '구분'
-                credit_top = credit_top.rename(columns=rn)
-                credit_top.insert(0, '계정명', acct_name)
+            credit_top = _top_side(c_rows, '전표수(대)', (COL_CREDIT, '대변금액'),
+                                    '(대)' if both_dir else '')
 
-        if direction == 'both':
-            if not debit_top.empty and not credit_top.empty:
-                # 거래처명(+구분) 기준으로 합쳐야 같은 거래처의 차변·대변이 같은 행에
-                # 온다. 이전에는 pd.concat(axis=1)으로 붙여서 각자 독립적으로 정렬된
-                # pandas 기본 인덱스(0,1,2,...)끼리 우연히 같은 숫자면 옆에 붙는
-                # 구조라, 서로 무관한 거래처의 차변·대변이 같은 행에 섞여 나왔다
-                # (2026-09-09 samdong Top_1_외상매출금에서 blue sky가 발견).
-                merge_keys = [c for c in ('계정명', '구분', '거래처명') if c in debit_top.columns]
-                combined = pd.merge(debit_top, credit_top, on=merge_keys, how='outer')
-                sort_cols = [c for c in ('차변금액', '대변금액') if c in combined.columns]
-                if sort_cols:
-                    combined = combined.sort_values(sort_cols, ascending=False, na_position='last')
-            elif not debit_top.empty:
-                combined = debit_top
-            else:
-                combined = credit_top
+        # 차변 Top10 / 대변 Top10은 서로 다른 거래처일 수 있어 거래처명으로 억지로
+        # 맞추지 않고, 순위(1~top_n)끼리만 나란히 배치한다 — 같은 행이라고 같은
+        # 거래처라는 뜻은 아님 (2026-09-09 blue sky 요청, 가로 배치안 채택).
+        if both_dir:
+            parts = [p for p in (debit_top, credit_top) if not p.empty]
+            combined = pd.concat(parts, axis=1) if parts else pd.DataFrame()
         elif direction == '차변':
             combined = debit_top
         else:
             combined = credit_top
 
         if not combined.empty:
+            combined.insert(0, '계정명', acct_name)
             out[sname] = combined
 
     return out or {'심층분석': pd.DataFrame({'결과':['데이터 없음']})}
