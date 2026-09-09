@@ -2010,6 +2010,16 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
     has_unit_col = UNIT_COL in df.columns
     has_cost_col = COST_COL in df.columns
     out = {}
+
+    # 작업명이 같은 여러 행(예: 같은 거래처를 계정과목별로 행을 나눠 기재)은
+    # 시트명(거래처_{작업명})이 겹친다. 예전엔 행별로 바로 out[sname]에 덮어써서
+    # 마지막 행의 결과만 남고 앞선 행은 조용히 사라졌다(2026-09-09 samdong
+    # task_list_samdong.xlsx 17번에서 "농협경제지주"를 제품매출-국내/상품매출-국내
+    # 두 행으로 나눠 적었더니 한 계정만 나온다고 blue sky가 발견). 행별로 걸러낸
+    # 거래를 먼저 작업명별로 모아뒀다가, 작업명 단위로 합쳐서 한 번에 집계한다.
+    job_frames = {}   # job_name -> [filtered DataFrame, ...]
+    job_extra  = {}   # job_name -> extra_cols (해당 작업명에서 먼저 나온 값 사용)
+
     for i, p in enumerate(params_list, 1):
         accts    = [a.strip() for a in str(p.get('계정과목','')).split(',')
                     if a.strip() and a.strip().lower() not in ('nan','(전체)','')]
@@ -2043,6 +2053,13 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         if split_unit: filtered[UNIT_COL] = filtered[UNIT_COL].astype(str).str.strip()
         if split_cost: filtered[COST_COL] = filtered[COST_COL].astype(str).str.strip()
 
+        job_frames.setdefault(job_name, []).append(filtered)
+        job_extra.setdefault(job_name, ([UNIT_COL] if split_unit else []) + ([COST_COL] if split_cost else []))
+
+    for job_name, frames in job_frames.items():
+        filtered = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        extra_cols = job_extra[job_name]
+
         filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
 
         # 월별합산: 거래처명·계정명별로 나눠서 집계(2026-09-01 blue sky 요청 —
@@ -2051,7 +2068,6 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         # 지정 시), 열 = 실제 발생월(YM) + 기간 전체 차변/대변/합계.
         ym_cols = sorted(filtered['YM'].dropna().unique().tolist())
         filtered['순액'] = filtered[COL_DEBIT].fillna(0) + filtered[COL_CREDIT].fillna(0)
-        extra_cols = ([UNIT_COL] if split_unit else []) + ([COST_COL] if split_cost else [])
         group_cols = [COL_CLIENT, COL_ACCOUNT] + extra_cols
         pivot = (filtered.pivot_table(index=group_cols, columns='YM',
                                        values='순액', aggfunc='sum', fill_value=0)
