@@ -2398,3 +2398,42 @@ Top_N/거래처분석/상대계정분석 버그 수정들과 함께 한 번에 �
 **다음 할 일**: 없음 (이 항목은 완료)
 
 ---
+
+## 2026-09-14
+
+**완료 작업**: blue sky 요청으로 분석결과 시트명을 "번호_분석명_계정명_방향
+(차/대/both)" 형식으로 전면 정리(계정명/방향 없는 분석은 식별자만 또는
+번호_분석명만). 26개 analyze_* 함수의 시트명 생성 로직을 손봤고, 그 과정에서
+심각한 버그를 발견해 근본 수정함: `all_results` 딱셔너리가 태스크 전체에서
+공유되는데, 시트명을 짧게 줄이자 서로 다른 분석이 같은 내부 키를 쓰는 경우
+(04번/11번 둘 다 "요약", 03번/08번/23번이 같은 계정+방향, 02번/20번이 같은
+계정명)가 생겨서 조용히 덮어써 데이터가 사라졌음. `main()`에서 내부 키에
+항상 `번호_`를 붙여 전역적으로 고유하게 만들고, 화면에 보일 깨끗한 이름은
+`sheet_final_suffix`에 따로 저장해 `save_results()`가 최종 탭 이름을 지을 때만
+쓰도록 수정(태스크 결과 dict에서 list 모양 특수 키(`_benford_images` 등)를
+"시트"로 잘못 취급해 벤포드 차트 이미지가 통째로 빠지던 2차 버그도 같이 발견·
+수정). 단일 시트만 나오는 분석(6/9/10/12/16/19번)이 "번호_분석명_분석명"으로
+중복되던 기존 버그도 같이 수정(13번은 dict→DataFrame 반환으로 변경해 흡수).
+kyungnam·graphy mapping_list의 src_sheet 참조를 새 시트명에 맞춰 스크립트로
+일괄 동기화(각각 46건·23건 변경, 검증 스크립트로 실제 재실행 결과와 대사
+완료). samdong mapping_list도 한 차례 동기화(53건)했으나 blue sky가 "아직
+미완성"이라 밝혀 이번 재실행·재검증 대상에서는 제외함 — 코드 수정은
+samdong에도 동일하게 적용되지만, 실행/검증/커밋은 kyungnam·graphy만 함.
+**변경 파일**:
+- `journal_analyzer/main_analyzer.py` — 시트명 생성 로직 전면 정리 + 내부 키
+  전역유일화(`sheet_final_suffix` 도입) + list형 특수 키 처리 수정 (커밋 e52ac09)
+- `journal_analyzer/kyungnam/감사조서/Kyungnam_mapping_list_25년.xlsx`,
+  `journal_analyzer/graphy/감사조서/graphy_mapping_list_26년.xlsx` — src_sheet
+  동기화 (커밋 e52ac09)
+- `journal_analyzer/samdong/감사조서/Samdong_mapping_list_25년.xlsx` — src_sheet
+  동기화했으나 미완성 상태라 이번 세션에서는 커밋 안 함(디스크에는 반영됨)
+**미해결 이슈**: samdong의 mapping_list가 아직 미완성 — blue sky가 마무리한
+뒤 main_analyzer.py를 samdong으로 재실행해서 새 시트명으로 결과 파일을 다시
+만들고, mapping_list도 최종 확인 후 커밋해야 함.
+**다음 할 일**:
+1. samdong mapping_list 작성 완료 후 `python main_analyzer.py samdong` 재실행
+2. samdong 결과 파일의 시트명·이미지·범례 확인(kyungnam/graphy와 동일 방식으로)
+3. samdong mapping_list·task_list·data_injector.py의 기존 미커밋 변경사항(이번
+   세션 시작 전부터 있던 것, 내용 미확인) 처리 방향을 blue sky와 확인
+
+---
