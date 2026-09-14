@@ -7,6 +7,7 @@
 import sys
 import os
 import re
+import time
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -18,6 +19,18 @@ from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
 from PyQt6.QtGui import QFont, QColor, QTextCursor
 
 ROOT = Path(__file__).parent
+
+
+def format_elapsed(seconds: float) -> str:
+    """초 단위 소요 시간을 'H시간 M분 S초' 형태의 한국어 문자열로 변환"""
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}시간 {m}분 {s}초"
+    if m:
+        return f"{m}분 {s}초"
+    return f"{s}초"
 
 # 결산월 콤보박스 인덱스 → 결산월 매핑 (addItems 순서와 반드시 일치시킬 것)
 _FY_MONTH_BY_INDEX = {0: 12, 1: 6, 2: 9}
@@ -346,6 +359,7 @@ class Launcher(QMainWindow):
         self.setWindowTitle("감사 자동화 런처")
         self.resize(900, 640)
         self._process: QProcess | None = None
+        self._start_time: float | None = None
 
         self._js_companies = detect_js_companies()
         self._journal_companies = detect_journal_companies()
@@ -788,15 +802,18 @@ class Launcher(QMainWindow):
         self._btn_run.setEnabled(False)
         self._btn_stop.setEnabled(True)
 
+        self._start_time = time.monotonic()
         self._process.start(cmd[0], cmd[1:])
         if not self._process.waitForStarted(3000):
             self._log_line("✗ 프로세스를 시작할 수 없습니다.", "#F87171")
+            self._start_time = None
             self._reset_buttons()
 
     def _stop(self):
         if self._process and self._process.state() != QProcess.ProcessState.NotRunning:
             self._process.kill()
-            self._log_line("■ 프로세스를 강제 종료했습니다.", "#FBBF24")
+            elapsed = self._elapsed_str()
+            self._log_line(f"■ 프로세스를 강제 종료했습니다.{elapsed}", "#FBBF24")
 
     # ── 프로세스 이벤트 ───────────────────────────────────────────────────────
 
@@ -810,8 +827,15 @@ class Launcher(QMainWindow):
 
     def _on_finished(self, exit_code: int, _):
         color = "#4ADE80" if exit_code == 0 else "#F87171"
-        self._log_line(f"{'✓' if exit_code == 0 else '✗'}  종료 (exit {exit_code})", color)
+        elapsed = self._elapsed_str()
+        self._log_line(f"{'✓' if exit_code == 0 else '✗'}  종료 (exit {exit_code}){elapsed}", color)
+        self._start_time = None
         self._reset_buttons()
+
+    def _elapsed_str(self) -> str:
+        if self._start_time is None:
+            return ""
+        return f"  [소요시간: {format_elapsed(time.monotonic() - self._start_time)}]"
 
     def _reset_buttons(self):
         self._btn_run.setEnabled(True)
