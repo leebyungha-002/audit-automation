@@ -629,7 +629,7 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
                         .drop(columns=['_abs']).reset_index())
         result = result.rename(columns={COL_ACCOUNT: '계정명', COL_CLIENT: '거래처명'}).drop(columns=['계정명'])
 
-        sname = _safe_sheet(f'비교_{re.sub(r"[^가-힣a-zA-Z0-9]","",str(acct))[:20]}')
+        sname = _safe_sheet(re.sub(r"[^가-힣a-zA-Z0-9]","",str(acct))[:20])
         out[sname] = result
     return out
 
@@ -656,7 +656,8 @@ def analyze_benford(df: pd.DataFrame, params_list: list) -> dict:
         mask   = _account_match_flexible(df[COL_ACCOUNT], acct)
         subset = df[mask & (df[tcol] > 0)].copy()
         n      = len(subset)
-        sheet_key = f'벤포드_{acct}_{direction}'
+        _dir_short = '차' if direction == '차변' else '대'
+        sheet_key = f'{acct}_{_dir_short}'
         if n < BENFORD_MIN_ROWS:
             out[sheet_key] = pd.DataFrame([{'계정':acct,'방향':direction,'숫자':'-','발생건수':0,
                                             '실제비율(%)':0,'이론비율(%)':0,'차이(%p)':0,
@@ -946,7 +947,7 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
     else:
         stats = pd.DataFrame()
 
-    out = {'데이터개요_요약': summary, '데이터개요_계정별': stats}
+    out = {'요약': summary, '계정별': stats}
 
     if _COMPANY_DIR:
         ledger_paths = _find_current_ledger_files(os.path.join(_COMPANY_DIR, 'data', 'current'))
@@ -1015,10 +1016,10 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                         "출처: 계정별원장(data/current 원장 파일) — 각 계정 시트의 "
                         "'전기이월'/'기초잔액' 행 차변·대변에서 추출.",
                     '차변합계':
-                        "출처: 분개장(당기 전표) — '데이터개요_계정별' 시트와 동일한 합계"
+                        "출처: 분개장(당기 전표) — '04_데이터개요_계정별' 시트와 동일한 합계"
                         "(계정별원장이 아님).",
                     '대변합계':
-                        "출처: 분개장(당기 전표) — '데이터개요_계정별' 시트와 동일한 합계"
+                        "출처: 분개장(당기 전표) — '04_데이터개요_계정별' 시트와 동일한 합계"
                         "(계정별원장이 아님).",
                     '기말잔액(분개장기준)':
                         "계산식(구분에 따라 자동 선택): 자산/비용 = 기초잔액+차변합계-대변합계 / "
@@ -1069,7 +1070,7 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
 # ── 5. 계정명 리스트 ──────────────────────────────────────────────────────────
 def analyze_account_list(df: pd.DataFrame, params_list: list) -> dict:
     if COL_ACCOUNT not in df.columns:
-        return {'계정명리스트': pd.DataFrame({'오류':['계정명 컬럼 없음']})}
+        return {'오류': pd.DataFrame({'오류':['계정명 컬럼 없음']})}
     accs   = sorted({str(a).strip() for a in df[COL_ACCOUNT].dropna() if str(a).strip()})
     simple = pd.DataFrame({'계정명': accs})
     jkey_acc = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
@@ -1080,7 +1081,7 @@ def analyze_account_list(df: pd.DataFrame, params_list: list) -> dict:
     stats.columns = base_cols + (['전표개수'] if jkey_acc in df.columns else [])
     stats['최대금액'] = stats[['차변합계','대변합계']].max(axis=1)
     stats = stats.sort_values('최대금액', ascending=False).drop(columns=['최대금액'])
-    return {'계정명_간단': simple, '계정명_통계': stats}
+    return {'간단': simple, '통계': stats}
 
 
 # ── 6. 사원별 집계 ────────────────────────────────────────────────────────────
@@ -1216,7 +1217,7 @@ def analyze_counterpart(df: pd.DataFrame, params_list: list) -> dict:
         summary.insert(0, '순위', range(1, len(summary) + 1))
         summary = summary[['순위', '상대계정', '거래 건수', '금액', '비율(%)']]
 
-        sname = _safe_sheet(f'상대_{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}_{direction}')
+        sname = _safe_sheet(f'{re.sub(r"[^가-힣a-zA-Z0-9]","",acct)[:18]}_{"차" if direction == "차변" else "대"}')
         out[sname] = summary
         out.setdefault('_legend_rows', {})[sname] = [
             ('분석 요약 정보', None),
@@ -1602,10 +1603,10 @@ def analyze_related_party(df: pd.DataFrame, params_list: list) -> dict:
     summary = related.groupby([COL_CLIENT, COL_ACCOUNT])[[COL_DEBIT, COL_CREDIT]]\
                      .agg(['sum','count']).reset_index()
     summary.columns = ['거래처명','계정명','차변합계','차변건수','대변합계','대변건수']
-    return {'특수관계자_차변피벗': piv_d,
-            '특수관계자_대변피벗': piv_c,
-            '특수관계자_요약':     summary,
-            '특수관계자_상세':     related}
+    return {'차변피벗':   piv_d,
+            '대변피벗':   piv_c,
+            '거래처별요약': summary,
+            '상세':       related}
 
 
 # ── 12. 자산 vs 부채 교차 ────────────────────────────────────────────────────
@@ -1632,7 +1633,7 @@ def analyze_asset_liability_cross(df: pd.DataFrame, params_list: list) -> pd.Dat
 
 
 # ── 13. 매출 vs 비용 교차 ────────────────────────────────────────────────────
-def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
+def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
     COST_COL = '비용구분'
     has_cost_col = COST_COL in df.columns
 
@@ -1650,8 +1651,8 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     exp_targets = [(_nv(p.get('계정과목','')), _cost_flag(p)) for p in params_list
                    if str(p.get('구분','')).strip() == '비용' and _nv(p.get('계정과목',''))]
     if not rev_targets or not exp_targets:
-        return {'매출비용교차': pd.DataFrame(
-            {'안내':['task_list 매출비용교차 시트에 구분(매출/비용)·계정과목을 입력하세요.']})}
+        return pd.DataFrame(
+            {'안내':['task_list 매출비용교차 시트에 구분(매출/비용)·계정과목을 입력하세요.']})
     revs = [a for a, _ in rev_targets]
     exps = [a for a, _ in exp_targets]
     rm = pd.Series(False, index=df.index)
@@ -1661,7 +1662,7 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     rdf = df[rm & (df[COL_CREDIT] != 0)]
     edf = df[em & (df[COL_DEBIT]  != 0)]
     if rdf.empty or edf.empty:
-        return {'매출비용교차': pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})}
+        return pd.DataFrame({'결과':['매출 또는 비용 데이터 없음']})
 
     def _account_client_detail(sub_df, targets, value_col, col_sum, col_count):
         split_accts = [a for a, f in targets if f]
@@ -1689,7 +1690,7 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
 
     common = set(r_detail.index.get_level_values(0)) & set(e_detail.index.get_level_values(0))
     if not common:
-        return {'매출비용교차': pd.DataFrame({'결과':['동시 발생 거래처 없음']})}
+        return pd.DataFrame({'결과':['동시 발생 거래처 없음']})
     # 매출합계금액 내림차순 — 거래처명 열을 첫 행만 채우므로(아래) 행을 만든 뒤 다시
     # 정렬하면 빈칸 거래처명 때문에 그룹이 깨져 여기서 미리 순서를 정한다
     clients = r_total.loc[list(common), '매출합계금액'].sort_values(ascending=False).index.tolist()
@@ -1730,7 +1731,7 @@ def analyze_revenue_expense_cross(df: pd.DataFrame, params_list: list) -> dict:
     if e_has_cost: cols.append('비용_비용구분')
     cols += ['비용계정별건수', '비용계정별금액', '비용합계건수', '비용합계금액']
     result = pd.DataFrame(rows, columns=cols)
-    return {'매출비용교차': result}
+    return result
 
 
 # ── 14. 심층분석 (계정별 Top) ─────────────────────────────────────────────────
@@ -1932,7 +1933,7 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
 
     targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
     if not targets:
-        return {'AI검토결과': pd.DataFrame({'안내': ['계정과목 파라미터 없음']})}
+        return {'결과': pd.DataFrame({'안내': ['계정과목 파라미터 없음']})}
 
     company_name = os.path.basename(_COMPANY_DIR) if _COMPANY_DIR else ''
     client, model_name, config = _get_gemini_client_and_config()
@@ -1982,10 +1983,10 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
             })
 
     out = {
-        'AI검토결과': pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame({'결과': ['분석 대상 없음']}),
+        '결과': pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame({'결과': ['분석 대상 없음']}),
     }
     if detail_rows:
-        out['AI검토_확인전표'] = pd.DataFrame(detail_rows)
+        out['확인전표'] = pd.DataFrame(detail_rows)
     return out
 
 
@@ -2083,11 +2084,11 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         dc = [c for c in ['구분', COL_DATE, COL_JOURNAL_ID, COL_ACCOUNT,
                            COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC]
               + extra_cols if c in filtered.columns]
-        sname = _safe_sheet(f'거래처_{re.sub(r"[^가-힣a-zA-Z0-9]","",job_name)[:18]}')
+        sname = _safe_sheet(re.sub(r"[^가-힣a-zA-Z0-9]","",job_name)[:18])
         out[sname]               = filtered[dc]
         out[sname + '_월별합산'] = monthly
 
-    return out or {'거래처분석': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
+    return out or {'안내': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
 
 
 # ── 18. 벤포드 이탈 상세 추출 ────────────────────────────────────────────────
@@ -2556,7 +2557,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
                 result_df = pd.concat(
                     [result_df, pd.DataFrame([total])], ignore_index=True)
                 sname = _safe_sheet(
-                    f'증감_{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct_name)[:20]}')
+                    re.sub(r"[^가-힣a-zA-Z0-9]", "", acct_name)[:20])
                 all_results[sname] = result_df
 
     return all_results or {'잔액증감분석': pd.DataFrame({'결과': ['분석 대상 없음']})}
@@ -2627,7 +2628,7 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
         result = pd.concat([result, pd.DataFrame([total])], ignore_index=True)
 
         prefix = f'{gubun}_' if gubun else ''
-        sname  = _safe_sheet(f'총계정원장_{prefix}{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct)[:18]}')
+        sname  = _safe_sheet(f'{prefix}{re.sub(r"[^가-힣a-zA-Z0-9]", "", acct)[:18]}')
         out[sname] = result
 
         img = draw_general_ledger_chart(acct, result)
@@ -2699,7 +2700,7 @@ def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
         all_rows.append(sub)
 
     if not all_rows:
-        return {'은행조회서완전성': pd.DataFrame({'안내': ['해당 계정의 전표 내역이 없습니다.']})}
+        return {'전체내역': pd.DataFrame({'안내': ['해당 계정의 전표 내역이 없습니다.']})}
 
     combined = pd.concat(all_rows, ignore_index=True)
 
@@ -2727,7 +2728,7 @@ def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
     sort_cols = ['_sort', COL_DATE] if COL_DATE in combined.columns else ['_sort']
     combined = combined.sort_values(sort_cols).drop(columns=['_sort'])
 
-    results = {'은행조회서완전성': combined}
+    results = {'전체내역': combined}
 
     # 금융기관별 요약 피벗
     has_fi = combined[combined['금융기관명'].astype(str).str.strip() != '']
@@ -2752,7 +2753,7 @@ def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
 
         summary = pivot_mark.join(raw_clients).join(totals).reset_index()
         summary.insert(1, '조회서발송', 'Y')
-        results['금융기관_조회서목록'] = summary
+        results['금융기관별목록'] = summary
 
     return results
 
@@ -2796,12 +2797,12 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
         if COL_DATE in sub.columns:
             sub = sub.sort_values(COL_DATE)
 
-        # 시트명: 상세거래_계정명_차변/대변/차변대변모두
-        col_f_label = '차변' if col_f_norm in ('차변', '차변만') \
-                      else '대변' if col_f_norm in ('대변', '대변만') \
-                      else '차변대변모두'
+        # 시트명: 계정명_차/대/both
+        col_f_label = '차' if col_f_norm in ('차변', '차변만') \
+                      else '대' if col_f_norm in ('대변', '대변만') \
+                      else 'both'
         acct_short = re.sub(r'[^가-힣a-zA-Z0-9]', '', acct_name)[:12]
-        base = _safe_sheet(f'상세거래_{acct_short}_{col_f_label}')
+        base = _safe_sheet(f'{acct_short}_{col_f_label}')
         sheet_name = base
         suffix = 2
         while sheet_name in all_results:
@@ -2975,7 +2976,7 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             # 안정정렬이라 같은 구분 안에서는 원래(입력) 순서가 그대로 유지된다.
             _cost_order = {'판관': 0, '제조': 1}
             rows.sort(key=lambda r: _cost_order.get(str(r.get(COST_COL, '')).strip(), 2))
-            out[_safe_sheet(f'손익월별_{cat}')] = pd.DataFrame(rows)
+            out[_safe_sheet(cat)] = pd.DataFrame(rows)
 
     return out or {'손익월별분석': pd.DataFrame({'결과': ['손익구분에 해당하는 계정 데이터 없음']})}
 
@@ -3211,7 +3212,7 @@ def _save_lease_completeness_file(results: dict, output_dir: str, company_name: 
 
 def save_results(results: dict, output_dir: str, company_name: str,
                  settings: dict = None, out_path: str = None,
-                 sheet_prefix_map: dict = None) -> str:
+                 sheet_prefix_map: dict = None, sheet_final_suffix: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     if out_path is None:
         out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
@@ -3297,34 +3298,44 @@ def save_results(results: dict, output_dir: str, company_name: str,
                             cell.number_format = fmt
 
     if benford_images:
+        # 이 시점의 시트 탭 이름은 아직 main()에서 넣어준 내부 키("03_계정명_방향",
+        # 항상 task_no=03 접두)이지 최종 표시용 이름이 아니다(최종 번호_분석명
+        # 접두어 부착은 이 함수 맨 마지막에서 일어남) — 반드시 같은 내부 키
+        # 형식으로 재구성해야 찾을 수 있다.
         for _acct, _dir, img_buf in benford_images:
             if not img_buf: continue
-            sname = _safe_sheet(f'벤포드_{_acct}_{_dir}')
+            sname = _safe_sheet(f'03_{_acct}_{"차" if _dir == "차변" else "대"}')
             if sname in wb.sheetnames:
                 wb[sname].add_image(XLImage(img_buf), 'K4')
 
     if gl_images:
         from openpyxl.utils import get_column_letter
+        # analyze_general_ledger()(21번)가 만든 목록의 sname은 아직 task_no가 안 붙은
+        # 원래 이름이다 — 벤포드와 마찬가지로 이 시점 시트 탭은 "21_원래이름" 내부
+        # 키이므로 21_을 붙여 재구성해야 찾을 수 있다.
         for sname, img_buf in gl_images:
-            if not img_buf or sname not in wb.sheetnames: continue
+            if not img_buf: continue
+            sname = _safe_sheet(f'21_{sname}')
+            if sname not in wb.sheetnames: continue
             col = get_column_letter(wb[sname].max_column + 2)
             wb[sname].add_image(XLImage(img_buf), f'{col}3')
 
     # 시트 탭 이름에 "분석번호_분석명" 접두어 부착 — 맨 마지막에만 ws.title을
-    # 바꾼다(위의 legend_rows·이미지 삽입은 전부 원래 시트명으로 이미 끝난 뒤라
-    # 영향 없음). 원래 시트명을 접두어 뒤에 그대로 남겨서, mapping_list의
-    # src_sheet(부분일치로 찾는 resolve_sheet)가 옛 이름 그대로 계속 동작한다
-    # (2026-09-09 blue sky 요청). Excel 시트명 31자 제한에 걸리면 접두어 쪽을
-    # 줄인다 — 뒤(원래 시트명)를 자르면 mapping_list가 더 이상 못 찾게 되므로
-    # 반드시 원래 시트명을 온전히 보존해야 한다(예: '상세거래_투자부동산건설중인
-    # 자산_대변/_차변'처럼 긴 이름 + 긴 분석명 조합에서 실제로 잘림 확인됨).
+    # 바꾼다(위의 legend_rows·이미지 삽입은 전부 내부 키(ws.title) 기준으로 이미
+    # 끝난 뒤라 영향 없음). ws.title(=main()에서 넣어준 내부 키, 항상 "번호_"로
+    # 시작해 전역적으로 고유함)이 아니라 sheet_final_suffix에 저장해둔 깨끗한
+    # 원래 시트명을 접두어 뒤에 붙인다 — mapping_list의 src_sheet(부분일치로
+    # 찾는 resolve_sheet)가 그 깨끗한 이름으로 계속 동작한다(2026-09-09 blue sky
+    # 요청, 2026-09-14 계정명_방향 축약 개편). Excel 시트명 31자 제한에 걸리면
+    # 접두어 쪽을 줄인다 — 뒤(원래 시트명)를 자르면 mapping_list가 더 이상 못
+    # 찾게 되므로 반드시 원래 시트명을 온전히 보존해야 한다.
     if sheet_prefix_map:
         used_titles = {ws.title for ws in wb.worksheets}
         for ws in wb.worksheets:
             prefix = sheet_prefix_map.get(ws.title)
             if not prefix:
                 continue
-            orig = ws.title
+            orig = (sheet_final_suffix or {}).get(ws.title, ws.title)
             budget = 31 - len(orig) - 1  # '_' 구분자 1글자
             if budget <= 0:
                 continue  # 원래 시트명 자체가 이미 31자 근처 — 접두어 생략, 원본 유지
@@ -3402,6 +3413,11 @@ def main():
     # 기존 mapping_list를 하나도 안 고쳐도 계속 동작한다 (2026-09-09 blue sky 요청 —
     # 분석결과 파일만 봐서는 어떤 분석 번호인지 알기 어렵다는 피드백).
     sheet_prefix_map: dict = {}
+    # sheet_prefix_map의 키(all_results/legend_rows 등에서 쓰는 내부 키)는 항상
+    # "번호_원래시트명"으로 task_no를 붙여 전역적으로 고유하게 만든다(아래 참고).
+    # save_results()가 최종 탭 이름을 만들 때는 이 내부 키가 아니라 여기 저장해둔
+    # "원래시트명"(번호 없이 깨끗한 버전)을 접두어 뒤에 붙인다.
+    sheet_final_suffix: dict = {}
     for task_no, task_name, 분석대상, end_month in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
@@ -3424,20 +3440,54 @@ def main():
                 _save_lease_completeness_file(result, paths['output'], company_name)
                 print(f'       → 별도 파일 저장')
             elif isinstance(result, dict):
-                for sname, sub_df in result.items():
-                    # _legend_rows/_column_notes/_number_format_cols 등 시트명→dict
-                    # 형태의 특수 키는 태스크마다 덮어쓰지 않고 병합(여러 분석이 같은
-                    # 특수 키를 쓸 수 있음 — 예: 4번 데이터개요_요약, 8번 상대계정분석).
-                    if sname.startswith('_') and isinstance(sub_df, dict):
-                        all_results.setdefault(sname, {}).update(sub_df)
+                # 계정명_방향처럼 시트명을 짧게 정리한 뒤로, 서로 다른 분석(예: 3번
+                # 벤포드분석과 8번 상대계정분석이 같은 계정+방향을 각각 분석하면 둘 다
+                # "외상매출금_차"를 씀)이 우연히 같은 내부 키를 쓰면 all_results에서
+                # 조용히 덮어써 데이터가 통째로 사라지는 사고가 날 수 있다(2026-09-14
+                # 시트명 정리 중 실제 발견 — 04번 '요약'과 11번 '요약', 02번과 20번의
+                # 같은 계정명 등에서 확인). 내부 키에는 항상 task_no를 붙여 전역적으로
+                # 고유하게 만들고(다른 태스크와는 절대 겹칠 수 없음), 실제로 화면에
+                # 보일 깨끗한 이름(sname)은 sheet_final_suffix에 따로 기억해뒀다가
+                # save_results()가 최종 탭 이름을 지을 때만 사용한다.
+                key_map = {}  # 이 태스크 안에서: 원래 sname -> 전역 고유 내부 키
+                # _로 시작하는 모든 특수 키(_legend_rows처럼 dict 모양이든,
+                # _benford_images처럼 list 모양이든)는 시트가 아니므로 제외 —
+                # dict만 걸러내면 list 모양 특수 키가 실수로 "시트"로 취급돼
+                # save_results()가 찾는 원래 키 이름이 사라지는 사고가 난다
+                # (2026-09-14 실제 발견: _benford_images가 여기 섞여 들어가면서
+                # 벤포드 차트 이미지가 전부 빠짐).
+                normal_items = [(k, v) for k, v in result.items() if not k.startswith('_')]
+                for sname, sub_df in normal_items:
+                    internal_key = _safe_sheet(f'{task_no:02d}_{sname}')
+                    all_results[internal_key] = sub_df
+                    sheet_prefix_map[internal_key] = f'{task_no:02d}_{task_name}'
+                    sheet_final_suffix[internal_key] = sname
+                    key_map[sname] = internal_key
+                for skey, sval in result.items():
+                    if not skey.startswith('_'):
+                        continue
+                    if isinstance(sval, dict):
+                        # _legend_rows/_column_notes/_number_format_cols 등 시트명→dict
+                        # 형태의 특수 키는 안의 시트명 키도 같은 방식(전역 고유 내부 키)
+                        # 으로 바꿔줘야 save_results()에서 제대로 찾는다. 태스크마다
+                        # 덮어쓰지 않고 병합(여러 분석이 같은 특수 키를 쓸 수 있음).
+                        remapped = {key_map.get(k, k): v for k, v in sval.items()}
+                        all_results.setdefault(skey, {}).update(remapped)
+                    elif isinstance(sval, list):
+                        # _benford_images/_general_ledger_images처럼 list 모양인
+                        # 특수 키는 원래 키 이름 그대로(재구성 규칙은 save_results()
+                        # 쪽에 있음) 이어붙인다.
+                        all_results.setdefault(skey, []).extend(sval)
                     else:
-                        all_results[sname] = sub_df
-                        sheet_prefix_map[sname] = f'{task_no:02d}_{task_name}'
-                print(f'       → 시트 {len(result)}개 생성')
+                        all_results[skey] = sval
+                print(f'       → 시트 {len(normal_items)}개 생성')
             elif isinstance(result, pd.DataFrame):
-                sname = _safe_sheet(task_name)
+                # 시트가 1개뿐인 분석은 "번호_분석명"만으로 이미 식별 가능하므로
+                # sheet_prefix_map에 넣지 않는다 — 넣으면 save_results()가 원래
+                # 시트명(=분석명 그대로)을 뒤에 또 붙여 "번호_분석명_분석명"으로
+                # 중복되는 문제가 있었음(예: 10/16/19번).
+                sname = _safe_sheet(f'{task_no:02d}_{task_name}')
                 all_results[sname] = result
-                sheet_prefix_map[sname] = f'{task_no:02d}_{task_name}'
                 print(f'       → 시트 1개 생성')
         except Exception as e:
             import traceback
@@ -3464,7 +3514,8 @@ def main():
 
     if all_results:
         out_path = save_results(all_results, paths['output'], company_name, settings,
-                                out_path=partial_out_path, sheet_prefix_map=sheet_prefix_map)
+                                out_path=partial_out_path, sheet_prefix_map=sheet_prefix_map,
+                                sheet_final_suffix=sheet_final_suffix)
         print(f'\n  ✅ 완료: {out_path}')
         print(f'  시트 수: {len(all_results)}개')
     else:
