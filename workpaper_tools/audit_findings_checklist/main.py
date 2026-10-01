@@ -63,7 +63,7 @@ def run_all(cfg: dict, store: Store, log, yes: bool, batch: bool, limit: int | N
     if pending == 0 and not open_batch:
         log.info("새로 구조화할 지적사례가 없습니다.")
         return
-    log.info("구조화 대기 %d건, 예상 비용 약 $%.2f%s", pending, cost, " (배치 50%% 할인 적용)" if batch else "")
+    log.info("구조화 대기 %d건, 예상 비용 약 $%.2f%s", pending, cost, " (배치 50% 할인 적용)" if batch else "")
     if not yes:
         log.info("구조화는 API 비용이 발생하므로 실행하지 않았습니다. 진행하려면 --yes를 붙여 다시 실행하세요 "
                  "(--batch를 함께 쓰면 반값).")
