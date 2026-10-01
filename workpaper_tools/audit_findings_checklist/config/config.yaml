@@ -49,5 +49,13 @@ issuer_rules:   # 위에서부터 먼저 맞는 것 적용. where: filename | te
 mapping:
   llm_threshold: 0.75        # 사전 매칭 신뢰도가 이보다 낮거나 매칭이 없으면 Claude가 의미로 판단
 
+report:
+  # 체크리스트 한 행에 풀어 쓰는 지적사항 수 (최근 연도 순, 나머지는 '분류별 지적사항' 시트).
+  # 엑셀 행 높이 한도(409pt) 때문에 4건 이상이면 셀 내용이 잘려 보일 수 있다.
+  max_findings_per_category: 3
+  max_accounts_per_category: 15       # 한 행에 나열하는 회사 계정 수 (전표 많은 순, 전체는 '계정 매칭' 시트)
+  only_confirmed: false               # true면 검토에서 '확정'한 지적사항만 싣는다
+  include_unverified_excerpt: false   # true면 발췌가 원문과 일치하지 않는 지적사항도 싣는다
+
 verify:
   fuzzy_threshold: 0.85      # 발췌-원문 유사도가 이 이상이면 '유사', 미만이면 '불일치'
