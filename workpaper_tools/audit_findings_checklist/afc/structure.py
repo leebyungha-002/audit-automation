@@ -138,13 +138,15 @@ def run_structure(cfg: dict, store: Store, log, force: bool = False, name_filter
     files = {r["file_hash"]: r for r in store.query("SELECT * FROM source_files")}
     segments = store.query("SELECT * FROM segments ORDER BY file_hash, seq")
     done = {r["segment_id"] for r in store.query("SELECT segment_id FROM findings")}
+    # 사람이 확정/제외한 레코드는 --force로도 덮어쓰지 않는다
+    reviewed = {r["segment_id"] for r in store.query("SELECT segment_id FROM findings WHERE review_status<>'미검토'")}
     n_ok = n_skip = n_err = 0
 
     for seg in segments:
         src = files.get(seg["file_hash"])
         if src is None or (name_filter and name_filter not in src["file_name"]):
             continue
-        if not force and seg["segment_id"] in done:
+        if seg["segment_id"] in reviewed or (not force and seg["segment_id"] in done):
             continue
         if limit is not None and n_ok + n_skip + n_err >= limit:
             break

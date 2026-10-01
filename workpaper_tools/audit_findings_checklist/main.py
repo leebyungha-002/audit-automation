@@ -4,14 +4,18 @@
     python main.py extract                 # 원문(PDF/HWP) 텍스트 추출
     python main.py segment                 # 지적사항 단위 분할
     python main.py structure --limit 5     # Claude API로 구조화 (처음 5건만)
+    python main.py review-export           # 검토용 엑셀 내보내기 (output/review_날짜.xlsx)
+    python main.py review-import           # 수정한 검토 엑셀을 DB에 재반영 (경로 생략 시 최신 파일)
     python main.py status                  # 현황 요약
 """
 import argparse
 import sys
+from pathlib import Path
 
 from afc.config import load_config, load_env, setup_logging
 from afc.db import Store
 from afc.extract import run_extract
+from afc.review import STATUSES, export_review, import_review
 from afc.segment import run_segment
 from afc.structure import run_structure
 
@@ -26,6 +30,9 @@ def show_status(store: Store) -> None:
     ):
         print(f"  {r['file_name']} | {r['issuer']} | {r['n_pages']}쪽 | {r['extract_mode']} | "
               f"분할 {r['n_seg']}건 | 구조화 {r['n_find']}건")
+    print("\n[검토 상태]")
+    for r in store.query("SELECT review_status, COUNT(*) AS n FROM findings GROUP BY review_status"):
+        print(f"  {r['review_status']}: {r['n']}건")
     print("\n[발췌 검증]")
     for r in store.query("SELECT excerpt_status, COUNT(*) AS n FROM findings GROUP BY excerpt_status"):
         print(f"  {r['excerpt_status']}: {r['n']}건")
@@ -45,6 +52,10 @@ def main() -> int:
             p.add_argument("--llm", action="store_true", help="규칙 대신 LLM 보조 분할 강제")
         if name == "structure":
             p.add_argument("--limit", type=int, help="처리할 최대 건수")
+    p = sub.add_parser("review-export")
+    p.add_argument("--status", choices=STATUSES, help="이 검토상태인 것만 내보내기")
+    p = sub.add_parser("review-import")
+    p.add_argument("path", nargs="?", type=Path, help="검토 엑셀 경로 (생략 시 output의 최신 review_*.xlsx)")
     sub.add_parser("status")
     args = parser.parse_args()
 
@@ -59,6 +70,10 @@ def main() -> int:
             run_segment(cfg, store, log, force=args.force, name_filter=args.file, force_llm=args.llm)
         elif args.command == "structure":
             run_structure(cfg, store, log, force=args.force, name_filter=args.file, limit=args.limit)
+        elif args.command == "review-export":
+            export_review(cfg, store, log, status=args.status)
+        elif args.command == "review-import":
+            import_review(cfg, store, log, path=args.path.resolve() if args.path else None)
         elif args.command == "status":
             show_status(store)
     finally:
