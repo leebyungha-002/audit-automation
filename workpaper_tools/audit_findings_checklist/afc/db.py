@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS batches (              -- Batch API 제출 이력 (�
     n_requests INTEGER,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS batch_items (          -- 배치에 들어간 분할 구간 (진행 중인 것을 다시 보내지 않기 위함)
+    batch_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    PRIMARY KEY (batch_id, segment_id)
+);
 CREATE TABLE IF NOT EXISTS finding_categories (   -- 지적사항 → 표준 계정 분류
     finding_id TEXT NOT NULL,
     category TEXT NOT NULL,

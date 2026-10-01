@@ -129,6 +129,31 @@ def test_reviewed_findings_survive_forced_rerun(env, monkeypatch):
     assert store.query("SELECT risk_summary FROM findings")[0]["risk_summary"] == "감사인이 고친 요약"
 
 
+def test_batch_submits_pending_segments_and_stores_results(env, monkeypatch):
+    cfg, store, log = env
+    add_segment(store, add_source(store))
+    fake = use_fake(monkeypatch, [llm_output()])
+    run_structure(cfg, store, log, batch=True, wait_minutes=0)
+
+    assert fake.submitted == [("batch-1", ["aaaaaaaa-001"])]
+    assert store.query("SELECT finding_id FROM findings")[0]["finding_id"] == "FSS-2106-03"
+    assert store.query("SELECT status FROM batches")[0]["status"] == "processed"
+
+
+def test_segments_in_an_unfinished_batch_are_not_submitted_again(env, monkeypatch):
+    cfg, store, log = env
+    add_segment(store, add_source(store))
+    fake = use_fake(monkeypatch, [llm_output()])
+    monkeypatch.setattr(fake, "batch_ended", lambda batch_id: (False, "처리 중 1"))
+    run_structure(cfg, store, log, batch=True, wait_minutes=0)   # 제출만 되고 끝나지 않음
+    run_structure(cfg, store, log, batch=True, wait_minutes=0)   # 다시 실행해도 재제출하지 않음
+    assert len(fake.submitted) == 1 and structure.estimate(cfg, store, log)[0] == 0
+
+    monkeypatch.setattr(fake, "batch_ended", lambda batch_id: (True, "완료"))
+    run_structure(cfg, store, log, batch=True, wait_minutes=0)   # 이어받기
+    assert len(store.query("SELECT 1 FROM findings")) == 1
+
+
 def test_invalid_llm_output_is_retried_then_logged_as_error(env, monkeypatch):
     cfg, store, log = env
     add_segment(store, add_source(store))

@@ -139,6 +139,9 @@ def select_jobs(cfg: dict, store: Store, log, force: bool = False, name_filter: 
     # 사람이 확정/제외한 레코드는 --force로도 덮어쓰지 않는다
     reviewed = {r["segment_id"] for r in store.query("SELECT segment_id FROM findings WHERE review_status<>'미검토'")}
     skipped = {r["segment_id"] for r in store.query("SELECT segment_id FROM segment_skips")}
+    # 아직 결과를 받지 못한 배치에 들어 있는 구간은 다시 보내지 않는다
+    in_flight = {r["segment_id"] for r in store.query(
+        "SELECT i.segment_id FROM batch_items i JOIN batches b ON b.batch_id=i.batch_id WHERE b.status='submitted'")}
     seen_case: dict[str, str] = {}
     jobs = []
     for seg in store.query("SELECT * FROM segments ORDER BY file_hash, seq"):
@@ -146,7 +149,7 @@ def select_jobs(cfg: dict, store: Store, log, force: bool = False, name_filter: 
         if src is None or (name_filter and name_filter not in src["file_name"]):
             continue
         sid = seg["segment_id"]
-        if sid in reviewed or (not force and (sid in done or sid in skipped)):
+        if sid in reviewed or sid in in_flight or (not force and (sid in done or sid in skipped)):
             continue
         pages = json.loads(seg["pages_json"])
         seg_text = seg["title"] + "\n" + "".join(p["text"] for p in pages)
@@ -307,31 +310,25 @@ def _run_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, force: bool
     """Batch API로 구조화한다. 제출 후 중단되어도 다시 실행하면 같은 배치를 이어서 확인한다."""
     model = cfg["llm"]["structure_model"]
     counts = {"ok": 0, "skip": 0, "err": 0}
-    open_batches = store.query("SELECT batch_id FROM batches WHERE status='submitted' ORDER BY created_at")
-    if open_batches:
-        batch_id = open_batches[0]["batch_id"]
-        log.info("이전에 제출한 배치를 이어서 확인합니다: %s", batch_id)
-    else:
-        items = []
-        for job in select_jobs(cfg, store, log, force, name_filter, limit):
+    # 진행 중인 배치에 들어 있는 구간은 select_jobs가 빼 주므로, 새 대상만 새 배치로 제출한다
+    items = []
+    for job in select_jobs(cfg, store, log, force, name_filter, limit):
+        try:
+            system, content = _prepare(job, cfg)
+        except Exception as e:
+            _fail(store, log, job, f"입력 구성 실패: {e}")
+            counts["err"] += 1
+            continue
+        cached = llm.cache_get(llm.cache_key(model, system, content, schema))
+        if cached is not None:  # 이미 받아 둔 결과는 배치에 넣지 않는다
             try:
-                system, content = _prepare(job, cfg)
-            except Exception as e:
-                _fail(store, log, job, f"입력 구성 실패: {e}")
+                counts[_finalize(cfg, store, log, llm, schema, job, system, content, cached)] += 1
+            except ValidationError as e:
+                _fail(store, log, job, f"캐시된 출력 검증 실패: {str(e)[:200]}")
                 counts["err"] += 1
-                continue
-            cached = llm.cache_get(llm.cache_key(model, system, content, schema))
-            if cached is not None:  # 이미 받아 둔 결과는 배치에 넣지 않는다
-                try:
-                    counts[_finalize(cfg, store, log, llm, schema, job, system, content, cached)] += 1
-                except ValidationError as e:
-                    _fail(store, log, job, f"캐시된 출력 검증 실패: {str(e)[:200]}")
-                    counts["err"] += 1
-            else:
-                items.append((job["seg"]["segment_id"], system, content))
-        if not items:
-            log.info("배치로 보낼 구조화 대상이 없습니다. (성공 %d, 제외 %d, 오류 %d)", counts["ok"], counts["skip"], counts["err"])
-            return
+        else:
+            items.append((job["seg"]["segment_id"], system, content))
+    if items:
         try:
             batch_id = llm.submit_batch(model, schema, items)
         except LLMError as e:
@@ -340,25 +337,42 @@ def _run_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, force: bool
             return
         store.upsert("batches", {"batch_id": batch_id, "purpose": "structure", "status": "submitted",
                                  "n_requests": len(items), "created_at": now()})
+        for segment_id, _, _ in items:
+            store.upsert("batch_items", {"batch_id": batch_id, "segment_id": segment_id})
         store.commit()
         log.info("배치 제출: %s (%d건). 보통 1시간 안에 끝납니다.", batch_id, len(items))
 
+    pending = [r["batch_id"] for r in store.query("SELECT batch_id FROM batches WHERE status='submitted' ORDER BY created_at")]
+    if not pending:
+        log.info("배치로 보낼 구조화 대상이 없습니다. (성공 %d, 제외 %d, 오류 %d)", counts["ok"], counts["skip"], counts["err"])
+        return
     deadline = time.monotonic() + wait_minutes * 60
-    while True:
-        try:
-            ended, progress = llm.batch_ended(batch_id)
-        except LLMError as e:
-            log.error("배치 상태 확인 실패: %s — 잠시 뒤 'structure --batch'를 다시 실행하세요.", e)
-            return
-        if ended:
+    while pending:
+        for batch_id in list(pending):
+            try:
+                ended, progress = llm.batch_ended(batch_id)
+            except LLMError as e:
+                log.error("배치 상태 확인 실패: %s — 잠시 뒤 'structure --batch'를 다시 실행하세요.", e)
+                return
+            if ended:
+                _collect_batch(cfg, store, log, llm, schema, batch_id, counts)
+                pending.remove(batch_id)
+            else:
+                log.info("배치 대기 중 (…%s): %s", batch_id[-6:], progress)
+        if not pending:
             break
         if time.monotonic() >= deadline:
-            log.warning("배치가 아직 끝나지 않았습니다(%s). 나중에 'python main.py structure --batch'를 다시 실행하면 "
-                        "이어서 결과를 받습니다.", progress)
-            return
-        log.info("배치 대기 중: %s", progress)
+            log.warning("배치 %d개가 아직 끝나지 않았습니다. 나중에 'python main.py structure --batch'를 다시 실행하면 "
+                        "이어서 결과를 받습니다.", len(pending))
+            break
         time.sleep(30)
+    log.info("배치 구조화 결과: 성공 %d건, 제외 %d건, 오류 %d건 (오류 건은 'structure'로 개별 재시도 가능)",
+             counts["ok"], counts["skip"], counts["err"])
 
+
+def _collect_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, batch_id: str, counts: dict) -> None:
+    """끝난 배치의 결과를 받아 DB에 반영한다."""
+    model = cfg["llm"]["structure_model"]
     files = {r["file_hash"]: r for r in store.query("SELECT * FROM source_files")}
     try:
         for result in llm.batch_results(batch_id):
@@ -388,5 +402,4 @@ def _run_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, force: bool
         return
     store.conn.execute("UPDATE batches SET status='processed' WHERE batch_id=?", (batch_id,))
     store.commit()
-    log.info("배치 구조화 결과: 성공 %d건, 제외 %d건, 오류 %d건 (오류 건은 'structure'로 개별 재시도 가능)",
-             counts["ok"], counts["skip"], counts["err"])
+    log.info("배치 %s 결과 반영 완료", batch_id)

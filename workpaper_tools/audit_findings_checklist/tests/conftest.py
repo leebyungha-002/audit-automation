@@ -95,6 +95,30 @@ class FakeLLM:
     def usage_summary(self) -> str:
         return f"가짜 호출 {len(self.calls)}회"
 
+    # ── 배치 대역: 제출한 요청마다 responses에서 하나씩 꺼내 결과로 돌려준다 ──
+    def cache_key(self, model, system, content, schema) -> str:
+        return "key"
+
+    def cache_get(self, key):
+        return None
+
+    def submit_batch(self, model, schema, items) -> str:
+        self.submitted = getattr(self, "submitted", [])
+        batch_id = f"batch-{len(self.submitted) + 1}"
+        self.submitted.append((batch_id, [cid for cid, _, _ in items]))
+        return batch_id
+
+    def batch_ended(self, batch_id):
+        return True, "완료"
+
+    def batch_results(self, batch_id):
+        from types import SimpleNamespace
+        for cid in dict(self.submitted)[batch_id]:
+            yield SimpleNamespace(custom_id=cid, result=SimpleNamespace(type="succeeded", message=self.responses.pop(0)))
+
+    def parse_message(self, message, key, purpose, requested_model, discount=1.0):
+        return message
+
 
 def add_finding(store: Store, finding_id: str, segment_id: str, **overrides) -> None:
     row = {
