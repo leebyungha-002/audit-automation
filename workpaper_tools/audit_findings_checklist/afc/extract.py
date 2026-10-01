@@ -67,6 +67,27 @@ class HwpReader:
             self._hwp = None
 
 
+def retire_old_versions(store: Store, log, file_name: str, new_hash: str) -> None:
+    """같은 이름의 파일이 내용이 바뀌어 다시 들어온 경우, 이전 버전의 기록을 정리한다.
+
+    사람이 확정/제외한 지적사항과 그 분할 구간은 남기고, 미검토 상태의 것만 지운다.
+    """
+    for old in store.query("SELECT file_hash FROM source_files WHERE file_name=? AND file_hash<>?", (file_name, new_hash)):
+        h = old["file_hash"]
+        kept = store.query("SELECT COUNT(*) AS n FROM findings f JOIN segments s ON s.segment_id=f.segment_id "
+                           "WHERE s.file_hash=? AND f.review_status<>'미검토'", (h,))[0]["n"]
+        store.conn.execute("DELETE FROM findings WHERE review_status='미검토' AND segment_id IN "
+                           "(SELECT segment_id FROM segments WHERE file_hash=?)", (h,))
+        store.conn.execute("DELETE FROM segment_skips WHERE segment_id IN (SELECT segment_id FROM segments WHERE file_hash=?)", (h,))
+        store.conn.execute("DELETE FROM segments WHERE file_hash=? AND segment_id NOT IN (SELECT segment_id FROM findings)", (h,))
+        store.conn.execute("DELETE FROM pages WHERE file_hash=?", (h,))
+        store.conn.execute("DELETE FROM source_files WHERE file_hash=?", (h,))
+        store.commit()
+        msg = f"파일 내용이 바뀌어 이전 버전 기록을 정리함 (검토 완료된 지적사항 {kept}건은 보존)"
+        log.warning("%s: %s", file_name, msg)
+        store.log("extract", "WARNING", file_name, msg)
+
+
 def _read_pdf(path: Path) -> tuple[list[str], int]:
     with pymupdf.open(path) as doc:
         return [page.get_text() for page in doc], sum(len(page.get_images()) for page in doc)
@@ -101,6 +122,7 @@ def run_extract(cfg: dict, store: Store, log, force: bool = False, name_filter: 
                 store.log("extract", "ERROR", src.name, f"파일 읽기 실패: {e}")
                 continue
 
+            retire_old_versions(store, log, src.name, fhash)
             n_pages = len(raw)
             all_text = "".join(raw)
             space_ratio = all_text.count(" ") / max(len(all_text), 1)

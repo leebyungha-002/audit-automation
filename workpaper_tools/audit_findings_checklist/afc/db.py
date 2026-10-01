@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS findings (
     reviewed_at TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS segment_skips (        -- 구조화하지 않기로 한 분할 구간 (중복 사례, 지적사례 아님)
+    segment_id TEXT PRIMARY KEY,
+    reason TEXT,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS batches (              -- Batch API 제출 이력 (중단 후 이어받기용)
+    batch_id TEXT PRIMARY KEY,
+    purpose TEXT,
+    status TEXT,                   -- submitted | processed
+    n_requests INTEGER,
+    created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS finding_categories (   -- 지적사항 → 표준 계정 분류
     finding_id TEXT NOT NULL,
     category TEXT NOT NULL,

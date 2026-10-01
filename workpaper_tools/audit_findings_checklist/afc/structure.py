@@ -3,12 +3,13 @@ import base64
 import difflib
 import json
 import re
+import time
 
 from pydantic import ValidationError
 
 from .db import Store, now
 from .extract import render_page_png
-from .llm import LLM, LLMError
+from .llm import BATCH_DISCOUNT, LLM, LLMError
 from .models import StructuredFinding, finding_json_schema
 
 SYSTEM_PROMPT = """당신은 금융감독원·한국공인회계사회가 공개한 회계 심사·감리 지적사례를 구조화된 레코드로 옮기는 보조자입니다.
@@ -130,126 +131,262 @@ def build_content(seg, pages: list[dict], src_file, cfg: dict) -> list[dict]:
     return content
 
 
-def run_structure(cfg: dict, store: Store, log, force: bool = False, name_filter: str | None = None,
-                  limit: int | None = None) -> None:
-    llm = LLM(cfg, store, log)
-    schema = finding_json_schema(cfg["finding_types"])
-    model = cfg["llm"]["structure_model"]
+def select_jobs(cfg: dict, store: Store, log, force: bool = False, name_filter: str | None = None,
+                limit: int | None = None, record_skips: bool = True) -> list[dict]:
+    """구조화할 분할 구간을 고른다. 이미 처리했거나, 사람이 확정/제외했거나, 다른 파일에 같은 사례가 있으면 뺀다."""
     files = {r["file_hash"]: r for r in store.query("SELECT * FROM source_files")}
-    segments = store.query("SELECT * FROM segments ORDER BY file_hash, seq")
     done = {r["segment_id"] for r in store.query("SELECT segment_id FROM findings")}
     # 사람이 확정/제외한 레코드는 --force로도 덮어쓰지 않는다
     reviewed = {r["segment_id"] for r in store.query("SELECT segment_id FROM findings WHERE review_status<>'미검토'")}
-    n_ok = n_skip = n_err = 0
-
-    for seg in segments:
+    skipped = {r["segment_id"] for r in store.query("SELECT segment_id FROM segment_skips")}
+    seen_case: dict[str, str] = {}
+    jobs = []
+    for seg in store.query("SELECT * FROM segments ORDER BY file_hash, seq"):
         src = files.get(seg["file_hash"])
         if src is None or (name_filter and name_filter not in src["file_name"]):
             continue
-        if seg["segment_id"] in reviewed or (not force and seg["segment_id"] in done):
+        sid = seg["segment_id"]
+        if sid in reviewed or (not force and (sid in done or sid in skipped)):
             continue
-        if limit is not None and n_ok + n_skip + n_err >= limit:
-            break
-
         pages = json.loads(seg["pages_json"])
         seg_text = seg["title"] + "\n" + "".join(p["text"] for p in pages)
         case_no = parse_case_no(seg_text)
         if case_no:  # 같은 사례가 다른 파일(연도별 사례집과 개별 파일)에 또 있으면 API 호출 전에 건너뛴다
-            dup = store.query("SELECT source_file FROM findings WHERE finding_id=? AND segment_id<>?",
-                              (case_no, seg["segment_id"]))
-            if dup:
-                msg = f"{case_no}: 이미 '{dup[0]['source_file']}'에서 등록된 사례 → 중복으로 건너뜀"
-                log.warning(msg)
-                store.log("structure", "WARNING", src["file_name"], msg)
-                n_skip += 1
+            dup = store.query("SELECT source_file FROM findings WHERE finding_id=? AND segment_id<>?", (case_no, sid))
+            other = dup[0]["source_file"] if dup else seen_case.get(case_no)
+            if other:
+                if record_skips:
+                    msg = f"{case_no}: 이미 '{other}'에 있는 사례 → 중복으로 건너뜀"
+                    log.warning(msg)
+                    store.log("structure", "WARNING", src["file_name"], msg)
+                    store.upsert("segment_skips", {"segment_id": sid, "reason": f"중복: {other}", "created_at": now()})
+                    store.commit()
                 continue
-        system = SYSTEM_PROMPT + (VISION_NOTE if src["extract_mode"] == "vision" else "")
+            seen_case[case_no] = src["file_name"]
+        jobs.append({"seg": seg, "src": src, "pages": pages, "seg_text": seg_text, "case_no": case_no})
+        if limit is not None and len(jobs) >= limit:
+            break
+    return jobs
+
+
+def estimate(cfg: dict, store: Store, log, batch: bool = False) -> tuple[int, float]:
+    """(구조화 대기 건수, 예상 비용 USD). 지금까지의 실제 호출 평균 토큰으로 추정한다."""
+    n = len(select_jobs(cfg, store, log, record_skips=False))
+    avg = store.query("SELECT AVG(input_tokens) AS i, AVG(output_tokens) AS o FROM llm_cache WHERE purpose='structure'")[0]
+    tokens_in, tokens_out = avg["i"] or 5500, avg["o"] or 900
+    price = cfg["llm"]["pricing_usd_per_mtok"].get(cfg["llm"]["structure_model"], {"input": 0, "output": 0})
+    per_case = (tokens_in * price["input"] + tokens_out * price["output"]) / 1_000_000
+    return n, n * per_case * (BATCH_DISCOUNT if batch else 1.0)
+
+
+def _prepare(job: dict, cfg: dict) -> tuple[str, list]:
+    system = SYSTEM_PROMPT + (VISION_NOTE if job["src"]["extract_mode"] == "vision" else "")
+    return system, build_content(job["seg"], job["pages"], job["src"], cfg)
+
+
+def _finalize(cfg: dict, store: Store, log, llm: LLM, schema: dict, job: dict, system: str, content: list,
+              raw: dict) -> str:
+    """LLM 출력을 검증해 DB에 넣는다. 'ok' | 'skip'을 돌려주고, 스키마 검증 실패는 ValidationError를 낸다."""
+    seg, src, pages = job["seg"], job["src"], job["pages"]
+    model = cfg["llm"]["structure_model"]
+    finding = StructuredFinding.model_validate(raw)
+    if not finding.is_finding:
+        log.warning("%s (%s): 지적사례가 아닌 것으로 판단되어 제외", seg["segment_id"], seg["title"])
+        store.log("structure", "WARNING", src["file_name"], f"{seg['segment_id']} 지적사례 아님으로 제외: {seg['title']}")
+        store.upsert("segment_skips", {"segment_id": seg["segment_id"], "reason": "지적사례 아님", "created_at": now()})
+        store.commit()
+        return "skip"
+
+    threshold, mode = cfg["verify"]["fuzzy_threshold"], src["extract_mode"]
+    status, ratio, found_page = verify_excerpt(finding.source_excerpt, pages, threshold, mode)
+    if status not in VERIFIED and finding.source_excerpt:
+        # 발췌가 원문과 다르면 한 번 더 요청하고, 일치하는 쪽을 채택한다
+        note = EXCERPT_RETRY_NOTE.format(ratio=ratio, excerpt=finding.source_excerpt)
         try:
-            content = build_content(seg, pages, src, cfg)
-        except Exception as e:
-            log.error("%s: 입력 구성 실패 (%s)", seg["segment_id"], e)
-            store.log("structure", "ERROR", src["file_name"], f"{seg['segment_id']} 입력 구성 실패: {e}")
-            n_err += 1
+            raw2 = llm.call_json("structure-retry", model, system, [*content, {"type": "text", "text": note}], schema)
+            finding2 = StructuredFinding.model_validate(raw2)
+            status2, ratio2, page2 = verify_excerpt(finding2.source_excerpt, pages, threshold, mode)
+            if status2 in VERIFIED:
+                log.info("%s: 발췌 재작성으로 원문 일치 확보", seg["segment_id"])
+                finding, raw, status, ratio, found_page = finding2, raw2, status2, ratio2, page2
+        except (json.JSONDecodeError, ValidationError, LLMError) as e:
+            log.warning("%s: 발췌 재작성 실패 (%s)", seg["segment_id"], str(e)[:150])
+
+    std_checked = verify_standards([s.model_dump() for s in finding.standards], pages, mode)
+    year_in_text = DECISION_YEAR.search(job["seg_text"])
+    year = int(year_in_text.group(1)) if year_in_text else finding.year
+    case_no = job["case_no"] or parse_case_no(finding.case_no or "")  # vision 문서는 AI가 이미지에서 읽은 번호 사용
+    finding_id = case_no or f"F-{year or src['doc_year'] or 0}-{seg['segment_id']}"
+
+    flags = []
+    if status in ("유사", "불일치", "발췌없음"):
+        flags.append(f"발췌 {status}({ratio})")
+    flags += [f"기준서 {s['framework']} {s['number']} {s['check']}" for s in std_checked if s["check"] == "원문 미확인"]
+    if year_in_text and finding.year and int(year_in_text.group(1)) != finding.year:
+        flags.append(f"결정연도 불일치(원문 {year_in_text.group(1)} / AI {finding.year})")
+
+    store.conn.execute("DELETE FROM findings WHERE segment_id=? AND finding_id<>?", (seg["segment_id"], finding_id))
+    store.upsert("findings", {
+        "finding_id": finding_id, "segment_id": seg["segment_id"], "case_no": case_no,
+        "issue_area": finding.issue_area, "source_file": src["file_name"],
+        "source_page": found_page or finding.excerpt_page or seg["page_start"],
+        "source_page_end": seg["page_end"], "source_excerpt": finding.source_excerpt,
+        "issuer": src["issuer"], "year": year, "fiscal_period": finding.fiscal_period,
+        "title": finding.title or seg["title"], "finding_target": finding.finding_target,
+        "standards": [s.model_dump() for s in finding.standards],
+        "related_accounts": finding.related_accounts, "finding_type": finding.finding_type,
+        "risk_summary": finding.risk_summary, "audit_hint": finding.audit_hint,
+        "excerpt_status": status, "excerpt_match_ratio": ratio, "standards_check": std_checked,
+        "segment_method": seg["method"], "extract_mode": src["extract_mode"],
+        "llm_model": model, "prompt_version": cfg["llm"]["prompt_version"],
+        "llm_original_json": raw, "review_status": "미검토", "created_at": now(),
+    })
+    store.commit()
+    if flags:
+        msg = f"{finding_id} 검증 플래그: " + "; ".join(flags)
+        log.warning(msg)
+        store.log("structure", "WARNING", src["file_name"], msg)
+    else:
+        log.info("%s 구조화 완료 (%s)", finding_id, finding.title)
+    return "ok"
+
+
+def _fail(store: Store, log, job: dict, error: str) -> None:
+    seg = job["seg"]
+    log.error("%s (%s): 구조화 실패 — %s", seg["segment_id"], seg["title"], error)
+    store.log("structure", "ERROR", job["src"]["file_name"], f"{seg['segment_id']} 구조화 실패: {error}")
+
+
+def run_structure(cfg: dict, store: Store, log, force: bool = False, name_filter: str | None = None,
+                  limit: int | None = None, batch: bool = False, wait_minutes: int = 60) -> None:
+    llm = LLM(cfg, store, log)
+    schema = finding_json_schema(cfg["finding_types"])
+    if batch:
+        _run_batch(cfg, store, log, llm, schema, force, name_filter, limit, wait_minutes)
+    else:
+        _run_sync(cfg, store, log, llm, schema, select_jobs(cfg, store, log, force, name_filter, limit))
+    log.info(llm.usage_summary())
+
+
+def _run_sync(cfg: dict, store: Store, log, llm: LLM, schema: dict, jobs: list[dict]) -> None:
+    model = cfg["llm"]["structure_model"]
+    counts = {"ok": 0, "skip": 0, "err": 0}
+    for job in jobs:
+        try:
+            system, content = _prepare(job, cfg)
+        except Exception as e:  # 원본 PDF가 없어 이미지를 못 만드는 경우 등
+            _fail(store, log, job, f"입력 구성 실패: {e}")
+            counts["err"] += 1
             continue
 
-        finding, raw, error = None, None, None
+        outcome, error = None, None
         for attempt in range(cfg["llm"]["retries"] + 1):
             try:
                 raw = llm.call_json("structure", model, system, content, schema, use_cache=(attempt == 0))
-                finding = StructuredFinding.model_validate(raw)
+                outcome = _finalize(cfg, store, log, llm, schema, job, system, content, raw)
                 break
             except (json.JSONDecodeError, ValidationError) as e:
                 error = f"출력 파싱/검증 실패({attempt + 1}차): {str(e)[:200]}"
-                log.warning("%s: %s", seg["segment_id"], error)
+                log.warning("%s: %s", job["seg"]["segment_id"], error)
             except LLMError as e:
                 error = str(e)
                 break
-        if finding is None:
-            log.error("%s (%s): 구조화 실패 — %s", seg["segment_id"], seg["title"], error)
-            store.log("structure", "ERROR", src["file_name"], f"{seg['segment_id']} 구조화 실패: {error}")
-            n_err += 1
+        if outcome is None:
+            _fail(store, log, job, error)
+            counts["err"] += 1
             if error and ("인증" in error or "권한" in error or "크레딧" in error):
                 log.error("API 사용 불가 상태로 보여 중단합니다.")
                 break
             continue
-        if not finding.is_finding:
-            log.warning("%s (%s): 지적사례가 아닌 것으로 판단되어 제외", seg["segment_id"], seg["title"])
-            store.log("structure", "WARNING", src["file_name"], f"{seg['segment_id']} 지적사례 아님으로 제외: {seg['title']}")
-            n_skip += 1
-            continue
+        counts[outcome] += 1
+    log.info("구조화 결과: 성공 %d건, 제외 %d건, 오류 %d건", counts["ok"], counts["skip"], counts["err"])
 
-        threshold, mode = cfg["verify"]["fuzzy_threshold"], src["extract_mode"]
-        status, ratio, found_page = verify_excerpt(finding.source_excerpt, pages, threshold, mode)
-        if status not in VERIFIED and finding.source_excerpt:
-            # 발췌가 원문과 다르면 한 번 더 요청하고, 일치하는 쪽을 채택한다
-            note = EXCERPT_RETRY_NOTE.format(ratio=ratio, excerpt=finding.source_excerpt)
+
+def _run_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, force: bool, name_filter: str | None,
+               limit: int | None, wait_minutes: int) -> None:
+    """Batch API로 구조화한다. 제출 후 중단되어도 다시 실행하면 같은 배치를 이어서 확인한다."""
+    model = cfg["llm"]["structure_model"]
+    counts = {"ok": 0, "skip": 0, "err": 0}
+    open_batches = store.query("SELECT batch_id FROM batches WHERE status='submitted' ORDER BY created_at")
+    if open_batches:
+        batch_id = open_batches[0]["batch_id"]
+        log.info("이전에 제출한 배치를 이어서 확인합니다: %s", batch_id)
+    else:
+        items = []
+        for job in select_jobs(cfg, store, log, force, name_filter, limit):
             try:
-                raw2 = llm.call_json("structure-retry", model, system, [*content, {"type": "text", "text": note}], schema)
-                finding2 = StructuredFinding.model_validate(raw2)
-                status2, ratio2, page2 = verify_excerpt(finding2.source_excerpt, pages, threshold, mode)
-                if status2 in VERIFIED:
-                    log.info("%s: 발췌 재작성으로 원문 일치 확보", seg["segment_id"])
-                    finding, raw, status, ratio, found_page = finding2, raw2, status2, ratio2, page2
-            except (json.JSONDecodeError, ValidationError, LLMError) as e:
-                log.warning("%s: 발췌 재작성 실패 (%s)", seg["segment_id"], str(e)[:150])
-
-        std_checked = verify_standards([s.model_dump() for s in finding.standards], pages, mode)
-        year_in_text = DECISION_YEAR.search(seg_text)
-        year = int(year_in_text.group(1)) if year_in_text else finding.year
-        case_no = case_no or parse_case_no(finding.case_no or "")  # vision 문서는 AI가 이미지에서 읽은 번호 사용
-        finding_id = case_no or f"F-{year or src['doc_year'] or 0}-{seg['segment_id']}"
-
-        flags = []
-        if status in ("유사", "불일치", "발췌없음"):
-            flags.append(f"발췌 {status}({ratio})")
-        flags += [f"기준서 {s['framework']} {s['number']} {s['check']}" for s in std_checked if s["check"] == "원문 미확인"]
-        if year_in_text and finding.year and int(year_in_text.group(1)) != finding.year:
-            flags.append(f"결정연도 불일치(원문 {year_in_text.group(1)} / AI {finding.year})")
-
-        store.conn.execute("DELETE FROM findings WHERE segment_id=? AND finding_id<>?", (seg["segment_id"], finding_id))
-        store.upsert("findings", {
-            "finding_id": finding_id, "segment_id": seg["segment_id"], "case_no": case_no,
-            "issue_area": finding.issue_area, "source_file": src["file_name"],
-            "source_page": found_page or finding.excerpt_page or seg["page_start"],
-            "source_page_end": seg["page_end"], "source_excerpt": finding.source_excerpt,
-            "issuer": src["issuer"], "year": year, "fiscal_period": finding.fiscal_period,
-            "title": finding.title or seg["title"], "finding_target": finding.finding_target,
-            "standards": [s.model_dump() for s in finding.standards],
-            "related_accounts": finding.related_accounts, "finding_type": finding.finding_type,
-            "risk_summary": finding.risk_summary, "audit_hint": finding.audit_hint,
-            "excerpt_status": status, "excerpt_match_ratio": ratio, "standards_check": std_checked,
-            "segment_method": seg["method"], "extract_mode": src["extract_mode"],
-            "llm_model": model, "prompt_version": cfg["llm"]["prompt_version"],
-            "llm_original_json": raw, "review_status": "미검토", "created_at": now(),
-        })
+                system, content = _prepare(job, cfg)
+            except Exception as e:
+                _fail(store, log, job, f"입력 구성 실패: {e}")
+                counts["err"] += 1
+                continue
+            cached = llm.cache_get(llm.cache_key(model, system, content, schema))
+            if cached is not None:  # 이미 받아 둔 결과는 배치에 넣지 않는다
+                try:
+                    counts[_finalize(cfg, store, log, llm, schema, job, system, content, cached)] += 1
+                except ValidationError as e:
+                    _fail(store, log, job, f"캐시된 출력 검증 실패: {str(e)[:200]}")
+                    counts["err"] += 1
+            else:
+                items.append((job["seg"]["segment_id"], system, content))
+        if not items:
+            log.info("배치로 보낼 구조화 대상이 없습니다. (성공 %d, 제외 %d, 오류 %d)", counts["ok"], counts["skip"], counts["err"])
+            return
+        try:
+            batch_id = llm.submit_batch(model, schema, items)
+        except LLMError as e:
+            log.error("배치 제출 실패: %s", e)
+            store.log("structure", "ERROR", "", f"배치 제출 실패: {e}")
+            return
+        store.upsert("batches", {"batch_id": batch_id, "purpose": "structure", "status": "submitted",
+                                 "n_requests": len(items), "created_at": now()})
         store.commit()
-        n_ok += 1
-        if flags:
-            msg = f"{finding_id} 검증 플래그: " + "; ".join(flags)
-            log.warning(msg)
-            store.log("structure", "WARNING", src["file_name"], msg)
-        else:
-            log.info("%s 구조화 완료 (%s)", finding_id, finding.title)
+        log.info("배치 제출: %s (%d건). 보통 1시간 안에 끝납니다.", batch_id, len(items))
 
-    log.info("구조화 결과: 성공 %d건, 제외 %d건, 오류 %d건", n_ok, n_skip, n_err)
-    log.info(llm.usage_summary())
+    deadline = time.monotonic() + wait_minutes * 60
+    while True:
+        try:
+            ended, progress = llm.batch_ended(batch_id)
+        except LLMError as e:
+            log.error("배치 상태 확인 실패: %s — 잠시 뒤 'structure --batch'를 다시 실행하세요.", e)
+            return
+        if ended:
+            break
+        if time.monotonic() >= deadline:
+            log.warning("배치가 아직 끝나지 않았습니다(%s). 나중에 'python main.py structure --batch'를 다시 실행하면 "
+                        "이어서 결과를 받습니다.", progress)
+            return
+        log.info("배치 대기 중: %s", progress)
+        time.sleep(30)
+
+    files = {r["file_hash"]: r for r in store.query("SELECT * FROM source_files")}
+    try:
+        for result in llm.batch_results(batch_id):
+            seg_rows = store.query("SELECT * FROM segments WHERE segment_id=?", (result.custom_id,))
+            if not seg_rows or seg_rows[0]["file_hash"] not in files:
+                log.warning("배치 결과 %s에 해당하는 분할 구간이 DB에 없습니다.", result.custom_id)
+                continue
+            seg = seg_rows[0]
+            pages = json.loads(seg["pages_json"])
+            seg_text = seg["title"] + "\n" + "".join(p["text"] for p in pages)
+            job = {"seg": seg, "src": files[seg["file_hash"]], "pages": pages, "seg_text": seg_text,
+                   "case_no": parse_case_no(seg_text)}
+            if result.result.type != "succeeded":
+                _fail(store, log, job, f"배치 요청 {result.result.type}")
+                counts["err"] += 1
+                continue
+            try:
+                system, content = _prepare(job, cfg)
+                raw = llm.parse_message(result.result.message, llm.cache_key(model, system, content, schema),
+                                        "structure", model, discount=BATCH_DISCOUNT)
+                counts[_finalize(cfg, store, log, llm, schema, job, system, content, raw)] += 1
+            except (json.JSONDecodeError, ValidationError, LLMError) as e:
+                _fail(store, log, job, str(e)[:200])
+                counts["err"] += 1
+    except LLMError as e:
+        log.error("배치 결과 수신 실패: %s — 'structure --batch'를 다시 실행하세요.", e)
+        return
+    store.conn.execute("UPDATE batches SET status='processed' WHERE batch_id=?", (batch_id,))
+    store.commit()
+    log.info("배치 구조화 결과: 성공 %d건, 제외 %d건, 오류 %d건 (오류 건은 'structure'로 개별 재시도 가능)",
+             counts["ok"], counts["skip"], counts["err"])
