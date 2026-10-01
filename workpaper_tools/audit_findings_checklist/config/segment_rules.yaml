@@ -1,0 +1,38 @@
+# 지적사항 단위 분할 규칙
+# 위에서부터 순서대로 검사해서, 시작 패턴이 min_hits 이상 잡히는 첫 프로필을 적용한다.
+# 어떤 프로필도 맞지 않으면 LLM 보조 분할로 넘어간다.
+#
+# type: page_title  - 슬라이드형. 페이지마다 사례 제목이 반복되며, 같은 제목의 연속 페이지를 한 건으로 묶는다.
+#                     pattern의 (?P<key>...) 그룹이 사례를 구분하는 키. 한 페이지에 키가 2개 이상이면 목차로 보고 건너뛴다.
+# type: anchor      - 보고서형. 시작 패턴이 나오는 줄부터 다음 시작 패턴 직전까지가 한 건.
+#   title_mode: anchor_plus_next   - 시작 줄 + 다음 title_lines 줄이 제목 (title_lines: 0이면 시작 줄만)
+#   title_mode: after_number_line  - 시작 줄 위쪽(최대 title_lookback 줄)에서 숫자만 있는 줄을 찾아 그 아래가 제목
+
+profiles:
+  - name: slide_case
+    type: page_title
+    min_hits: 3
+    pattern: '^(?:[ⅠⅡⅢⅣⅤⅥ]\.?\s*)?(?:감리|심사)\s*사례\s*\d+\s*:\s*(?P<key>[A-Z]\s*사\s*[\(\[][^\)\]\n]+[\)\]])'
+
+  # 금감원 개별 사례 (1파일 1사례): "감리지적사례 FSS/2106-03 : 매출 허위계상" 또는 "FSS/2512-10 : ..."
+  - name: fss_single_case
+    type: anchor
+    min_hits: 1
+    pattern: '^(?:(?:심사\s*[·ㆍ‧.]?\s*)?감리\s*지적\s*사례\s*)?FSS/\d{4}-\d{2}'
+    title_mode: anchor_plus_next
+    title_lines: 0
+
+  # 한공회 연도별 사례집 및 개별 사례: "심사·감리지적사례 KICPA-2025-01" + 다음 줄 ": 제목"
+  - name: kicpa_case
+    type: anchor
+    min_hits: 1
+    pattern: '^심사\s*[·ㆍ‧.]?\s*감리\s*지적\s*사례'
+    title_mode: anchor_plus_next
+    title_lines: 1
+
+  - name: fss_report_case
+    type: anchor
+    min_hits: 3
+    pattern: '^1\.\s*(?:회사의\s*회계처리|감사기준\s*위반\s*지적\s*내용|법규\s*위반\s*지적\s*내용)'
+    title_mode: after_number_line
+    title_lookback: 4

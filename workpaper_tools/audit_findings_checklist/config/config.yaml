@@ -1,0 +1,50 @@
+# 감리 지적사항 ↔ 계정리스트 대사 체크리스트 생성기 설정
+# 경로는 모두 이 패키지 폴더(audit_findings_checklist) 기준 상대경로로 적는다.
+
+paths:
+  input_pdfs: input_pdfs       # 원문 폴더 (PDF / HWP / HWPX)
+  db: data/findings.db
+  output: output
+  logs: logs
+
+llm:
+  structure_model: claude-opus-5-5     # 지적사항 구조화 (정확성 우선)
+  mapping_model: claude-sonnet-5-5     # 계정 의미 매칭 (4단계에서 사용)
+  effort: medium                       # low | medium | high | xhigh | max
+  max_tokens: 16000
+  retries: 2                           # JSON 파싱/검증 실패 시 재시도 횟수
+  refusal_fallback: true               # 안전분류기 거절 시 서버가 대체 모델로 재실행
+  prompt_version: s2                  # 프롬프트를 바꾸면 올린다 (캐시 키에 포함)
+  # 비용 집계용 단가 (USD / 100만 토큰). 단가가 바뀌면 여기만 고친다.
+  pricing_usd_per_mtok:
+    claude-opus-5-5: {input: 4.0, output: 20.0}
+    claude-sonnet-5-5: {input: 2.0, output: 10.0}
+
+extract:
+  # 파일명에 아래 문자열이 있으면 처리하지 않는다 (강의 교안: 사례가 적고 개별 사례와 중복)
+  exclude_files: ['교안']
+  ocr_min_chars: 50          # 페이지 글자 수가 이보다 적으면 스캔본 의심(OCR 대상) 경고
+  low_space_ratio: 0.08      # 공백 비율이 이보다 낮으면 띄어쓰기 소실 경고
+  # 쪽당 이미지 수가 이 이상인 PDF는 숫자·문장부호가 이미지로 박힌 것으로 보고
+  # 구조화 때 페이지 이미지를 함께 보낸다 (vision 모드).
+  vision_min_images_per_page: 3.0
+  vision_dpi: 120
+  # 파일명에 아래 문자열이 있으면 자동판별과 무관하게 모드를 강제한다.
+  force_vision: []
+  force_text: []
+  # 본문에서 제거할 머리말/꼬리말 줄 (정규식, 줄 전체 일치)
+  noise_lines:
+    - '^-\s*\d+\s*-$'
+    - '^Slide\s*\d+$'
+    - '^한국공인회계사회\s*교육자료$'
+
+issuer_rules:   # 위에서부터 먼저 맞는 것 적용. where: filename | text(앞 3페이지)
+  - {issuer: 금감원, where: text, pattern: 'FSS/\d{4}-\d{2}'}
+  - {issuer: 한공회, where: text, pattern: 'KICPA-\d{4}-\d{2}'}
+  - {issuer: 한공회, where: filename, pattern: '한공회|한국공인회계사회|KICPA'}
+  - {issuer: 금감원, where: filename, pattern: '금융감독원|금감원|FSS'}
+  - {issuer: 금감원, where: text, pattern: '금융감독원'}
+  - {issuer: 한공회, where: text, pattern: '한국공인회계사회'}
+
+verify:
+  fuzzy_threshold: 0.85      # 발췌-원문 유사도가 이 이상이면 '유사', 미만이면 '불일치'
