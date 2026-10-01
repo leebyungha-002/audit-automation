@@ -65,6 +65,29 @@ CREATE TABLE IF NOT EXISTS findings (
     reviewed_at TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS finding_categories (   -- 지적사항 → 표준 계정 분류
+    finding_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    source_term TEXT,              -- 분류의 근거가 된 관련 계정/쟁점분야
+    match_method TEXT,             -- 사전 | LLM
+    match_confidence REAL,
+    PRIMARY KEY (finding_id, category)
+);
+CREATE TABLE IF NOT EXISTS account_mappings (     -- 회사 계정 → 표준 계정 분류
+    company TEXT NOT NULL,
+    account_name TEXT NOT NULL,
+    account_code TEXT,
+    category TEXT,                 -- NULL이면 매칭 없음
+    match_method TEXT,             -- 사전 | LLM | 매칭 없음
+    match_confidence REAL,
+    matched_keyword TEXT,
+    n_debit INTEGER,               -- 분개장 통계(건수만, 금액은 저장하지 않음)
+    n_credit INTEGER,
+    n_vouchers INTEGER,
+    source_file TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (company, account_name)
+);
 CREATE TABLE IF NOT EXISTS llm_cache (
     cache_key TEXT PRIMARY KEY,
     purpose TEXT,

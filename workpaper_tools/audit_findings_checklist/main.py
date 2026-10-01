@@ -6,6 +6,7 @@
     python main.py structure --limit 5     # Claude API로 구조화 (처음 5건만)
     python main.py review-export           # 검토용 엑셀 내보내기 (output/review_날짜.xlsx)
     python main.py review-import           # 수정한 검토 엑셀을 DB에 재반영 (경로 생략 시 최신 파일)
+    python main.py map --accounts <파일>   # 계정리스트를 표준 분류로 정규화하고 지적사항과 매칭
     python main.py status                  # 현황 요약
 """
 import argparse
@@ -15,6 +16,7 @@ from pathlib import Path
 from afc.config import load_config, load_env, setup_logging
 from afc.db import Store
 from afc.extract import run_extract
+from afc.mapping import run_map
 from afc.review import STATUSES, export_review, import_review
 from afc.segment import run_segment
 from afc.structure import run_structure
@@ -56,6 +58,11 @@ def main() -> int:
     p.add_argument("--status", choices=STATUSES, help="이 검토상태인 것만 내보내기")
     p = sub.add_parser("review-import")
     p.add_argument("path", nargs="?", type=Path, help="검토 엑셀 경로 (생략 시 output의 최신 review_*.xlsx)")
+    p = sub.add_parser("map")
+    p.add_argument("--accounts", required=True, type=Path,
+                   help="계정리스트 파일 (분석결과_*.xlsx의 05_계정명 리스트_통계 시트, 또는 계정명 열이 있는 xlsx/csv)")
+    p.add_argument("--company", help="회사명 (생략 시 파일에서 읽음)")
+    p.add_argument("--no-llm", action="store_true", help="사전 매칭만 수행 (외부 전송 없음)")
     sub.add_parser("status")
     args = parser.parse_args()
 
@@ -74,6 +81,8 @@ def main() -> int:
             export_review(cfg, store, log, status=args.status)
         elif args.command == "review-import":
             import_review(cfg, store, log, path=args.path.resolve() if args.path else None)
+        elif args.command == "map":
+            run_map(cfg, store, log, args.accounts.resolve(), company=args.company, use_llm=not args.no_llm)
         elif args.command == "status":
             show_status(store)
     finally:

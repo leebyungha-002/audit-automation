@@ -46,5 +46,8 @@ issuer_rules:   # 위에서부터 먼저 맞는 것 적용. where: filename | te
   - {issuer: 금감원, where: text, pattern: '금융감독원'}
   - {issuer: 한공회, where: text, pattern: '한국공인회계사회'}
 
+mapping:
+  llm_threshold: 0.75        # 사전 매칭 신뢰도가 이보다 낮거나 매칭이 없으면 Claude가 의미로 판단
+
 verify:
   fuzzy_threshold: 0.85      # 발췌-원문 유사도가 이 이상이면 '유사', 미만이면 '불일치'
