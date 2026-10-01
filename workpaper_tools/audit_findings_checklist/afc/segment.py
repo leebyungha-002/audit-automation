@@ -117,6 +117,8 @@ def run_segment(cfg: dict, store: Store, log, force: bool = False, name_filter: 
     for f in store.query("SELECT * FROM source_files ORDER BY file_name"):
         if name_filter and name_filter not in f["file_name"]:
             continue
+        if f["extract_mode"] == "unreadable":  # 텍스트 층이 깨진 파일은 판독 전까지 분할하지 않는다
+            continue
         fhash = f["file_hash"]
         if not force and store.query("SELECT 1 FROM segments WHERE file_hash=?", (fhash,)):
             log.info("건너뜀(이미 분할됨): %s", f["file_name"])

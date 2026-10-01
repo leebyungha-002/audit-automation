@@ -60,6 +60,12 @@ def test_clean_page_text_removes_headers_and_private_use_chars(env):
     assert clean_page_text(text, noise) == "쟁점분야: 매출\n본문"
 
 
+def test_garbled_text_layer_is_detected():
+    from afc.extract import readable_ratio
+    assert readable_ratio("회사는 매출 15억원을 과대계상하였다(K-IFRS 제1115호).") > 0.9
+    assert readable_ratio("ᵘᶬエㄬ㋤ᛈㅸ⏌ᬬ゘⎔ジ䀰㶀ㅜ㎨⍤㮝㽜㋤ぼⳔ⪔") < 0.2
+
+
 def test_decide_mode(env):
     ecfg = env[0]["extract"]
     assert decide_mode("a.pdf", images_per_page=15.0, ecfg=ecfg) == "vision"

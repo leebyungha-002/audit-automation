@@ -27,6 +27,13 @@ def detect_issuer(file_name: str, head_text: str, rules: list[dict]) -> str:
     return "미상"
 
 
+def readable_ratio(text: str) -> float:
+    """한글·영문·숫자·흔한 문장부호가 차지하는 비율. 글꼴 인코딩이 깨진 PDF는 이 값이 매우 낮다."""
+    chars = re.sub(r"\s", "", text)
+    ok = re.findall(r"[가-힣A-Za-z0-9.,()\[\]·:;%~\-‘’“”'\"/]", chars)
+    return len(ok) / max(len(chars), 1)
+
+
 def decide_mode(file_name: str, images_per_page: float, ecfg: dict) -> str:
     if any(s in file_name for s in ecfg["force_vision"]):
         return "vision"
@@ -127,6 +134,9 @@ def run_extract(cfg: dict, store: Store, log, force: bool = False, name_filter: 
             all_text = "".join(raw)
             space_ratio = all_text.count(" ") / max(len(all_text), 1)
             mode = decide_mode(src.name, n_images / max(n_pages, 1), ecfg) if src.suffix.lower() == ".pdf" else "text"
+            readable = readable_ratio(all_text)
+            if readable < ecfg["min_readable_ratio"]:
+                mode = "unreadable"  # 텍스트 층이 깨져 있어 OCR(판독) 없이는 쓸 수 없다
             year_match = re.search(r"(20\d{2})", src.name)
             issuer = detect_issuer(src.name, "".join(raw[:3]), cfg["issuer_rules"])
 
@@ -150,6 +160,12 @@ def run_extract(cfg: dict, store: Store, log, force: bool = False, name_filter: 
             log.info("추출 완료: %s | %d쪽 | 발행 %s | 모드 %s (공백비율 %.2f, 쪽당 이미지 %.1f)",
                      src.name, n_pages, issuer, mode, space_ratio, n_images / max(n_pages, 1))
             store.log("extract", "INFO", src.name, f"{n_pages}쪽 추출, 모드={mode}, 발행={issuer}")
+            if mode == "unreadable":
+                msg = (f"텍스트 층을 읽을 수 없음(글꼴 인코딩 깨짐, 판독 가능 문자 {readable:.0%}) "
+                       "→ OCR/판독 전까지 분할·구조화에서 제외")
+                log.warning("%s: %s", src.name, msg)
+                store.log("extract", "WARNING", src.name, msg)
+                continue
             if mode == "vision":
                 msg = "글리프 이미지 의심(숫자·문장부호 누락 가능) → 구조화 시 페이지 이미지 병행"
                 log.warning("%s: %s", src.name, msg)

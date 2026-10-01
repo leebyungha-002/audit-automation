@@ -25,6 +25,7 @@ extract:
   exclude_files: ['교안']
   ocr_min_chars: 50          # 페이지 글자 수가 이보다 적으면 스캔본 의심(OCR 대상) 경고
   low_space_ratio: 0.08      # 공백 비율이 이보다 낮으면 띄어쓰기 소실 경고
+  min_readable_ratio: 0.5    # 한글·영문·숫자 비율이 이보다 낮으면 텍스트 층이 깨진 것으로 보고 처리에서 제외
   # 쪽당 이미지 수가 이 이상인 PDF는 숫자·문장부호가 이미지로 박힌 것으로 보고
   # 구조화 때 페이지 이미지를 함께 보낸다 (vision 모드).
   vision_min_images_per_page: 3.0

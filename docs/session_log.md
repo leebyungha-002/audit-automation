@@ -2551,3 +2551,26 @@ strong 키워드, overrides) → 신뢰도 0.75 미만·미매칭만 Claude(sonn
 3. (추후) 분개장 집계 요약 → 위험 발현 가능성 컬럼(`afc/signals.py`)
 
 ---
+
+## 2026-10-01 16:15
+
+**완료 작업**: (1) 배치 중복 제출 방지(`batch_items` 테이블, 미완료 배치 여러 개 이어받기). (2) blue sky가
+금감원 개별 사례 PDF 44건(FSS2409/2505/2512/2606)과 합본 `FSS_회계심사감리 주요지적사례(2020-2023년).pdf`
+(151쪽) 추가. 개별 44건은 추출·분할 완료 후 배치 제출. 합본은 글꼴 인코딩이 깨져 텍스트 층 판독 불가
+(판독 가능 문자 4%) → `extract_mode=unreadable`로 자동 분류해 분할·구조화에서 제외하도록 구현
+(`extract.min_readable_ratio`). 교안 3개 제외는 blue sky가 확정. 테스트 52건 통과.
+**변경 파일**: `afc/structure.py`, `afc/db.py`, `afc/extract.py`, `afc/segment.py`, `config/config.yaml`,
+`main.py`, `tests/*`
+**미해결 이슈**:
+- 진행 중 배치 3개: msgbatch_01AMXja6oXQnVUezdco1Fi33(3건), msgbatch_01QQb3uWrPNpq7dVpmQxY8Kz(87건,
+  한공회 나머지), 그리고 16:11경 제출한 금감원 개별 44건. 결과 수신·반영 경로는 실제 API로 아직 미확인.
+  세션이 끊기면 `python main.py structure --batch`로 이어받는다.
+- 합본(2020~2023) 처리 방법 결정 대기: (A) Claude로 페이지 이미지 판독 후 기존 파이프라인, (B) 로컬 OCR
+  설치, (C) 개별 HWP 원본 확보. 판독문 기반이면 발췌 검증이 "AI 판독문 대조"가 됨을 표시해야 함.
+- sejoong 05 시트 없음, 5단계 체크리스트 행 높이 잘림 여부 blue sky 확인 필요.
+**다음 할 일**:
+1. 배치 결과 반영 확인 → `status`로 건수·발췌 검증 분포 보고
+2. 합본 처리 방법 결정 후 구현
+3. review-export → 검토 → 회사별 map/report 재출력
+
+---
