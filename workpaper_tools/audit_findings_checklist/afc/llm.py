@@ -21,7 +21,8 @@ class LLM:
         self.cfg = cfg["llm"]
         self.store = store
         self.log = log
-        self.client = anthropic.Anthropic()  # ANTHROPIC_API_KEY는 환경변수(.env)에서 읽는다
+        # ANTHROPIC_API_KEY는 환경변수(.env)에서 읽는다. 동시 요청 중 한도 초과(429)·과부하(529)는 SDK가 물러났다 재시도한다
+        self.client = anthropic.Anthropic(max_retries=self.cfg.get("max_api_retries", 5))
         self.usage = {"calls": 0, "cache_hits": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 
     # ── 캐시 ──────────────────────────────────────────────
@@ -131,6 +132,12 @@ class LLM:
             raise self._translate(e) from e
         c = batch.request_counts
         return batch.processing_status == "ended", f"처리 중 {c.processing}, 성공 {c.succeeded}, 오류 {c.errored}"
+
+    def cancel_batch(self, batch_id: str) -> None:
+        try:
+            self.client.messages.batches.cancel(batch_id)
+        except anthropic.APIError as e:
+            raise self._translate(e) from e
 
     def batch_results(self, batch_id: str):
         try:

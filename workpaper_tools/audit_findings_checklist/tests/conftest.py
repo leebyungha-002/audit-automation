@@ -92,6 +92,10 @@ class FakeLLM:
         self.calls.append({"purpose": purpose, "model": model, "system": system, "content": content})
         return self.responses.pop(0)
 
+    def request(self, model, system, content, schema, effort=None):
+        """즉시 처리 경로의 첫 요청. 응답 '메시지' 자리에 준비된 dict를 그대로 돌려준다."""
+        return self.call_json("structure", model, system, content, schema)
+
     def usage_summary(self) -> str:
         return f"가짜 호출 {len(self.calls)}회"
 

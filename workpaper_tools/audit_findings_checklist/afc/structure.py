@@ -4,6 +4,7 @@ import difflib
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import ValidationError
 
@@ -103,12 +104,17 @@ def verify_excerpt(excerpt: str | None, pages: list[dict], fuzzy_threshold: floa
 
 
 def verify_standards(standards: list[dict], pages: list[dict], mode: str) -> list[dict]:
-    """기준서 번호의 숫자가 원문 텍스트에 있는지 확인한다."""
+    """기준서 번호의 숫자가 원문 텍스트에 있는지 확인한다.
+
+    번호가 없는 기준(개념체계, 외부감사법 등)은 명칭이 원문에 있는지 글자만으로 확인한다.
+    """
     full = _ws("".join(p["text"] for p in pages))
+    full_letters = _letters(full)
     checked = []
     for s in standards:
         digits = "".join(re.findall(r"\d+", s["number"]))
-        if digits and digits in full:
+        label = _letters(s["number"]) if not digits else ""
+        if (digits and digits in full) or (label and label in full_letters):
             status = "원문확인"
         elif mode == "vision":
             status = "이미지판독(텍스트 대조 불가)"
@@ -282,20 +288,26 @@ def run_structure(cfg: dict, store: Store, log, force: bool = False, name_filter
 
 
 def _run_sync(cfg: dict, store: Store, log, llm: LLM, schema: dict, jobs: list[dict]) -> None:
+    """즉시 처리. API 호출만 작업 스레드에서 동시에 하고, 검증·DB 기록은 주 스레드에서 한다."""
     model = cfg["llm"]["structure_model"]
+    workers = cfg["llm"].get("workers", 1)
     counts = {"ok": 0, "skip": 0, "err": 0}
-    for job in jobs:
-        try:
-            system, content = _prepare(job, cfg)
-        except Exception as e:  # 원본 PDF가 없어 이미지를 못 만드는 경우 등
-            _fail(store, log, job, f"입력 구성 실패: {e}")
-            counts["err"] += 1
-            continue
+    fatal = False
 
+    def settle(job, system, content, first) -> None:
+        """첫 응답(메시지, dict 또는 예외)을 해석하고, 출력이 스키마에 안 맞으면 다시 요청한다."""
+        nonlocal fatal
         outcome, error = None, None
         for attempt in range(cfg["llm"]["retries"] + 1):
             try:
-                raw = llm.call_json("structure", model, system, content, schema, use_cache=(attempt == 0))
+                if attempt > 0:
+                    raw = llm.call_json("structure", model, system, content, schema, use_cache=False)
+                elif isinstance(first, Exception):
+                    raise first
+                elif isinstance(first, dict):
+                    raw = first
+                else:
+                    raw = llm.parse_message(first, llm.cache_key(model, system, content, schema), "structure", model)
                 outcome = _finalize(cfg, store, log, llm, schema, job, system, content, raw)
                 break
             except (json.JSONDecodeError, ValidationError) as e:
@@ -307,12 +319,77 @@ def _run_sync(cfg: dict, store: Store, log, llm: LLM, schema: dict, jobs: list[d
         if outcome is None:
             _fail(store, log, job, error)
             counts["err"] += 1
-            if error and ("인증" in error or "권한" in error or "크레딧" in error):
+            fatal = fatal or bool(error and ("인증" in error or "권한" in error or "크레딧" in error))
+        else:
+            counts[outcome] += 1
+
+    # 페이지 이미지가 메모리를 많이 쓰므로 한꺼번에 준비하지 않고 조금씩 나눠 처리한다
+    chunk = max(workers * 3, 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for start in range(0, len(jobs), chunk):
+            if fatal:
                 log.error("API 사용 불가 상태로 보여 중단합니다.")
                 break
-            continue
-        counts[outcome] += 1
+            futures = {}
+            for job in jobs[start:start + chunk]:
+                try:
+                    system, content = _prepare(job, cfg)
+                except Exception as e:  # 원본 PDF가 없어 이미지를 못 만드는 경우 등
+                    _fail(store, log, job, f"입력 구성 실패: {e}")
+                    counts["err"] += 1
+                    continue
+                cached = llm.cache_get(llm.cache_key(model, system, content, schema))
+                if cached is not None:
+                    settle(job, system, content, cached)
+                else:
+                    futures[pool.submit(llm.request, model, system, content, schema)] = (job, system, content)
+            for future in as_completed(futures):
+                try:
+                    first = future.result()
+                except LLMError as e:
+                    first = e
+                settle(*futures[future], first)
+            done = min(start + chunk, len(jobs))
+            if len(jobs) > chunk:
+                log.info("  … %d/%d건 (%s)", done, len(jobs), llm.usage_summary())
     log.info("구조화 결과: 성공 %d건, 제외 %d건, 오류 %d건", counts["ok"], counts["skip"], counts["err"])
+
+
+def cancel_batches(cfg: dict, store: Store, log, wait_minutes: int = 10) -> None:
+    """진행 중인 배치를 취소한다. 취소 전에 이미 처리된 건은 결과를 받아 반영하고, 나머지는 즉시 처리 대상으로 돌아간다."""
+    open_ids = [r["batch_id"] for r in store.query("SELECT batch_id FROM batches WHERE status='submitted' ORDER BY created_at")]
+    if not open_ids:
+        log.info("진행 중인 배치가 없습니다.")
+        return
+    llm = LLM(cfg, store, log)
+    schema = finding_json_schema(cfg["finding_types"])
+    for batch_id in open_ids:
+        try:
+            llm.cancel_batch(batch_id)
+            log.info("배치 취소 요청: %s", batch_id)
+        except LLMError as e:
+            log.error("배치 취소 실패 %s: %s", batch_id, e)
+    counts = {"ok": 0, "skip": 0, "err": 0}
+    deadline = time.monotonic() + wait_minutes * 60
+    pending = list(open_ids)
+    while pending:
+        for batch_id in list(pending):
+            try:
+                ended, progress = llm.batch_ended(batch_id)
+            except LLMError as e:
+                log.error("배치 상태 확인 실패: %s", e)
+                return
+            if ended:
+                _collect_batch(cfg, store, log, llm, schema, batch_id, counts, canceled_ok=True)
+                pending.remove(batch_id)
+        if not pending:
+            break
+        if time.monotonic() >= deadline:
+            log.warning("배치 %d개의 취소가 아직 마무리되지 않았습니다. 잠시 뒤 다시 실행하세요.", len(pending))
+            break
+        time.sleep(10)
+    log.info("취소 전 처리분 반영: 성공 %d건, 제외 %d건, 오류 %d건", counts["ok"], counts["skip"], counts["err"])
+    log.info(llm.usage_summary())
 
 
 def _run_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, force: bool, name_filter: str | None,
@@ -380,8 +457,9 @@ def _run_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, force: bool
              counts["ok"], counts["skip"], counts["err"])
 
 
-def _collect_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, batch_id: str, counts: dict) -> None:
-    """끝난 배치의 결과를 받아 DB에 반영한다."""
+def _collect_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, batch_id: str, counts: dict,
+                   canceled_ok: bool = False) -> None:
+    """끝난 배치의 결과를 받아 DB에 반영한다. canceled_ok면 취소된 요청은 오류로 치지 않는다."""
     model = cfg["llm"]["structure_model"]
     files = {r["file_hash"]: r for r in store.query("SELECT * FROM source_files")}
     try:
@@ -395,6 +473,8 @@ def _collect_batch(cfg: dict, store: Store, log, llm: LLM, schema: dict, batch_i
             seg_text = seg["title"] + "\n" + "".join(p["text"] for p in pages)
             job = {"seg": seg, "src": files[seg["file_hash"]], "pages": pages, "seg_text": seg_text,
                    "case_no": parse_case_no(seg_text)}
+            if result.result.type == "canceled" and canceled_ok:
+                continue
             if result.result.type != "succeeded":
                 _fail(store, log, job, f"배치 요청 {result.result.type}")
                 counts["err"] += 1

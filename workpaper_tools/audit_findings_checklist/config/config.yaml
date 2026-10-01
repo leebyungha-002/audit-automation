@@ -13,6 +13,8 @@ llm:
   effort: medium                       # low | medium | high | xhigh | max
   max_tokens: 16000
   retries: 2                           # JSON 파싱/검증 실패 시 재시도 횟수
+  workers: 3                           # 즉시 처리 때 동시에 보내는 요청 수 (한도 초과가 잦으면 줄인다)
+  max_api_retries: 5                   # 한도 초과·과부하 응답에 대한 SDK 재시도 횟수
   refusal_fallback: true               # 안전분류기 거절 시 서버가 대체 모델로 재실행
   prompt_version: s2                  # 프롬프트를 바꾸면 올린다 (캐시 키에 포함)
   # 비용 집계용 단가 (USD / 100만 토큰). 단가가 바뀌면 여기만 고친다.

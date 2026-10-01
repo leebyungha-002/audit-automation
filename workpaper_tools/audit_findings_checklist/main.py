@@ -23,7 +23,7 @@ from afc.mapping import run_map
 from afc.report import run_report
 from afc.review import STATUSES, export_review, import_review
 from afc.segment import run_segment
-from afc.structure import estimate, run_structure
+from afc.structure import cancel_batches, estimate, run_structure
 from afc.transcribe import run_transcribe
 
 
@@ -106,6 +106,7 @@ def main() -> int:
     p.add_argument("--no-llm", action="store_true", help="사전 매칭만 수행 (외부 전송 없음)")
     p = sub.add_parser("report")
     p.add_argument("--company", help="회사명 (매칭된 회사가 하나뿐이면 생략 가능)")
+    sub.add_parser("batch-cancel", help="진행 중인 배치를 취소 (이미 처리된 건은 반영, 나머지는 structure로 즉시 처리 가능)")
     sub.add_parser("status")
     args = parser.parse_args()
 
@@ -121,6 +122,8 @@ def main() -> int:
         elif args.command == "structure":
             run_structure(cfg, store, log, force=args.force, name_filter=args.file, limit=args.limit,
                           batch=args.batch, wait_minutes=args.wait)
+        elif args.command == "batch-cancel":
+            cancel_batches(cfg, store, log)
         elif args.command == "transcribe":
             run_transcribe(cfg, store, log, name_filter=args.file, limit=args.limit)
         elif args.command == "run-all":
