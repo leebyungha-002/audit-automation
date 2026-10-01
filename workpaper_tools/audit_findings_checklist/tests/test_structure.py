@@ -39,6 +39,12 @@ def test_vision_documents_compare_hangul_only():
     assert verify_excerpt(excerpt, pages, 0.85, "vision")[0] == "일치(한글만)"
 
 
+def test_transcribed_documents_are_marked_as_checked_against_ai_transcript():
+    status = verify_excerpt(GOOD_EXCERPT, PAGES, 0.85, "transcribed")[0]
+    assert status == "일치(AI 판독문)" and status in structure.VERIFIED
+    assert verify_excerpt("원문에 전혀 없는 문장을 지어냈다.", PAGES, 0.85, "transcribed")[0] == "불일치"
+
+
 def test_verify_standards_flags_numbers_missing_from_source():
     standards = [{"framework": "K-IFRS", "number": "제1018호", "name": None},
                  {"framework": "K-IFRS", "number": "제9999호", "name": None}]

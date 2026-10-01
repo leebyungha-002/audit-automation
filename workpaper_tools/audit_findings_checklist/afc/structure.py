@@ -46,6 +46,12 @@ EXCERPT_RETRY_NOTE = """
 VISION_NOTE = """
 이 문서는 텍스트 추출 품질이 낮아 페이지 이미지를 함께 제공합니다. 추출 텍스트는 숫자·문장부호·띄어쓰기가 빠지거나 순서가 어긋나 있을 수 있으므로, 페이지 이미지를 정본으로 삼아 읽으세요. source_excerpt와 기준서 번호는 이미지에 보이는 그대로 옮깁니다."""
 
+TRANSCRIBED_NOTE = """
+이 문서는 PDF에서 텍스트를 뽑을 수 없어, 페이지 이미지를 AI가 판독한 글을 원문으로 제공하고 페이지 이미지도 함께 제공합니다. 판독문에 오독이 있을 수 있으므로 페이지 이미지를 정본으로 삼아 읽으세요. source_excerpt와 기준서 번호는 이미지에 보이는 그대로 옮깁니다. 도식 안의 글자는 발췌하지 않습니다."""
+
+IMAGE_MODES = ("vision", "transcribed")  # 구조화 때 페이지 이미지를 함께 보내는 문서
+AI_TRANSCRIPT = "일치(AI 판독문)"
+
 CASE_NO = re.compile(r"(FSS)\s*/\s*(\d{4})\s*-\s*(\d{2})|(KICPA)\s*-\s*(\d{4})\s*-\s*(\d{2})")
 DECISION_YEAR = re.compile(r"결정\s*(?:연도|일)\s*:?\s*(\d{4})\s*년?")
 
@@ -62,7 +68,7 @@ def _hangul(s: str) -> str:
     return re.sub(r"[^가-힣]", "", s)
 
 
-VERIFIED = ("일치", "일치(문자만)", "일치(한글만)")
+VERIFIED = ("일치", "일치(문자만)", "일치(한글만)", AI_TRANSCRIPT)
 
 
 def verify_excerpt(excerpt: str | None, pages: list[dict], fuzzy_threshold: float,
@@ -71,6 +77,7 @@ def verify_excerpt(excerpt: str | None, pages: list[dict], fuzzy_threshold: floa
 
     공백 무시 → 한글·영문만 → (vision 문서 한정) 한글만 순으로 대조한다.
     vision 문서는 숫자·영문·문장부호가 텍스트에서 빠져 있어 한글만 대조할 수 있다.
+    transcribed 문서는 대조 대상이 PDF 원문이 아니라 AI 판독문이므로 일치해도 따로 표시한다.
     """
     if not excerpt:
         return "발췌없음", 0.0, None
@@ -78,6 +85,8 @@ def verify_excerpt(excerpt: str | None, pages: list[dict], fuzzy_threshold: floa
     levels = [("일치", _ws), ("일치(문자만)", _letters)]
     if mode == "vision":
         levels.append(("일치(한글만)", _hangul))
+    if mode == "transcribed":
+        levels = [(AI_TRANSCRIPT, norm) for _, norm in levels]
     for label, norm in levels:
         target = norm(excerpt)
         if target and target in norm(full):
@@ -118,7 +127,7 @@ def parse_case_no(text: str) -> str | None:
 
 def build_content(seg, pages: list[dict], src_file, cfg: dict) -> list[dict]:
     content: list[dict] = []
-    if src_file["extract_mode"] == "vision":
+    if src_file["extract_mode"] in IMAGE_MODES:
         pdf_path = cfg["paths"]["input_pdfs"] / src_file["file_name"]
         for p in pages:
             png = render_page_png(pdf_path, p["page"], cfg["extract"]["vision_dpi"])
@@ -183,7 +192,8 @@ def estimate(cfg: dict, store: Store, log, batch: bool = False) -> tuple[int, fl
 
 
 def _prepare(job: dict, cfg: dict) -> tuple[str, list]:
-    system = SYSTEM_PROMPT + (VISION_NOTE if job["src"]["extract_mode"] == "vision" else "")
+    note = {"vision": VISION_NOTE, "transcribed": TRANSCRIBED_NOTE}.get(job["src"]["extract_mode"], "")
+    system = SYSTEM_PROMPT + note
     return system, build_content(job["seg"], job["pages"], job["src"], cfg)
 
 

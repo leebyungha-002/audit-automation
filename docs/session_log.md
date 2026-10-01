@@ -2574,3 +2574,23 @@ strong 키워드, overrides) → 신뢰도 0.75 미만·미매칭만 Claude(sonn
 3. review-export → 검토 → 회사별 map/report 재출력
 
 ---
+
+## 2026-10-01 16:30
+
+**완료 작업**: 합본 PDF 처리 방법 A(Claude 판독) 구현·실행. `python main.py transcribe`가 텍스트 층이 깨진
+PDF의 페이지 이미지를 Claude(opus-5-5, effort low, 4건 동시)로 판독해 pages에 넣고 모드를
+`transcribed`로 바꿈. 합본 151쪽 판독 완료(비용 약 $3.9, 판독 불가 표시 □ 6개), 분할 62건으로 목차의
+사례 62건과 일치. 구조화 때는 판독문+페이지 이미지를 함께 보내고, 발췌 검증은 "일치(AI 판독문)"로
+따로 표시. 테스트 53건 통과.
+**변경 파일**: `afc/transcribe.py`(신규), `afc/llm.py`, `afc/structure.py`, `afc/db.py`, `main.py`,
+`config/config.yaml`, `tests/test_structure.py`
+**미해결 이슈**:
+- 진행 중 배치 4개(한공회 3+87건, 금감원 개별 44건, 합본 61건). 15:47에 낸 첫 배치도 16:30 현재 미완료.
+  결과 수신·반영 경로는 실제 API로 아직 미확인. 세션이 끊기면 `python main.py structure --batch`.
+- 합본 판독문은 AI가 읽은 것이라 발췌 검증 강도가 낮음. 검토 시 원본 PDF와 직접 대조 필요.
+- sejoong 05 시트 없음, 5단계 체크리스트 행 높이 잘림 여부 blue sky 확인 필요.
+**다음 할 일**:
+1. 배치 결과 반영 확인 → `status`로 건수·발췌 검증 분포 보고
+2. review-export → 검토 → 회사별 map/report 재출력
+
+---

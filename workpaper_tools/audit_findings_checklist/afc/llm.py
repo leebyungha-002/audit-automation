@@ -25,9 +25,9 @@ class LLM:
         self.usage = {"calls": 0, "cache_hits": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 
     # ── 캐시 ──────────────────────────────────────────────
-    def cache_key(self, model: str, system: str, content: list, schema: dict) -> str:
+    def cache_key(self, model: str, system: str, content: list, schema: dict, effort: str | None = None) -> str:
         payload = json.dumps(
-            [model, self.cfg["prompt_version"], self.cfg["effort"], system, content, schema],
+            [model, self.cfg["prompt_version"], effort or self.cfg["effort"], system, content, schema],
             ensure_ascii=False, sort_keys=True,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -47,14 +47,24 @@ class LLM:
         self.store.commit()
 
     # ── 요청 구성·응답 해석 ────────────────────────────────
-    def params(self, model: str, system: str, content: list, schema: dict) -> dict:
+    def params(self, model: str, system: str, content: list, schema: dict, effort: str | None = None) -> dict:
         return dict(
             model=model,
             max_tokens=self.cfg["max_tokens"],
             system=system,
             messages=[{"role": "user", "content": content}],
-            output_config={"effort": self.cfg["effort"], "format": {"type": "json_schema", "schema": schema}},
+            output_config={"effort": effort or self.cfg["effort"], "format": {"type": "json_schema", "schema": schema}},
         )
+
+    def request(self, model: str, system: str, content: list, schema: dict, effort: str | None = None):
+        """API를 한 번 호출해 응답 메시지를 돌려준다. DB를 건드리지 않으므로 작업 스레드에서 불러도 된다."""
+        kwargs = self.params(model, system, content, schema, effort)
+        try:
+            if self.cfg.get("refusal_fallback"):
+                return self.client.beta.messages.create(betas=[FALLBACK_BETA], fallbacks="default", **kwargs)
+            return self.client.messages.create(**kwargs)
+        except anthropic.APIError as e:
+            raise self._translate(e) from e
 
     def add_usage(self, model: str, input_tokens: int, output_tokens: int, discount: float = 1.0) -> None:
         price = self.cfg["pricing_usd_per_mtok"].get(model, {"input": 0, "output": 0})
@@ -85,15 +95,7 @@ class LLM:
             if cached is not None:
                 return cached
 
-        kwargs = self.params(model, system, content, schema)
-        try:
-            if self.cfg.get("refusal_fallback"):
-                resp = self.client.beta.messages.create(betas=[FALLBACK_BETA], fallbacks="default", **kwargs)
-            else:
-                resp = self.client.messages.create(**kwargs)
-        except anthropic.APIError as e:
-            raise self._translate(e) from e
-        return self.parse_message(resp, key, purpose, model)
+        return self.parse_message(self.request(model, system, content, schema), key, purpose, model)
 
     @staticmethod
     def _translate(e: anthropic.APIError) -> LLMError:

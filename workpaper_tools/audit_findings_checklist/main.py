@@ -24,6 +24,7 @@ from afc.report import run_report
 from afc.review import STATUSES, export_review, import_review
 from afc.segment import run_segment
 from afc.structure import estimate, run_structure
+from afc.transcribe import run_transcribe
 
 
 def show_status(cfg: dict, store: Store, log) -> None:
@@ -58,6 +59,9 @@ def run_all(cfg: dict, store: Store, log, yes: bool, batch: bool, limit: int | N
     """폴더 일괄 처리. 이미 처리한 파일·사례는 건너뛰므로 새 원문을 넣고 다시 실행하면 증분만 처리된다."""
     run_extract(cfg, store, log)
     run_segment(cfg, store, log)
+    for f in store.query("SELECT file_name, n_pages FROM source_files WHERE extract_mode='unreadable'"):
+        log.warning("%s (%d쪽): 텍스트 층을 읽을 수 없어 제외됨. 'python main.py transcribe'로 판독하면 처리됩니다 "
+                    "(API 비용 발생).", f["file_name"], f["n_pages"])
     pending, cost = estimate(cfg, store, log, batch=batch)
     open_batch = store.query("SELECT 1 FROM batches WHERE status='submitted'")
     if pending == 0 and not open_batch:
@@ -81,6 +85,9 @@ def main() -> int:
         p.add_argument("--file", help="파일명에 이 문자열이 포함된 것만 처리")
         if name == "segment":
             p.add_argument("--llm", action="store_true", help="규칙 대신 LLM 보조 분할 강제")
+    p = sub.add_parser("transcribe", help="텍스트 층을 읽을 수 없는 PDF를 Claude로 판독 (API 비용 발생)")
+    p.add_argument("--file", help="파일명에 이 문자열이 포함된 것만 처리")
+    p.add_argument("--limit", type=int, help="앞에서부터 이 쪽수만 판독 (시험용)")
     p = sub.add_parser("run-all", help="새 원문 추출·분할 후 구조화까지 일괄 처리")
     p.add_argument("--yes", action="store_true", help="예상 비용 확인 없이 구조화까지 실행")
     for name in ("structure", "run-all"):
@@ -114,6 +121,8 @@ def main() -> int:
         elif args.command == "structure":
             run_structure(cfg, store, log, force=args.force, name_filter=args.file, limit=args.limit,
                           batch=args.batch, wait_minutes=args.wait)
+        elif args.command == "transcribe":
+            run_transcribe(cfg, store, log, name_filter=args.file, limit=args.limit)
         elif args.command == "run-all":
             run_all(cfg, store, log, yes=args.yes, batch=args.batch, limit=args.limit, wait=args.wait)
         elif args.command == "review-export":

@@ -131,7 +131,7 @@ def now() -> str:
 
 class Store:
     def __init__(self, path: Path):
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, timeout=30)  # 배치 대기 중인 다른 실행과 겹쳐도 잠금으로 실패하지 않게
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
 
