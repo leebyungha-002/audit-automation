@@ -192,7 +192,8 @@ def detect_ar_allowance_input_files() -> list[tuple[str, str]]:
 AFC_DIR = ROOT / "workpaper_tools" / "audit_findings_checklist"
 
 # 감리 지적사항 체크리스트 단계 — (표시명, main.py 인자, 회사 선택 방식)
-# 회사 선택 방식: None=불필요, "accounts"=분석결과 파일이 있는 journal 회사, "mapped"=DB에 매칭된 회사
+# 회사 선택 방식: None=불필요, "accounts"=input_accounts에 계정리스트가 있는 회사,
+#                 "mapped"=그중 계정 매칭(6번)까지 끝난 회사
 AFC_STEPS = [
     ("현황 보기 (status)", ["status"], None),
     ("1. 새 원문 추출·분할 + 예상 비용 확인 (API 비용 없음)", ["run-all"], None),
@@ -207,13 +208,12 @@ AFC_STEPS = [
 
 
 def detect_afc_account_files() -> list[tuple[str, Path]]:
-    """journal_analyzer/<회사>/results/분석결과_<회사>.xlsx가 있는 회사 → (회사, 파일) 목록"""
-    out = []
-    for co in detect_journal_companies():
-        f = ROOT / "journal_analyzer" / co / "results" / f"분석결과_{co}.xlsx"
-        if f.exists():
-            out.append((co, f))
-    return out
+    """audit_findings_checklist/input_accounts/ 의 계정명리스트 → (회사명=파일명, 파일) 목록"""
+    in_dir = AFC_DIR / "input_accounts"
+    if not in_dir.exists():
+        return []
+    return [(f.stem, f) for f in sorted(in_dir.iterdir())
+            if f.is_file() and f.suffix.lower() in (".xlsx", ".csv") and not f.name.startswith("~$")]
 
 
 def detect_afc_mapped_companies() -> list[str]:
@@ -395,6 +395,8 @@ TOOLS = [
         "name": "감리 지적사항 체크리스트 (audit_findings_checklist)",
         "desc": "감리 지적사례(PDF/HWP)를 구조화한 DB와 회사 계정리스트를 대사해 위험·확인사항 체크리스트 엑셀 생성.\n"
                 "순서: 1 → 2 → 3 → (4. output의 review 엑셀을 직접 검토·저장) → 5 → 6 → 7\n"
+                "1~5는 회사와 무관한 공통 지적사항 DB 작업, 6·7은 회사별 작업. "
+                "6·7은 input_accounts 폴더에 계정명리스트(파일명=회사명.xlsx/csv)를 넣은 회사만 선택됨.\n"
                 "⚠ 2번(구조화)·6번(매칭)은 Claude API 비용 발생 — .env의 ANTHROPIC_API_KEY 필요. "
                 "data/input_pdfs/output 폴더는 Git에 없으므로 PC 간 직접 복사해야 함.",
         "cmd": ["python", str(AFC_DIR / "main.py")],
@@ -739,7 +741,9 @@ class Launcher(QMainWindow):
             self._afc_account_files = detect_afc_account_files()
             self._company_combo.addItems([co for co, _ in self._afc_account_files])
         elif co_mode == "mapped":
-            self._company_combo.addItems(detect_afc_mapped_companies())
+            # 계정리스트가 있는 회사 중 매칭까지 끝난 회사만 (분석 대상 회사만 보이도록)
+            mapped = set(detect_afc_mapped_companies())
+            self._company_combo.addItems([co for co, _ in detect_afc_account_files() if co in mapped])
         self._company_row.setVisible(co_mode is not None)
 
     # ── 실행 ─────────────────────────────────────────────────────────────────
@@ -777,14 +781,15 @@ class Launcher(QMainWindow):
             if co_mode == "accounts":
                 co_idx = self._company_combo.currentIndex()
                 if co_idx < 0 or not self._afc_account_files:
-                    self._log_line("⚠  분석결과_<회사>.xlsx가 있는 회사가 없습니다. 분개장분석을 먼저 실행하세요.", "#FBBF24")
+                    self._log_line("⚠  input_accounts 폴더에 계정명리스트(회사명.xlsx)를 먼저 넣으세요.", "#FBBF24")
                     return
-                # 회사명은 넘기지 않는다 — 파일에 적힌 회사명을 쓰므로 기존 매칭 결과와 이름이 일치함
-                cmd += ["--accounts", str(self._afc_account_files[co_idx][1])]
+                # 파일명을 회사명으로 넘겨 7번(report)의 회사 선택과 이름을 일치시킨다
+                company, acc_file = self._afc_account_files[co_idx]
+                cmd += ["--accounts", str(acc_file), "--company", company]
             elif co_mode == "mapped":
                 company = self._company_combo.currentText().strip()
                 if not company:
-                    self._log_line("⚠  계정 매칭된 회사가 없습니다. 6번(map)을 먼저 실행하세요.", "#FBBF24")
+                    self._log_line("⚠  계정 매칭된 회사가 없습니다. 6번(계정 매칭)을 먼저 실행하세요.", "#FBBF24")
                     return
                 cmd += ["--company", company]
         elif t["company"] == "optional_js":

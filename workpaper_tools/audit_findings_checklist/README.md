@@ -18,6 +18,8 @@
 | 6 | `python main.py map --accounts <분석결과_회사.xlsx>` | 회사 계정을 표준 분류로 매칭 (`--no-llm`: 외부 전송 없이 사전만) |
 | 7 | `python main.py report --company <회사>` | 체크리스트 `output\checklist_회사_날짜.xlsx` 생성 |
 
+6번의 계정리스트는 `input_accounts` 폴더에 **회사명을 파일명으로** 넣는다(예: `input_accounts\samdong.xlsx`). journal_analyzer의 `분석결과_회사.xlsx`를 복사해 이름만 바꾸면 되고, 계정명 열이 있는 다른 xlsx/csv도 된다. 런처는 이 폴더에 파일이 있는 회사만 6·7번에서 보여주며, 파일명을 회사명(`--company`)으로 넘긴다.
+
 `python main.py status`로 언제든 현황(구조화 대기 건수, 검토 상태, 진행 중인 배치)을 볼 수 있다.
 
 새 원문을 `input_pdfs`에 넣고 1~2번을 다시 실행하면 새 파일·새 사례만 처리된다(파일 해시와 사례번호로 판별).

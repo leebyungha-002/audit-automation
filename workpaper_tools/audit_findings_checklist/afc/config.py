@@ -21,7 +21,7 @@ def load_config() -> dict:
     cfg["segment_profiles"] = _read_yaml("segment_rules.yaml")["profiles"]
     cfg["finding_types"] = _read_yaml("finding_types.yaml")["finding_types"]
     cfg["taxonomy"] = _read_yaml("account_taxonomy.yaml")
-    for key in ("output", "logs"):
+    for key in ("output", "logs", "input_accounts"):
         cfg["paths"][key].mkdir(parents=True, exist_ok=True)
     cfg["paths"]["db"].parent.mkdir(parents=True, exist_ok=True)
     return cfg

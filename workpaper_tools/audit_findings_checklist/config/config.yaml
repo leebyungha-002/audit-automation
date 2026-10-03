@@ -3,6 +3,7 @@
 
 paths:
   input_pdfs: input_pdfs       # 원문 폴더 (PDF / HWP / HWPX)
+  input_accounts: input_accounts   # 회사별 계정명리스트 (파일명 = 회사명, xlsx/csv)
   db: data/findings.db
   output: output
   logs: logs

@@ -18,6 +18,7 @@ journal_analyzer/**/data/cache/
 
 # 감리 지적사항 체크리스트 생성기 — 원문/DB/산출물/로그는 로컬에만 유지
 workpaper_tools/audit_findings_checklist/input_pdfs/
+workpaper_tools/audit_findings_checklist/input_accounts/
 workpaper_tools/audit_findings_checklist/data/
 workpaper_tools/audit_findings_checklist/output/
 workpaper_tools/audit_findings_checklist/logs/
