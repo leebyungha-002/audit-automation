@@ -2645,3 +2645,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 5. (추후) 분개장 집계 요약 → 위험 발현 가능성 컬럼(`afc/signals.py`)
 
 ---
+
+## 2026-10-03 17:10
+
+**완료 작업**: 런처에 감리 지적사항 체크리스트 단계별 실행 추가(da1d24f), 계정리스트 전용 폴더 input_accounts 도입 — 파일명=회사명, 런처 6·7단계는 이 폴더에 있는 회사만 선택(539c2c1). 메인PC input_accounts에 brantree/graphy/samdong/㈜경남제약 계정리스트 복사(DB 기존 회사명과 일치).
+**변경 파일**: launcher.py, .gitignore, workpaper_tools/audit_findings_checklist/(config/config.yaml, afc/config.py, README.md)
+**미해결 이슈**: 미니PC는 data·input_pdfs·output·input_accounts 폴더와 .env를 수동 복사해야 함. 감리 체크리스트 review 엑셀 사용자 검토 대기(이전과 동일).
+**다음 할 일**:
+1. 사용자 review 엑셀 검토 후 review-import → report 재생성
+2. 신규 회사는 input_accounts에 회사명.xlsx 넣고 6→7단계 실행
+
+---
