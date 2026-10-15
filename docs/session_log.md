@@ -2656,3 +2656,18 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 2. 신규 회사는 input_accounts에 회사명.xlsx 넣고 6→7단계 실행
 
 ---
+
+## 2026-10-15 (live_pure 신규 회사 추가)
+
+**완료 작업**: journal_analyzer에 live_pure 회사 추가(폴더·task_list). 전체 task_list 작성가이드에 비용구분·관리단위 설명 추가, 작성가이드 없던 graphy·kyungnam·sejoong에 시트 추가, '차변·대변 모두' 표기를 both로 통일. live_pure/preprocess.py로 같은 계정명·다른 코드 계정 분리(806/808 퇴직급여(판)-DB/-DC, 213/220 감가상각누계액(비품)/(리스개량자산)) + 롤포워드 시트 계정명 변경. 22번 금융기관명 추출이 '농    협232'처럼 공백 낀 약칭을 놓치던 문제 수정(148e224).
+**변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/live_pure/(preprocess.py, task_list_live_pure.xlsx), journal_analyzer/*/task_list_*.xlsx
+**미해결 이슈**:
+- live_pure 25번 시트 '급여' 행이 원장에 없는 이름이라 contains 매칭으로 직원급여(판)+퇴직급여 DB/DC가 합산됨 → 사용자가 '직원급여(판)' 등으로 수정 필요. contains 단계 다중매칭 경고 추가는 제안만 하고 미결정.
+- brantree task_list에 samdong 데이터(특수관계자·13번 계정 등)가 남아 있음, brantree/감사조서에 Kyungnam 파일 있음.
+- live_pure 분개장 캐시 저장 실패 경고(차변 콤마 문자열 → int64 변환 실패) — 분석은 정상, 캐시만 안 됨.
+**다음 할 일**:
+1. live_pure task_list 계정명을 원장 이름 그대로(…(판)) 정리 후 전체 실행·검증
+2. live_pure 27번 롤포워드 결과 확인(누계액 분리 반영)
+3. brantree task_list 정리 여부 확인
+
+---
