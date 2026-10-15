@@ -2677,7 +2677,14 @@ def _extract_fi(client_name: str) -> str:
     if m:
         return m.group(1)
     m = _FI_ABBR_PATTERN.match(name)
-    return _FI_BANK_ABBR[m.group(1)] if m else ''
+    if m:
+        return _FI_BANK_ABBR[m.group(1)]
+    # 약칭 글자 사이에 공백이 낀 거래처명(예: live_pure "농    협232") 대응 — 위에서 못 찾은
+    # 경우에만 공백을 전부 제거하고 재시도 (기존에 잡히던 거래처 결과는 그대로 유지, 2026-10-15)
+    compact = re.sub(r'\s+', '', name)
+    if compact != name:
+        return _extract_fi(compact)
+    return ''
 
 
 def analyze_bank_confirmation(df: pd.DataFrame, params_list: list) -> dict:
