@@ -52,7 +52,7 @@ task_list 파라미터 시트 규격:
        한계: 개별 자산이 아닌 계정과목×전표 단위로만 구분됨 — 한 전표에 여러
        자산을 묶어 처분하면 그 전표 전체가 한 줄로 잡힘.)
   거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열(차변·대변·both) / 실행여부
-  계정별상세내역 : 계정과목 / 금액유형(차변·대변·both) / 실행여부
+  계정별상세내역 : 계정과목 / 금액유형(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
 4번(데이터개요) 부가 기능 — 당기 계정별원장 기초/기말잔액표:
@@ -2817,14 +2817,24 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
         acct = _nv(p.get('계정과목', p.get('계정명', '')))
         col_f = _nv(p.get('금액 유형', p.get('금액유형', p.get('차대구분', ''))),
                     blank_vals=('nan', 'none', ''))
+        # 표시방식(2026-10-16 blue sky 요청): '분리'면 차변 거래와 대변 거래를 각각
+        # 별도 시트(계정명_차 / 계정명_대)로, 빈칸·'통합'이면 기존처럼 한 시트에 한 행씩
+        split = '분리' in _nv(p.get('표시방식', ''), blank_vals=('nan', 'none', ''))
         if acct:
-            targets.append((acct, col_f))
+            targets.append((acct, col_f, split))
 
     if not targets:
         return {'계정별상세내역': pd.DataFrame({'안내': ['파라미터에 계정과목이 없습니다.']})}
 
     all_results = {}
-    for acct_name, col_f in targets:
+    def _put(name, frame):
+        sheet_name, suffix = name, 2
+        while sheet_name in all_results:
+            sheet_name = f'{name[:28]}_{suffix}'
+            suffix += 1
+        all_results[sheet_name] = frame.reset_index(drop=True)
+
+    for acct_name, col_f, split in targets:
         mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
         sub = df[mask].copy()
 
@@ -2851,14 +2861,17 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
                       else '대' if col_f_norm in ('대변', '대변만') \
                       else 'both'
         acct_short = re.sub(r'[^가-힣a-zA-Z0-9]', '', acct_name)[:12]
-        base = _safe_sheet(f'{acct_short}_{col_f_label}')
-        sheet_name = base
-        suffix = 2
-        while sheet_name in all_results:
-            sheet_name = f'{base[:28]}_{suffix}'
-            suffix += 1
 
-        all_results[sheet_name] = sub.reset_index(drop=True)
+        if split:
+            # 차변 표에는 대변 금액 열을, 대변 표에는 차변 금액 열을 뺀다
+            if col_f_label in ('차', 'both'):
+                dr = sub[sub[COL_DEBIT] != 0].drop(columns=[COL_CREDIT], errors='ignore')
+                if not dr.empty: _put(_safe_sheet(f'{acct_short}_차'), dr)
+            if col_f_label in ('대', 'both'):
+                cr = sub[sub[COL_CREDIT] != 0].drop(columns=[COL_DEBIT], errors='ignore')
+                if not cr.empty: _put(_safe_sheet(f'{acct_short}_대'), cr)
+        else:
+            _put(_safe_sheet(f'{acct_short}_{col_f_label}'), sub)
 
     if not all_results:
         return {'계정별상세내역': pd.DataFrame({'안내': ['해당 계정의 전표 내역이 없습니다.']})}
