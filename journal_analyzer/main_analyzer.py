@@ -51,7 +51,7 @@ task_list 파라미터 시트 규격:
        취득원가_처분분-감가상각누계액_처분분, 처분가액(역산)=장부가액+처분손익.
        한계: 개별 자산이 아닌 계정과목×전표 단위로만 구분됨 — 한 전표에 여러
        자산을 묶어 처분하면 그 전표 전체가 한 줄로 잡힘.)
-  거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열(차변·대변·both) / 실행여부
+  거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
   계정별상세내역 : 계정과목 / 금액유형(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -2021,6 +2021,7 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
     # 거래를 먼저 작업명별로 모아뒀다가, 작업명 단위로 합쳐서 한 번에 집계한다.
     job_frames = {}   # job_name -> [filtered DataFrame, ...]
     job_extra  = {}   # job_name -> extra_cols (해당 작업명에서 먼저 나온 값 사용)
+    job_split  = set()  # 표시방식 '분리'가 한 행이라도 지정된 작업명
 
     for i, p in enumerate(params_list, 1):
         accts    = [a.strip() for a in str(p.get('계정과목','')).split(',')
@@ -2063,6 +2064,11 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
 
         job_frames.setdefault(job_name, []).append(filtered)
         job_extra.setdefault(job_name, ([UNIT_COL] if split_unit else []) + ([COST_COL] if split_cost else []))
+        # 표시방식(2026-10-16 blue sky 요청, 23번과 동일): '분리'면 건별 상세 시트를
+        # 차변 거래 / 대변 거래 시트로 나눠 출력(월별 표는 이미 차·대 열이 나뉘어 있어 그대로)
+        disp_key = next((k for k in p.keys() if '표시방식' in str(k)), None)
+        if disp_key and '분리' in _nv(str(p.get(disp_key, '')), blank_vals=('nan', 'none', '')):
+            job_split.add(job_name)
 
     for job_name, frames in job_frames.items():
         filtered = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
@@ -2092,7 +2098,20 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
                            COL_DEBIT, COL_CREDIT, COL_CLIENT, COL_DESC]
               + extra_cols if c in filtered.columns]
         sname = _safe_sheet(re.sub(r"[^가-힣a-zA-Z0-9]","",job_name)[:18])
-        out[sname]               = filtered[dc]
+        split_dc = job_name in job_split
+
+        def _put_detail(name_fn, frame):
+            """건별 상세 저장. 분리 모드면 차변/대변 거래를 각각 반대편 금액 열을 뺀 시트로."""
+            if not split_dc:
+                out[_safe_sheet(name_fn(''))] = frame.reset_index(drop=True)
+                return
+            for d, col, other in (('차', COL_DEBIT, COL_CREDIT), ('대', COL_CREDIT, COL_DEBIT)):
+                part = frame[frame[col].fillna(0) != 0]
+                if not part.empty:
+                    out[_safe_sheet(name_fn(d))] = part.drop(columns=[other], errors='ignore').reset_index(drop=True)
+
+        # 분리 시 통합 상세 = "{작업명}_차"/"{작업명}_대"
+        _put_detail(lambda d: f'{sname}_{d}' if d else sname, filtered[dc])
         out[sname + '_월별합산'] = monthly
 
         # 거래처별 개별 표(2026-10-16 blue sky 요청): 한 작업명에 거래처를 여러 개
@@ -2131,12 +2150,17 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
             # 거래처별 건별 상세(2026-10-16 blue sky 요청). 시트명을 "{작업명}_상세_{거래처}"로
             # 두는 이유: "{작업명}_{거래처}_상세"로 하면 data_injector.resolve_sheet()의
             # 부분일치 탐색에서 월별 표 시트를 가리키는 src_sheet 값에 상세 시트도 걸린다.
-            ds_base = f'{sname}_상세_{cli_clean[:max(1, 31 - len(sname) - 4)]}'
-            ds, n = ds_base, 2
-            while ds in used_names or ds in out:
-                ds = f'{ds_base[:31 - len(str(n)) - 1]}_{n}'; n += 1
-            used_names.add(ds)
-            out[_safe_sheet(ds)] = sub[dc].reset_index(drop=True)
+            # 분리 시 "{작업명}_상세차_{거래처}"/"{작업명}_상세대_{거래처}" — 방향을 거래처명
+            # 앞에 둬야 부분일치 탐색에서 통합 이름("_상세_{거래처}")·월별 표와 겹치지 않음
+            def _ds_name(d, _cli=cli_clean):
+                head = f'{sname}_상세{d}'
+                ds_base = f'{head}_{_cli[:max(1, 31 - len(head) - 1)]}'
+                ds, n = ds_base, 2
+                while ds in used_names or ds in out:
+                    ds = f'{ds_base[:31 - len(str(n)) - 1]}_{n}'; n += 1
+                used_names.add(ds)
+                return ds
+            _put_detail(_ds_name, sub[dc])
 
     return out or {'안내': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
 
