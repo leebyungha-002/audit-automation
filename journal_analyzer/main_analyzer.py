@@ -2128,6 +2128,16 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
             used_names.add(cs)
             out[_safe_sheet(cs)] = tbl
 
+            # 거래처별 건별 상세(2026-10-16 blue sky 요청). 시트명을 "{작업명}_상세_{거래처}"로
+            # 두는 이유: "{작업명}_{거래처}_상세"로 하면 data_injector.resolve_sheet()의
+            # 부분일치 탐색에서 월별 표 시트를 가리키는 src_sheet 값에 상세 시트도 걸린다.
+            ds_base = f'{sname}_상세_{cli_clean[:max(1, 31 - len(sname) - 4)]}'
+            ds, n = ds_base, 2
+            while ds in used_names or ds in out:
+                ds = f'{ds_base[:31 - len(str(n)) - 1]}_{n}'; n += 1
+            used_names.add(ds)
+            out[_safe_sheet(ds)] = sub[dc].reset_index(drop=True)
+
     return out or {'안내': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
 
 
