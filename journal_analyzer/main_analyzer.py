@@ -2621,6 +2621,8 @@ def analyze_general_ledger(df: pd.DataFrame, params_list: list) -> dict:
             result = pd.merge(all_ym, merged, on='YM', how='left').fillna(0)
             result['차변건수'] = result['차변건수'].astype(int)
             result['대변건수'] = result['대변건수'].astype(int)
+            # 연도 비교 형식과 동일하게 금액 → 건수 순으로 정렬 (조서 매핑 편의)
+            result = result[['YM', '차변합계', '대변합계', '차변건수', '대변건수']]
             result = result.rename(columns={'YM': '월'})
 
         total = {'월': '합  계'}
