@@ -2052,6 +2052,12 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         if vtype == '차변': filtered = filtered[filtered[COL_DEBIT]  != 0]
         elif vtype == '대변': filtered = filtered[filtered[COL_CREDIT] != 0]
         if filtered.empty: continue
+        # 거래처별 개별 표용: 파라미터에 적은 거래처명(키워드) 기준으로 태깅
+        # (한 키워드가 여러 실제 거래처명에 걸려도 입력한 이름 하나로 묶임)
+        f_cli = filtered[COL_CLIENT].fillna('').astype(str)
+        filtered['_거래처키'] = ''
+        for cli in reversed(clients):
+            filtered.loc[f_cli.str.contains(cli, na=False, regex=False), '_거래처키'] = cli
         if split_unit: filtered[UNIT_COL] = filtered[UNIT_COL].astype(str).str.strip()
         if split_cost: filtered[COST_COL] = filtered[COST_COL].astype(str).str.strip()
 
@@ -2088,6 +2094,39 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         sname = _safe_sheet(re.sub(r"[^가-힣a-zA-Z0-9]","",job_name)[:18])
         out[sname]               = filtered[dc]
         out[sname + '_월별합산'] = monthly
+
+        # 거래처별 개별 표(2026-10-16 blue sky 요청): 한 작업명에 거래처를 여러 개
+        # 적으면 위 시트들은 거래처가 섞여 나와 조서 매핑이 어렵다. 거래처마다
+        # 별도 시트 "{작업명}_{거래처명}"을 만들고, 21번 총계정원장과 같은 고정
+        # 레이아웃(행=1~12월 고정+합계, 열=차변합계·대변합계·차변건수·대변건수)으로
+        # 출력해 mapping_list에서 고정 범위(B4:C15 등)로 옮길 수 있게 한다.
+        years = sorted(pd.to_datetime(filtered[COL_DATE], errors='coerce')
+                       .dt.year.dropna().astype(int).unique().tolist())
+        all_ym = pd.DataFrame({'YM': [f'{y}-{m:02d}' for y in years for m in range(1, 13)]})
+        used_names = set()
+        for cli_key in dict.fromkeys(filtered['_거래처키']):
+            if not cli_key: continue
+            sub = filtered[filtered['_거래처키'] == cli_key]
+            dr  = sub[sub[COL_DEBIT].fillna(0)  != 0]
+            cr  = sub[sub[COL_CREDIT].fillna(0) != 0]
+            da  = dr.groupby('YM').agg(차변합계=(COL_DEBIT, 'sum'), 차변건수=(COL_DEBIT, 'count')).reset_index()
+            ca  = cr.groupby('YM').agg(대변합계=(COL_CREDIT, 'sum'), 대변건수=(COL_CREDIT, 'count')).reset_index()
+            tbl = (all_ym.merge(da, on='YM', how='left').merge(ca, on='YM', how='left')
+                   .fillna(0)[['YM', '차변합계', '대변합계', '차변건수', '대변건수']])
+            tbl['차변건수'] = tbl['차변건수'].astype(int)
+            tbl['대변건수'] = tbl['대변건수'].astype(int)
+            tbl = tbl.rename(columns={'YM': '월'})
+            total = {'월': '합  계', **{c: tbl[c].sum() for c in tbl.columns[1:]}}
+            tbl = pd.concat([tbl, pd.DataFrame([total])], ignore_index=True)
+
+            # 시트명은 31자 이내로 온전히 보존돼야 mapping_list가 찾으므로 거래처명 쪽을 자름
+            cli_clean = re.sub(r"[^가-힣a-zA-Z0-9]", "", cli_key)
+            base = f'{sname}_{cli_clean[:max(1, 31 - len(sname) - 1)]}'
+            cs, n = base, 2
+            while cs in used_names or cs in out:
+                cs = f'{base[:31 - len(str(n)) - 1]}_{n}'; n += 1
+            used_names.add(cs)
+            out[_safe_sheet(cs)] = tbl
 
     return out or {'안내': pd.DataFrame({'안내':['파라미터에 거래처명이 없습니다.']})}
 
