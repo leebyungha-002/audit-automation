@@ -2819,7 +2819,10 @@ def analyze_account_transaction_detail(df: pd.DataFrame, params_list: list) -> d
                     blank_vals=('nan', 'none', ''))
         # 표시방식(2026-10-16 blue sky 요청): '분리'면 차변 거래와 대변 거래를 각각
         # 별도 시트(계정명_차 / 계정명_대)로, 빈칸·'통합'이면 기존처럼 한 시트에 한 행씩
-        split = '분리' in _nv(p.get('표시방식', ''), blank_vals=('nan', 'none', ''))
+        # 헤더에 "표시방식(분리/통합)"처럼 안내를 덧붙여도 인식되도록 부분일치로 찾음
+        disp_key = next((k for k in p.keys() if '표시방식' in str(k)), None)
+        split = bool(disp_key) and \
+            '분리' in _nv(str(p.get(disp_key, '')), blank_vals=('nan', 'none', ''))
         if acct:
             targets.append((acct, col_f, split))
 
