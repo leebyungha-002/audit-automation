@@ -3261,7 +3261,8 @@ def _save_lease_completeness_file(results: dict, output_dir: str, company_name: 
 
 def save_results(results: dict, output_dir: str, company_name: str,
                  settings: dict = None, out_path: str = None,
-                 sheet_prefix_map: dict = None, sheet_final_suffix: dict = None) -> str:
+                 sheet_prefix_map: dict = None, sheet_final_suffix: dict = None,
+                 sheet_end_month: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     if out_path is None:
         out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
@@ -3300,6 +3301,17 @@ def save_results(results: dict, output_dir: str, company_name: str,
         ws.cell(1, 1).font  = bold
         if header_line2:
             ws.cell(2, 1).value = header_line2
+            # 기준월 지정 태스크는 실제 데이터가 그 월까지만 필터링되므로 종료일도 맞춰 표시
+            # (2026-10-16 blue sky 발견: 기준월 8인데 분석기간이 12-31로 찍힘)
+            em = (sheet_end_month or {}).get(ws.title)
+            if em:
+                try:
+                    import calendar
+                    y = int(str(end_date)[:4])
+                    ws.cell(2, 1).value = (f'분석기간: {start_date} ~ '
+                                           f'{y}-{em:02d}-{calendar.monthrange(y, em)[1]:02d} (기준월 {em}월)')
+                except (ValueError, TypeError):
+                    pass
 
     # 범례(항목|설명) 블록 + 컬럼별 메모(Comment) 삽입 — startrow=2 이므로 헤더는 원래 3행.
     # 범례가 있는 시트는 A/B열에 "항목 | 설명"을 3행부터 세로로 나열하고, 그만큼
@@ -3467,6 +3479,7 @@ def main():
     # save_results()가 최종 탭 이름을 만들 때는 이 내부 키가 아니라 여기 저장해둔
     # "원래시트명"(번호 없이 깨끗한 버전)을 접두어 뒤에 붙인다.
     sheet_final_suffix: dict = {}
+    sheet_end_month: dict = {}   # 내부 키 → 기준월(분석기간 헤더 표시용)
     for task_no, task_name, 분석대상, end_month in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
@@ -3511,6 +3524,7 @@ def main():
                     all_results[internal_key] = sub_df
                     sheet_prefix_map[internal_key] = f'{task_no:02d}_{task_name}'
                     sheet_final_suffix[internal_key] = sname
+                    if end_month: sheet_end_month[internal_key] = end_month
                     key_map[sname] = internal_key
                 for skey, sval in result.items():
                     if not skey.startswith('_'):
@@ -3537,6 +3551,7 @@ def main():
                 # 중복되는 문제가 있었음(예: 10/16/19번).
                 sname = _safe_sheet(f'{task_no:02d}_{task_name}')
                 all_results[sname] = result
+                if end_month: sheet_end_month[sname] = end_month
                 print(f'       → 시트 1개 생성')
         except Exception as e:
             import traceback
@@ -3564,7 +3579,8 @@ def main():
     if all_results:
         out_path = save_results(all_results, paths['output'], company_name, settings,
                                 out_path=partial_out_path, sheet_prefix_map=sheet_prefix_map,
-                                sheet_final_suffix=sheet_final_suffix)
+                                sheet_final_suffix=sheet_final_suffix,
+                                sheet_end_month=sheet_end_month)
         print(f'\n  ✅ 완료: {out_path}')
         print(f'  시트 수: {len(all_results)}개')
     else:
