@@ -1,0 +1,5 @@
+# 감사 녹음 텍스트 변환기 (audio_transcriber) 전용 패키지
+# 설치: install.bat 더블클릭 또는  python -m pip install -r requirements.txt
+# ffmpeg 별도 설치 불필요 (faster-whisper가 PyAV로 음성 디코딩)
+# 모델(large-v3-turbo, 약 1.6GB)은 첫 실행 시 models/ 폴더로 자동 다운로드
+faster-whisper==1.2.1
