@@ -23,3 +23,10 @@ workpaper_tools/audit_findings_checklist/data/
 workpaper_tools/audit_findings_checklist/output/
 workpaper_tools/audit_findings_checklist/logs/
 __pycache__/
+
+# 녹음 텍스트 변환기 — 음성/텍스트/모델은 로컬에만 유지
+audio_transcriber/input/*
+audio_transcriber/output/*
+!audio_transcriber/input/.gitkeep
+!audio_transcriber/output/.gitkeep
+audio_transcriber/models/

@@ -21,3 +21,4 @@ PyMuPDF==1.28.2
 anthropic==1.11.0
 pydantic==2.12.5
 PyYAML==6.0.2
+faster-whisper

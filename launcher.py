@@ -337,6 +337,15 @@ TOOLS = [
         "extra": None,
     },
     {
+        "category": "녹음 텍스트 변환",
+        "name": "감사 녹음 텍스트 변환 (audio_transcriber)",
+        "desc": "⚠ 실행 전 audio_transcriber/input/ 폴더에 녹음 파일(mp3/m4a/wav 등)을 넣으세요.\nfaster-whisper(large-v3-turbo)로 한국어 텍스트 변환 → output/ 폴더에 타임스탬프 대화록(.txt)과 자막(.srt) 생성. 이미 변환된 파일은 건너뜀. 최초 실행 시 모델(약 1.6GB) 다운로드.",
+        "cmd": ["python", str(ROOT / "audio_transcriber" / "transcribe.py")],
+        "cwd": str(ROOT / "audio_transcriber"),
+        "company": None,
+        "extra": None,
+    },
+    {
         "category": "시트 분리",
         "name": "엑셀 시트 분리 (sheet_splitter)",
         "desc": "시트명 기준(sheet) 또는 컬럼값 기준(col)으로 엑셀 파일을 분리",

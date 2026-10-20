@@ -2705,3 +2705,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. data_injector 실행해 조서 주입 검증
 
 ---
+
+## 2026-10-20 (녹음 텍스트 변환기)
+
+**완료 작업**: 감사 녹음 → 텍스트 변환 앱 `audio_transcriber/` 신규 개발 (faster-whisper, 기본 large-v3-turbo, CPU int8, 한국어, VAD·반복방지·감사용어 프롬프트). input/ 음성 → output/ `.txt`(타임스탬프)+`.srt`, 변환된 파일 건너뜀. 런처 메뉴 등록, tiny 모델로 동작 확인
+**변경 파일**: audio_transcriber/transcribe.py, audio_transcriber/run_transcribe.bat, launcher.py, .gitignore, requirements.txt
+**미해결 이슈**: 실제 녹음(18MB) 미실행 — 이 PC는 GPU 없음(4스레드 CPU)이라 속도 확인 필요
+**다음 할 일**:
+1. 첫 녹음 파일 변환 후 정확도·소요시간 확인 (느리면 --model medium/small)
+2. 필요 시 화자 구분·요약 기능 검토
+
+---
