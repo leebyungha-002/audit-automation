@@ -50,6 +50,25 @@ def fmt_ts(sec, srt=False):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def patch_pyav():
+    """PyAV 버전에 따라 av.open()이 metadata_errors 인자를 거부하는 문제 우회
+    (미니PC에서 'open() got an unexpected keyword argument metadata_errors' 발생)"""
+    import av
+
+    orig_open = av.open
+
+    def safe_open(*args, **kwargs):
+        try:
+            return orig_open(*args, **kwargs)
+        except TypeError as e:
+            if "metadata_errors" not in str(e):
+                raise
+            kwargs.pop("metadata_errors", None)
+            return orig_open(*args, **kwargs)
+
+    av.open = safe_open
+
+
 def load_model(model_name):
     from faster_whisper import WhisperModel
     try:
@@ -163,6 +182,7 @@ def main():
         print(f"변환할 음성 파일이 없습니다. input 폴더에 파일을 넣어주세요:\n  {INPUT_DIR}")
         return
 
+    patch_pyav()
     model = load_model(args.model)
     language = None if args.lang == "auto" else args.lang
     for f in files:

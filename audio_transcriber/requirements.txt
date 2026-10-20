@@ -3,3 +3,4 @@
 # ffmpeg 별도 설치 불필요 (faster-whisper가 PyAV로 음성 디코딩)
 # 모델(large-v3-turbo, 약 1.6GB)은 첫 실행 시 models/ 폴더로 자동 다운로드
 faster-whisper==1.2.1
+av==18.1.0
