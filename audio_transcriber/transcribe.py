@@ -19,7 +19,7 @@ import time
 # 런처/콘솔(cp949)에서 특수문자 출력 시 UnicodeEncodeError 방지
 for _s in (sys.stdout, sys.stderr):
     try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
+        _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)  # 런처에서 진행률 즉시 표시
     except Exception:
         pass
 
