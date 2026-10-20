@@ -23,6 +23,9 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# 모델 다운로드 시 나오는 무해한 경고 숨김 (Windows 심볼릭링크 미지원, HF 토큰 미설정)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_DIR = os.path.join(BASE_DIR, "input")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
@@ -49,6 +52,11 @@ def fmt_ts(sec, srt=False):
 
 def load_model(model_name):
     from faster_whisper import WhisperModel
+    try:
+        from huggingface_hub.utils import logging as hf_logging
+        hf_logging.set_verbosity_error()
+    except Exception:
+        pass
 
     device, compute_type = "cpu", "int8"
     try:
