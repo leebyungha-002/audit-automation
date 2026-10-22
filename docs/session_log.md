@@ -2774,3 +2774,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun main_analyzer 전체 실행
 
 ---
+
+## 2026-10-22 (26번 단일시트·익명화 보강·전 회사 샘플링 컬럼)
+
+**완료 작업**: 26번 출력을 '결과' 한 시트(세로형: 섹션 1.샘플링~9.가명대조)로 통합. AI 전송 익명화 보강 — ①mask_sensitive_info가 한글에 붙은 숫자(예: samdong '#01032609094통신비')를 못 가리던 버그 수정(\b→숫자/하이픈 경계) ②적요 속 거래처 실명을 분개장 전체 거래처명 기준 가명 치환(daesun 51%·samdong 24% 라인에 실명 있었음) ③직함 앞 사람이름 ○○○ 처리. daesun·samdong 프롬프트 실명 잔존 0 확인. 7개 회사 task_list 26번 시트에 샘플링 컬럼 추가(기존 계정 유지, 기본값 기입)·작성가이드 갱신·분석대상 '전체'. data_injector inject_ai_result: 위험수준 '높음' 강조, 없는 '확인전표' 시트는 건너뜀
+**변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/*/task_list_*.xlsx(7개), workpaper_tools/report/data_injector.py(해당 hunk만 커밋)
+**미해결 이슈**: kyungnam·samdong·brantree mapping_list의 'AI검토_확인전표' 행은 이제 건너뜀 처리됨(필요 시 삭제). 15번(AI계정별분석, AI 미호출)은 적요 실명 치환 미적용. live_pure task_list는 기존 미커밋 수정분이 함께 커밋됨
+**다음 할 일**:
+1. daesun main_analyzer 전체 실행
+2. AI검토 조서 시트 레이아웃(결과 시트가 길어짐) 확인
+
+---

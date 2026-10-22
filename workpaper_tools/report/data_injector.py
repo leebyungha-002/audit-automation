@@ -462,6 +462,12 @@ def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
         # save_results()가 1~2행에 회사명/분석기간을 적어두므로 3행(header=2)이 실제 헤더
         return pd.read_excel(src_path, sheet_name=src_sheet, engine=engine, header=2)
 
+    # 2026-10-22 메뉴26 출력이 '결과' 한 시트로 통합되면서 '확인전표' 시트가 없어짐 —
+    # 예전 mapping_list의 확인전표 행은 오류 대신 건너뜀 (확인전표는 '결과'의 7번 섹션에 포함)
+    if src_sheet not in pd.ExcelFile(src_path).sheet_names:
+        print(f'    [AI] 소스 시트 없음({src_sheet}) — 건너뜀 (메뉴26은 결과 시트 하나로 통합됨)')
+        return 0
+
     try:
         df = _read('calamine')
     except Exception:
@@ -488,8 +494,11 @@ def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
     # ── 데이터 주입 + 위험/추가확인 행 강조 ──────────────────────────
     sig_count = 0
     for r_idx, (_, row_data) in enumerate(df.iterrows(), start=1):
+        # 위험수준/내용: 메뉴26 통합 '결과' 시트(세로형) 기준, 위험평가/결론: 예전 요약표 기준
         is_flag = (str(row_data.get('위험평가', '')).strip() == '높음'
-                   or str(row_data.get('결론', '')).strip() == '추가확인필요')
+                   or str(row_data.get('결론', '')).strip() == '추가확인필요'
+                   or str(row_data.get('위험수준', '')).strip() == '높음'
+                   or str(row_data.get('내용', '')).strip() == '추가확인필요')
         if is_flag:
             sig_count += 1
         for c_idx, val in enumerate(row_data):

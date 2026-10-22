@@ -359,15 +359,22 @@ def get_safe_client_name(real_name):
     _CLIENT_COUNTER += 1
     return alias
 
+# 숫자(하이픈 포함) 연속열 중 숫자가 10자리 이상이면 계좌·카드·전화·주민번호로 보고 마스킹.
+# 예전엔 \b 경계를 써서 '#01032609094통신비'처럼 숫자가 한글에 붙어 있으면(한글도 \w라
+# 경계가 안 생김) 그대로 새어 나갔다(2026-10-22 samdong 적요에서 발견) → 숫자/하이픈
+# 기준 경계로 변경. 8자리 일자(20251231)·콤마 금액은 대상 아님.
+_SENSITIVE_NUM_RE = re.compile(r'(?<![\d-])\d[\d-]{8,}\d(?![\d-])')
+
 def mask_sensitive_info(text):
     if not isinstance(text, str):
         text = str(text) if text is not None else ''
         if text == '': return text
-    text = re.sub(r'(\d{2,})[-](\d{2,})[-](\d{2,})', r'\1-****-\3', text)
     def _mask(m):
         s = m.group()
-        return s[:4] + '****' + s[-4:] if len(s) >= 10 else s
-    return re.sub(r'\b\d{10,}\b', _mask, text)
+        if sum(ch.isdigit() for ch in s) < 10:
+            return s
+        return s[:4] + '****' + s[-4:]
+    return _SENSITIVE_NUM_RE.sub(_mask, text)
 
 def _related_party_pattern(party):
     p = str(party).strip()
@@ -2106,6 +2113,46 @@ def _ai_counter_accounts(df: pd.DataFrame, acct_mask: pd.Series) -> tuple:
     return per_key, top
 
 
+# 적요 속 실명 익명화 (2026-10-22): 거래처명 컬럼만 가명 처리하면 적요에 같은 이름이
+# 그대로 남아 AI로 전송됐다(daesun 51%, samdong 24% 라인). 분개장 전체 거래처명을
+# 가명으로 치환하고, '홍길동 차장'처럼 직함 앞 이름도 가린다.
+_AI_NAME_STOPWORDS = {'기타', '개인', '현금', '미지정', '없음', '해당없음', '일반', '본사', '지점'}
+_AI_CORP_TOKENS_RE = re.compile(r'\(주\)|㈜|주식회사|\(유\)|유한회사|\(재\)|재단법인|\(사\)|사단법인')
+_AI_PERSON_TITLE_RE = re.compile(
+    r'(?<![가-힣])[가-힣]{2,4}(?=\s?(?:대표이사|대표|회장|사장|부사장|전무|상무|이사|본부장|'
+    r'실장|팀장|부장|차장|과장|대리|주임|사원|선생님|교수|님)(?![가-힣]))')
+
+
+def _ai_client_name_regex(df: pd.DataFrame):
+    """분개장 전체 거래처명(+법인격 표기 뺀 이름) → 가명 치환용 (regex, {변형: 가명})."""
+    if COL_CLIENT not in df.columns:
+        return None, {}
+    variants = {}
+    for name in df[COL_CLIENT].dropna().astype(str).str.strip().unique():
+        if len(name) < 2 or name in _AI_NAME_STOPWORDS:
+            continue
+        alias = get_safe_client_name(name)
+        core = _AI_CORP_TOKENS_RE.sub('', name).strip()
+        for v in (name, core):
+            if len(v) >= 2 and v not in _AI_NAME_STOPWORDS:
+                variants.setdefault(v, alias)
+    if not variants:
+        return None, {}
+    pattern = re.compile('|'.join(re.escape(v) for v in sorted(variants, key=len, reverse=True)))
+    return pattern, variants
+
+
+def _ai_anonymize_text(text, name_re, variants) -> str:
+    """AI 전송용 적요: 거래처 실명→가명, 직함 앞 사람이름→○○○, 계좌·전화번호 마스킹."""
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return ''
+    s = str(text)
+    if name_re is not None:
+        s = name_re.sub(lambda m: variants[m.group()], s)
+    s = _AI_PERSON_TITLE_RE.sub('○○○', s)
+    return mask_sensitive_info(s)
+
+
 def _ai_period_summary(sub: pd.DataFrame) -> dict:
     return {
         '건수': len(sub),
@@ -2115,8 +2162,9 @@ def _ai_period_summary(sub: pd.DataFrame) -> dict:
     }
 
 
-def _ai_build_material(df: pd.DataFrame, acct: str, cfg: dict):
+def _ai_build_material(df: pd.DataFrame, acct: str, cfg: dict, name_re=None, variants=None):
     """계정 1개의 AI 입력 자료. 대상 없으면 None.
+    name_re/variants는 _ai_client_name_regex() 결과(적요 속 거래처 실명 치환용).
 
     df에 '구분'(당기/전기)이 있으면 당기에서만 샘플을 뽑고 전기는 비교 통계로만 쓴다
     (분석목록 26번 분석대상을 '전체'로 두어야 전기 비교가 들어감).
@@ -2155,8 +2203,10 @@ def _ai_build_material(df: pd.DataFrame, acct: str, cfg: dict):
         clients.columns = ['거래처(가명)', '금액합계', '건수']
     descs = pd.DataFrame()
     if COL_DESC in cur.columns:
-        descs = (cur[COL_DESC].fillna('').astype(str).str.strip().replace('', '(미기재)')
-                 .apply(mask_sensitive_info).value_counts().head(10)
+        # 고유 적요별로 먼저 세고 익명화한 뒤 다시 합산 (행마다 정규식 치환하지 않도록)
+        vc = cur[COL_DESC].fillna('').astype(str).str.strip().replace('', '(미기재)').value_counts()
+        vc.index = [_ai_anonymize_text(t, name_re, variants) for t in vc.index]
+        descs = (vc.groupby(level=0).sum().sort_values(ascending=False).head(10)
                  .rename_axis('적요').reset_index(name='건수'))
 
     nz = cur.loc[cur['_amt'] > 0, '_amt']
@@ -2171,16 +2221,19 @@ def _ai_build_material(df: pd.DataFrame, acct: str, cfg: dict):
         'period': (cur['_date'].min(), cur['_date'].max()),
         'monthly': monthly, 'clients': clients, 'counter_top': counter_top,
         'descs': descs, 'dist': dist, 'flag_counts': flag_counts,
+        'name_re': name_re, 'variants': variants,
     }
 
 
-def _ai_sample_for_prompt(sample: pd.DataFrame) -> pd.DataFrame:
-    """AI 전송용 샘플 — 거래처 가명·적요 마스킹, 필요한 컬럼만."""
+def _ai_sample_for_prompt(m: dict) -> pd.DataFrame:
+    """AI 전송용 샘플 — 거래처 가명·적요 익명화(실명·직함 앞 이름·계좌번호), 필요한 컬럼만."""
+    sample = m['sample']
     s = pd.DataFrame({
         '전표일자': sample['_date'].dt.strftime('%Y-%m-%d'),
         '전표번호': sample[COL_JOURNAL_ID].astype(str) if COL_JOURNAL_ID in sample.columns else '',
         '거래처': sample[COL_CLIENT].apply(get_safe_client_name) if COL_CLIENT in sample.columns else '',
-        '적요': sample[COL_DESC].apply(mask_sensitive_info) if COL_DESC in sample.columns else '',
+        '적요': (sample[COL_DESC].apply(lambda t: _ai_anonymize_text(t, m['name_re'], m['variants']))
+                 if COL_DESC in sample.columns else ''),
         '차변': sample[COL_DEBIT], '대변': sample[COL_CREDIT],
         '상대계정': sample['상대계정'], '선정사유': sample['샘플선정사유'],
     })
@@ -2228,7 +2281,7 @@ def _build_ai_review_prompt(company_name: str, acct: str, m: dict, cfg: dict) ->
 {flags_txt}
 
 [스마트샘플 {len(m['sample'])}건 — 전체 {s['건수']:,}건 중 샘플링비율 {cfg['샘플링비율']:.0%}(최소 {cfg['최소건수']}건·최대 {cfg['최대건수']}건), 구성: {mix_txt}]
-{_ai_sample_for_prompt(m['sample']).to_csv(index=False)}{focus_txt}
+{_ai_sample_for_prompt(m).to_csv(index=False)}{focus_txt}
 [작성 지침 — JSON 스키마에 맞춰 한국어로 작성]
 1. 계정요약: 계정성격(성격과 목적), 거래규모(총액·차대변·순증감을 억원 단위 숫자로), 거래패턴(월별 추이·집중 시기),
    전기대비증감(전기 동기간 대비 증감률과 원인 추정).
@@ -2245,12 +2298,11 @@ def _build_ai_review_prompt(company_name: str, acct: str, m: dict, cfg: dict) ->
 def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
     """26번 파라미터 시트의 계정별로 스마트샘플을 뽑아 Gemini에 구조화 분석을 요청한다.
 
-    표 구성
-      결과      : 계정과목당 1행 요약(위험평가/결론 등) — mapping_list AI_INJECT용, 컬럼 고정.
-      확인전표  : AI가 결론 근거로 지목한 전표 1건당 1행 (원본 샘플에서 금액·거래처·일자 재확인).
-      분석보고서: 샘플링 정보 + 계정요약/거래특징/감사인제언 (섹션·항목·내용 세로형).
-      위험요소  : 경영자주장별 위험수준·사례·평가근거·제안감사절차·관련전표.
-      샘플      : AI에 보낸 스마트샘플 원본(실명) + 거래처 가명 + 샘플선정사유.
+    결과는 '결과' 표 하나(세로형: 계정과목/섹션/항목/위험수준/내용/관련전표/비고)로 낸다
+    (2026-10-22 blue sky 요청 — 참조양식 '전체내용' 시트처럼 한 시트에 전부).
+    섹션: 1.샘플링 → 2.계정요약 → 3.거래특징 → 4.위험요소(경영자주장별) → 5.감사인 제언 →
+          6.종합결론 → 7.확인필요전표 → 8.샘플내역(실명+가명+선정사유) → 9.가명대조
+    mapping_list AI_INJECT는 src_sheet '결과'를 그대로 읽으므로 시트명은 '결과' 유지.
     """
     import json
 
@@ -2261,10 +2313,22 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
 
     company_name = os.path.basename(_COMPANY_DIR) if _COMPANY_DIR else ''
     client, model_name, config = _get_gemini_client_and_config()
+    name_re, variants = _ai_client_name_regex(df)
 
-    summary_rows, detail_rows, report_rows, risk_rows, sample_frames = [], [], [], [], []
+    rows = []
+
+    def _add(acct, sec, item, content='', level='', jids='', note=''):
+        rows.append({'계정과목': acct, '섹션': sec, '항목': item, '위험수준': level,
+                     '내용': content, '관련전표': jids, '비고': note})
+
+    def _won(v):
+        try:
+            return f'{float(v):,.0f}'
+        except (TypeError, ValueError):
+            return ''
+
     for acct, cfg in targets:
-        m = _ai_build_material(df, acct, cfg)
+        m = _ai_build_material(df, acct, cfg, name_re, variants)
         if m is None:
             continue
         sample = m['sample']
@@ -2273,29 +2337,16 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
             for _, r in sample.iterrows():
                 jid_lookup.setdefault(str(r[COL_JOURNAL_ID]), r)
 
-        sample_frames.append(pd.DataFrame({
-            '계정과목': acct,
-            '전표일자': sample['_date'].dt.strftime('%Y-%m-%d'),
-            '전표번호': sample.get(COL_JOURNAL_ID, ''),
-            '거래처명': sample.get(COL_CLIENT, ''),
-            '거래처(가명)': sample[COL_CLIENT].apply(get_safe_client_name) if COL_CLIENT in sample.columns else '',
-            '적요': sample.get(COL_DESC, ''),
-            '차변': sample[COL_DEBIT], '대변': sample[COL_CREDIT],
-            '상대계정': sample['상대계정'], '샘플선정사유': sample['샘플선정사유'],
-        }))
         mix_txt = ', '.join(f'{k} {v:.0%}' for k, v in cfg['구성'].items())
         reason_cnt = sample['샘플선정사유'].str.replace(r'\(.*\)', '', regex=True).value_counts()
-        report_rows += [
-            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '전체거래수', '내용': f"{m['summary']['건수']:,}건"},
-            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '샘플크기',
-             '내용': f"{len(sample):,}건 (샘플링비율 {cfg['샘플링비율']:.0%}, 최소 {cfg['최소건수']}·최대 {cfg['최대건수']}건)"},
-            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '스마트샘플링 구성', '내용': mix_txt},
-            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '실제 선정 내역',
-             '내용': ', '.join(f'{k} {v}건' for k, v in reason_cnt.items())},
-        ]
+        sec = '1. 샘플링'
+        _add(acct, sec, '전체거래수', f"{m['summary']['건수']:,}건")
+        _add(acct, sec, '샘플크기', f"{len(sample):,}건 (샘플링비율 {cfg['샘플링비율']:.0%}, "
+                                    f"최소 {cfg['최소건수']}·최대 {cfg['최대건수']}건)")
+        _add(acct, sec, '스마트샘플링 구성', mix_txt)
+        _add(acct, sec, '실제 선정 내역', ', '.join(f'{k} {v}건' for k, v in reason_cnt.items()))
         if cfg['중점검토사항']:
-            report_rows.append({'계정과목': acct, '섹션': '1. 샘플링', '항목': '중점검토사항',
-                                '내용': cfg['중점검토사항']})
+            _add(acct, sec, '중점검토사항', cfg['중점검토사항'])
 
         print(f'    [AI검토] {acct} → 샘플 {len(sample)}건/{m["summary"]["건수"]:,}건, '
               f'Gemini({model_name}) 호출 중...', flush=True)
@@ -2303,63 +2354,58 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
             prompt = _build_ai_review_prompt(company_name, acct, m, cfg)
             resp = client.models.generate_content(model=model_name, contents=prompt, config=config)
             data = json.loads(resp.text)
-            summary_rows.append({
-                '계정과목':     acct,
-                '위험평가':     data.get('위험평가', ''),
-                '주요특이사항': data.get('주요특이사항', ''),
-                '결론':         data.get('결론', ''),
-                '결론근거':     data.get('결론근거', ''),
-                '추가확인사항': data.get('추가확인사항', ''),
-            })
+        except Exception as e:
+            print(f'    [AI검토] {acct} 오류: {e}', flush=True)
+            _add(acct, '6. 종합결론', '결론', 'API오류', note=str(e))
+            data = None
+
+        if data is not None:
             for sec, keys in (('2. 계정요약', ('계정성격', '거래규모', '거래패턴', '전기대비증감')),
                               ('3. 거래특징', ('주요거래처', '금액분포', '거래주기'))):
                 for k in keys:
-                    report_rows.append({'계정과목': acct, '섹션': sec, '항목': k, '내용': data.get(k, '')})
-            for i, tip in enumerate(data.get('감사인제언') or [], 1):
-                report_rows.append({'계정과목': acct, '섹션': '5. 감사인 제언', '항목': f'제언{i}', '내용': tip})
+                    _add(acct, sec, k, data.get(k, ''))
             for rk in data.get('위험요소') or []:
                 jids = [str(j).strip() for j in (rk.get('관련전표번호') or [])]
-                risk_rows.append({
-                    '계정과목':     acct,
-                    '경영자주장':   rk.get('경영자주장', ''),
-                    '위험수준':     rk.get('위험수준', ''),
-                    '주요사례':     rk.get('주요사례', ''),
-                    '평가근거':     rk.get('평가근거', ''),
-                    '제안감사절차': rk.get('제안감사절차', ''),
-                    '관련전표':     ', '.join(j if j in jid_lookup else f'{j}(샘플외)' for j in jids),
-                })
+                _add(acct, '4. 위험요소', rk.get('경영자주장', ''),
+                     f"[사례] {rk.get('주요사례', '')}\n[평가근거] {rk.get('평가근거', '')}\n"
+                     f"[제안감사절차] {rk.get('제안감사절차', '')}",
+                     level=rk.get('위험수준', ''),
+                     jids=', '.join(j if j in jid_lookup else f'{j}(샘플외)' for j in jids))
+            for i, tip in enumerate(data.get('감사인제언') or [], 1):
+                _add(acct, '5. 감사인 제언', f'제언{i}', tip)
+            sec = '6. 종합결론'
+            _add(acct, sec, '위험평가', level=data.get('위험평가', ''))
+            _add(acct, sec, '결론', data.get('결론', ''))
+            _add(acct, sec, '결론근거', data.get('결론근거', ''))
+            _add(acct, sec, '주요특이사항', data.get('주요특이사항', ''))
+            _add(acct, sec, '추가확인사항', data.get('추가확인사항', ''))
             for item in data.get('확인필요전표') or []:
                 jid = str(item.get('전표번호', '')).strip()
-                src_row = jid_lookup.get(jid)
-                detail_rows.append({
-                    '계정과목':   acct,
-                    '전표번호':   jid,
-                    '전표일자':   src_row[COL_DATE] if src_row is not None and COL_DATE in src_row else '',
-                    '거래처명':   src_row[COL_CLIENT] if src_row is not None and COL_CLIENT in src_row else '',
-                    '차변':       src_row[COL_DEBIT] if src_row is not None and COL_DEBIT in src_row else '',
-                    '대변':       src_row[COL_CREDIT] if src_row is not None and COL_CREDIT in src_row else '',
-                    '확인사유':   item.get('확인사유', ''),
-                    '비고':       '' if src_row is not None else '원본 샘플에서 전표번호 미확인 — AI 응답 그대로 기재',
-                })
-        except Exception as e:
-            print(f'    [AI검토] {acct} 오류: {e}', flush=True)
-            summary_rows.append({
-                '계정과목': acct, '위험평가': '', '주요특이사항': '',
-                '결론': 'API오류', '결론근거': str(e), '추가확인사항': '',
-            })
+                r = jid_lookup.get(jid)
+                if r is None:
+                    note = '원본 샘플에서 전표번호 미확인 — AI 응답 그대로 기재'
+                else:
+                    note = (f"{pd.to_datetime(r[COL_DATE]):%Y-%m-%d} / {r.get(COL_CLIENT, '')} / "
+                            f"차 {_won(r[COL_DEBIT])} / 대 {_won(r[COL_CREDIT])}")
+                _add(acct, '7. 확인필요전표', jid, item.get('확인사유', ''), jids=jid, note=note)
 
-    out = {
-        '결과': pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame({'결과': ['분석 대상 없음']}),
-    }
-    if detail_rows:
-        out['확인전표'] = pd.DataFrame(detail_rows)
-    if report_rows:
-        out['분석보고서'] = pd.DataFrame(report_rows)
-    if risk_rows:
-        out['위험요소'] = pd.DataFrame(risk_rows)
-    if sample_frames:
-        out['샘플'] = pd.concat(sample_frames, ignore_index=True)
-    return out
+        for _, r in sample.iterrows():
+            cli = r.get(COL_CLIENT, '')
+            _add(acct, '8. 샘플내역', str(r.get(COL_JOURNAL_ID, '')),
+                 f"{r['_date']:%Y-%m-%d} / {cli}({get_safe_client_name(cli)}) / {r.get(COL_DESC, '')} / "
+                 f"차 {_won(r[COL_DEBIT])} / 대 {_won(r[COL_CREDIT])} / 상대계정: {r['상대계정']}",
+                 note=r['샘플선정사유'])
+
+        # AI 답변에 나오는 가명(Client_###)을 실명으로 되짚을 수 있게 이 계정에서 쓴 가명만 정리
+        used = set(sample[COL_CLIENT].dropna().astype(str).str.strip()) if COL_CLIENT in sample.columns else set()
+        if not m['clients'].empty:
+            used |= {real for real, alias in GLOBAL_SAFE_MAP.items()
+                     if alias in set(m['clients']['거래처(가명)'])}
+        for real in sorted(used, key=lambda x: GLOBAL_SAFE_MAP.get(x, '')):
+            if real in GLOBAL_SAFE_MAP:
+                _add(acct, '9. 가명대조', GLOBAL_SAFE_MAP[real], real)
+
+    return {'결과': pd.DataFrame(rows) if rows else pd.DataFrame({'결과': ['분석 대상 없음']})}
 
 
 # ── 16. 데이터·헤더 확인 ──────────────────────────────────────────────────────
