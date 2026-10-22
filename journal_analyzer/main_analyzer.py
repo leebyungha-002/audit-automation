@@ -25,8 +25,11 @@ task_list 파라미터 시트 규격:
   자산부채교차 : 구분(자산·부채) / 계정과목 / 실행여부
   매출비용교차 : 구분(매출·비용) / 계정과목 / 실행여부
   심층분석     : 계정과목 / 개수 / 금액열(차변·대변·both) / 실행여부
-  AI계정별분석 : 계정과목 / 실행여부
-  AI계정별분석_실행 : 계정과목 / 실행여부  (Gemini 호출 → AI검토결과 + AI검토_확인전표 시트)
+  감사샘플링   : 계정과목 / 실행여부 / 시작일 / 종료일 / 샘플링방법(MUS·체계적·무작위·금액상위) /
+                 금액타입 / 샘플크기 / 통계표사용 / 신뢰수준 / 허용왜곡표시 / 예상왜곡표시 /
+                 이상거래포함 / 개별유의금액
+  AI계정별분석_실행 : 계정과목 / 실행여부 / 샘플링비율 / 최소·최대건수 / 금액상위·최신·이상치·월별·랜덤
+                      / 중점검토사항  (Gemini 호출 → '결과' 시트 하나)
   감가상각_평가손익분석 : 계정과목 / 금액열 / 그룹기준열 / 실행여부 / 비고
       (8번 상대계정분석과 동일 로직 — 감가상각비/외화환산손익/평가손익/대손상각비 등
        손익 계정의 상대계정(자산 누계액 등) 금액을 전표 단위로 매칭해 추출. (Phase 1)
@@ -1858,46 +1861,262 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
     return out or {'심층분석': pd.DataFrame({'결과':['데이터 없음']})}
 
 
-# ── 15. AI 계정별 분석 ────────────────────────────────────────────────────────
-def _prepare_ai_material(df: pd.DataFrame, acct: str):
-    """계정과목 1건에 대해 (월별집계, 마스킹샘플) 튜플을 반환. 대상 없으면 (None, None).
+# ── 15. 감사샘플링 ────────────────────────────────────────────────────────────
+# 2026-10-22 개편: 예전 'AI계정별분석'(AI 자료 준비용 금액상위 10% 마스킹 샘플)은 26번이
+# 스마트샘플링·익명화를 직접 하게 되면서 역할이 겹쳐, 감사증빙 대조용 샘플 추출 메뉴로 교체
+# (JS앱 '감사 샘플링' 화면 기준 — 이미지/감사샘플링_예시화면.png).
+# 샘플 단위는 해당 계정의 전표 '줄'(같은 전표의 상대계정 줄은 뽑지 않고 '상대계정' 열에 참고로만
+# 표시 — 예: 비품 취득 테스트 시 보통예금·미지급금 줄이 섞이지 않게, blue sky 결정).
+#
+# 처리 순서: 모집단(계정·기간·금액타입) → 개별유의금액 이상 전수(샘플크기와 별도)
+#           → 이상거래 우선 포함(샘플크기에 포함) → 나머지를 선택한 방법으로 추출.
+_SAMPLING_METHODS = ('MUS', '체계적', '무작위', '금액상위')
+_SAMPLING_SEED = 42                 # 재실행 시 같은 샘플 (조서 재현성)
+_SAMPLING_DEFAULT_SIZE = 30
+_SAMPLING_ANOMALY_CAP = 0.20        # 이상거래 우선 포함은 샘플크기의 20%까지
+# MUS 통계표(오류 0건 기대 기준) 신뢰계수(RF)·확장계수(EF)
+_MUS_FACTORS = {0.90: (2.31, 1.5), 0.95: (3.00, 1.6), 0.99: (4.61, 1.9)}
+_EVIDENCE_COLS = ['증빙종류', '증빙확인(O/X)', '승인확인(O/X)', '예외사항', '확인자']
 
-    메뉴15(analyze_ai_preparation)·메뉴26(analyze_ai_review) 공용 전처리.
+
+def _sampling_param_amount(v):
+    """'500,000,000' / 5e8 / 빈칸 → float 또는 None."""
+    f = _ai_param_num(v, None)
+    return None if f is None else float(f)
+
+
+def _sampling_param_date(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() in ('', 'nan', 'NaT'):
+        return None
+    d = pd.to_datetime(v, errors='coerce')
+    return None if pd.isna(d) else d
+
+
+def _sampling_mus_size(book_value, conf, tm, em):
+    """통계표 기반 MUS 샘플크기: n = BV×RF / (TM − EM×EF). (크기, 근거문구) 반환."""
+    level = min(_MUS_FACTORS, key=lambda k: abs(k - conf))
+    rf, ef = _MUS_FACTORS[level]
+    denom = tm - em * ef
+    if denom <= 0:
+        raise ValueError(f'허용왜곡표시({tm:,.0f})가 예상왜곡표시×확장계수({em * ef:,.0f})보다 커야 함')
+    n = int(np.ceil(book_value * rf / denom))
+    basis = (f'통계표: 모집단금액 {book_value:,.0f} × 신뢰계수 {rf} ÷ (허용왜곡표시 {tm:,.0f} − '
+             f'예상왜곡표시 {em:,.0f} × 확장계수 {ef}) = {n}건 (신뢰수준 {level:.0%})')
+    return n, basis
+
+
+def _sampling_select(pop: pd.DataFrame, n: int, method: str, rng) -> tuple:
+    """pop(정렬된 모집단, '_amt' 포함)에서 n건 추출. (선정 index 리스트, 사유 dict, 조건 dict)."""
+    if n <= 0 or pop.empty:
+        return [], {}, {}
+    if n >= len(pop):
+        return list(pop.index), {i: f'{method}(모집단 전체)' for i in pop.index}, {}
+
+    if method == '금액상위':
+        idx = pop.nlargest(n, '_amt').index.tolist()
+        return idx, {i: '금액상위' for i in idx}, {}
+
+    if method == '무작위':
+        idx = pop.sample(n=n, random_state=_SAMPLING_SEED).index.tolist()
+        return idx, {i: '무작위' for i in idx}, {}
+
+    if method == '체계적':
+        step = len(pop) / n
+        start = rng.uniform(0, step)
+        pos = [int(start + k * step) for k in range(n)]
+        idx = [pop.index[p] for p in pos]
+        return idx, {i: f'체계적({p + 1}번째)' for i, p in zip(idx, pos)}, {
+            '추출간격': f'{step:,.2f}건', '시작점': f'{start + 1:,.2f}번째'}
+
+    # MUS: 금액 누적이 (시작점 + k×구간)을 넘는 줄을 선택. 구간보다 큰 줄은 여러 번 걸려도 1건
+    total = pop['_amt'].sum()
+    interval = total / n
+    start = rng.uniform(0, interval)
+    cum = pop['_amt'].cumsum().to_numpy()
+    hits = start + interval * np.arange(n)
+    pos = pd.Series(cum).searchsorted(hits)          # 누적금액 >= 선택지점인 첫 줄
+    idx, reasons = [], {}
+    for h, p in zip(hits, pos):
+        i = pop.index[min(p, len(pop) - 1)]
+        if i in reasons:
+            continue
+        idx.append(i)
+        big = '·구간초과' if pop.at[i, '_amt'] >= interval else ''
+        reasons[i] = f'MUS(선택지점 {h:,.0f}{big})'
+    # 구간보다 큰 줄은 선택지점 여러 개를 혼자 차지하므로 고유 줄 수 < 선택지점 수가 정상
+    return idx, reasons, {'샘플구간': f'{interval:,.0f}원', '시작점': f'{start:,.0f}원',
+                          '선택지점': f'{n}개 → 고유 줄 {len(idx)}건',
+                          '구간초과 금액 줄': f"{int((pop['_amt'] >= interval).sum())}건"}
+
+
+def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
+    """15. 감사샘플링: 계정별 감사증빙 대조용 샘플(전표 줄 단위) 추출.
+
+    표 구성
+      샘플링조건       : 계정 1행 = 모집단·대사·샘플크기 근거·추출방법 조건 요약
+      {계정명}_{차/대/양}: 샘플 목록 + 증빙 확인란(빈칸)
+    AI로 보내지 않으므로 거래처명·적요는 실명 그대로 출력.
     """
-    filtered = df[df[COL_ACCOUNT].str.contains(acct, na=False, regex=False)].copy()
-    if filtered.empty:
-        return None, None
+    rows = [p for p in params_list if _nv(p.get('계정과목', ''))]
+    if not rows:
+        return {'샘플링조건': pd.DataFrame({'안내': [
+            '15_감사샘플링 시트에 계정과목을 적고 실행여부를 Y로 두세요.']})}
 
-    filtered['YM'] = pd.to_datetime(filtered[COL_DATE], errors='coerce').dt.strftime('%Y-%m')
-    monthly = filtered.groupby('YM')[[COL_DEBIT, COL_CREDIT]].agg(['sum','count']).reset_index()
-    monthly.columns = ['YM','차변합계','차변건수','대변합계','대변건수']
+    key_col = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
+    dates = pd.to_datetime(df[COL_DATE], errors='coerce')
+    cond_rows, out, fmt = [], {}, {}
+    dir_tag = {'차변': '차', '대변': '대', 'both': '양'}
 
-    filtered['MaxAmt'] = filtered[[COL_DEBIT, COL_CREDIT]].max(axis=1)
-    sample = (filtered[filtered['MaxAmt'] >= filtered['MaxAmt'].quantile(0.90)].copy()
-              if len(filtered) > 10 else filtered.copy())
-    if COL_CLIENT in sample.columns:
-        sample[COL_CLIENT] = sample[COL_CLIENT].apply(get_safe_client_name)
-    for col in MASK_TARGET_COLS:
-        if col in sample.columns: sample[col] = sample[col].apply(mask_sensitive_info)
-    sample = sample.drop(columns=['MaxAmt','YM'], errors='ignore')
+    for p in rows:
+        acct = _nv(p.get('계정과목', ''))
+        method = _nv(p.get('샘플링방법', '')) or 'MUS'
+        method = next((m for m in _SAMPLING_METHODS if m.upper() == method.upper()), method)
+        side = _nv(p.get('금액타입', '')) or 'both'
+        if side not in dir_tag:
+            side = 'both'
+        start, end = _sampling_param_date(p.get('시작일')), _sampling_param_date(p.get('종료일'))
+        cond = {'계정과목': acct, '샘플링방법': method, '금액타입': side,
+                '기간': f"{start:%Y-%m-%d}" if start else '전체'}
+        cond['기간'] += f" ~ {end:%Y-%m-%d}" if end else (' ~' if start else '')
+        if method not in _SAMPLING_METHODS:
+            cond_rows.append({**cond, '비고': f"샘플링방법 오류 — {'/'.join(_SAMPLING_METHODS)} 중 선택"})
+            continue
 
-    return monthly, sample
+        acct_mask = _account_match_flexible(df[COL_ACCOUNT], acct)
+        if start is not None:
+            acct_mask &= dates >= start
+        if end is not None:
+            acct_mask &= dates <= end
+        lines = df[acct_mask].copy()
+        dr, cr = lines[COL_DEBIT].fillna(0), lines[COL_CREDIT].fillna(0)
+        if side == '차변':
+            lines['_amt'] = dr.abs()
+        elif side == '대변':
+            lines['_amt'] = cr.abs()
+        else:
+            lines['_amt'] = dr.abs() + cr.abs()
+        pop = lines[lines['_amt'] > 0].copy()
+        pop['_date'] = dates[pop.index]
+        sort_cols = ['_date'] + ([COL_JOURNAL_ID] if COL_JOURNAL_ID in pop.columns else [])
+        pop = pop.sort_values(sort_cols, kind='stable')
 
+        # 모집단 대사: 원장(분개장) 해당 계정·기간·방향 합계 vs 모집단 합계
+        ledger_total = float(lines['_amt'].sum())
+        pop_total = float(pop['_amt'].sum())
+        cond.update({'모집단건수': len(pop), '모집단금액': pop_total,
+                     '대사(원장합계)': ledger_total, '대사차이': round(ledger_total - pop_total, 2)})
+        if pop.empty:
+            cond_rows.append({**cond, '비고': '모집단 없음 (계정명·기간·금액타입 확인)'})
+            continue
 
-def analyze_ai_preparation(df: pd.DataFrame, params_list: list) -> dict:
-    targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
-    if not targets: return {'AI분석': pd.DataFrame({'안내':['계정과목 파라미터 없음']})}
-    out = {}
-    for acct in targets:
-        monthly, sample = _prepare_ai_material(df, acct)
-        if monthly is None: continue
-        safe_nm = re.sub(r'[\\/*?:\[\]]', '', acct)[:10]
-        out[_safe_sheet(f'AI_{safe_nm}_월별')] = monthly
-        out[_safe_sheet(f'AI_{safe_nm}_샘플')] = sample
+        rng = np.random.default_rng(_SAMPLING_SEED)
+        reasons = {}
 
-    if GLOBAL_SAFE_MAP:
-        out['_암호해독표'] = pd.DataFrame(list(GLOBAL_SAFE_MAP.items()), columns=['실명','가명'])
-    return out or {'AI분석': pd.DataFrame({'결과':['분석 대상 없음']})}
+        # ① 개별유의금액 이상 전수 (샘플크기와 별도)
+        key_amt = _sampling_param_amount(p.get('개별유의금액'))
+        if key_amt:
+            for i in pop.index[pop['_amt'] >= key_amt]:
+                reasons[i] = f'개별유의금액 이상 전수({key_amt:,.0f}원↑)'
+        key_n = len(reasons)
+        rest = pop.drop(index=list(reasons))
+
+        # ② 샘플크기 (통계표 사용 시 MUS 공식, 아니면 입력값)
+        size_basis = ''
+        n = int(_ai_param_num(p.get('샘플크기'), _SAMPLING_DEFAULT_SIZE))
+        use_table = _nv(str(p.get('통계표사용', ''))).upper() in ('Y', 'O', 'TRUE')
+        if use_table:
+            conf = _ai_param_num(p.get('신뢰수준'), 0.95)
+            conf = conf / 100 if conf > 1 else conf
+            tm = _sampling_param_amount(p.get('허용왜곡표시'))
+            em = _sampling_param_amount(p.get('예상왜곡표시')) or 0.0
+            if not tm:
+                cond_rows.append({**cond, '비고': '통계표사용=Y이면 허용왜곡표시 금액 필수'})
+                continue
+            try:
+                n, size_basis = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
+            except ValueError as e:
+                cond_rows.append({**cond, '비고': str(e)})
+                continue
+        else:
+            size_basis = f'입력값 {n}건'
+
+        # ③ 이상거래 우선 포함 (샘플크기에 포함): 최대값 + Z-score 3 이상(높은 순).
+        #    금액 분포가 한쪽으로 긴 계정(외상매출금 등)은 Z≥3이 수백 건이라 샘플 전체를
+        #    이상거래가 차지해 버림(2026-10-22 daesun 테스트) → 샘플크기의 20%까지만.
+        anomaly_n = 0
+        if _nv(str(p.get('이상거래포함', ''))).upper() in ('Y', 'O', 'TRUE') and not rest.empty:
+            amt = rest['_amt']
+            sd = amt.std(ddof=0)
+            z = (amt - amt.mean()) / sd if sd > 0 else amt * 0
+            picks = {amt.idxmax(): f'이상거래(최대값, Z={z[amt.idxmax()]:.1f})'}
+            for i in z[z >= 3].sort_values(ascending=False).index:
+                picks.setdefault(i, f'이상거래(Z={z[i]:.1f})')
+            cap = max(1, int(round(n * _SAMPLING_ANOMALY_CAP)))
+            for i in list(picks)[:cap]:
+                reasons[i] = picks[i]
+            anomaly_n = min(len(picks), cap)
+            if len(picks) > cap:
+                cond['이상거래 후보'] = f'{len(picks)}건 중 상위 {cap}건 포함'
+            rest = rest.drop(index=[i for i in rest.index if i in reasons])
+
+        # ④ 나머지를 선택한 방법으로 추출
+        idx, why, extra = _sampling_select(rest, n - anomaly_n, method, rng)
+        reasons.update(why)
+
+        sample = pop.loc[[i for i in pop.index if i in reasons]].copy()
+        sample['선정사유'] = [reasons[i] for i in sample.index]
+        if key_col in df.columns:
+            keys = set(sample[key_col].dropna())
+            others = df[df[key_col].isin(keys) & ~_account_match_flexible(df[COL_ACCOUNT], acct)]
+            per_key = (others.groupby(key_col)[COL_ACCOUNT]
+                       .agg(lambda s: ','.join(pd.unique(s.astype(str)))).to_dict())
+            sample['상대계정'] = sample[key_col].map(per_key).fillna('')
+        else:
+            sample['상대계정'] = ''
+
+        tbl = pd.DataFrame({
+            'No': range(1, len(sample) + 1),
+            '전표일자': sample['_date'].dt.strftime('%Y-%m-%d').values,
+            '전표번호': sample[COL_JOURNAL_ID].values if COL_JOURNAL_ID in sample.columns else '',
+            '계정명': sample[COL_ACCOUNT].values,
+            '거래처명': sample[COL_CLIENT].values if COL_CLIENT in sample.columns else '',
+            '적요': sample[COL_DESC].values if COL_DESC in sample.columns else '',
+            '차변': sample[COL_DEBIT].values, '대변': sample[COL_CREDIT].values,
+            '샘플금액': sample['_amt'].values,
+            '상대계정': sample['상대계정'].values,
+            '선정사유': sample['선정사유'].values,
+        })
+        for c in _EVIDENCE_COLS:
+            tbl[c] = ''
+
+        sname = _safe_sheet(f'{acct}_{dir_tag[side]}')
+        while sname in out:      # 같은 계정·방향을 방법만 달리 여러 줄 적은 경우
+            sname = _safe_sheet(f'{acct}_{dir_tag[side]}_{method}')
+            if sname in out:
+                sname = _safe_sheet(f'{sname}{len(out)}')
+        out[sname] = tbl
+        fmt[sname] = {'차변': '#,##0', '대변': '#,##0', '샘플금액': '#,##0'}
+
+        sample_total = float(sample['_amt'].sum())
+        cond.update({
+            '샘플크기 근거': size_basis,
+            '개별유의 전수': key_n, '이상거래': anomaly_n, '방법추출': len(idx),
+            '샘플합계건수': len(sample), '샘플금액': sample_total,
+            '금액커버리지': f'{sample_total / pop_total:.1%}' if pop_total else '-',
+            '추출조건': ', '.join(f'{k} {v}' for k, v in extra.items()),
+            '시드': _SAMPLING_SEED, '결과시트': sname,
+            '비고': '' if len(idx) + anomaly_n >= min(n, len(pop) - key_n) else '모집단이 샘플크기보다 작아 전체 추출',
+        })
+        cond_rows.append(cond)
+        print(f'    [감사샘플링] {acct}({side}, {method}) 모집단 {len(pop):,}건 → 샘플 {len(sample)}건 '
+              f'(전수 {key_n}·이상 {anomaly_n}·{method} {len(idx)})', flush=True)
+
+    result = {'샘플링조건': pd.DataFrame(cond_rows)}
+    result.update(out)
+    fmt['샘플링조건'] = {c: '#,##0' for c in ('모집단건수', '모집단금액', '대사(원장합계)', '대사차이',
+                                              '개별유의 전수', '이상거래', '방법추출', '샘플합계건수', '샘플금액')}
+    result['_number_format_cols'] = fmt
+    return result
 
 
 # ── 26. AI 계정별 분석 실행 (Gemini 구조화 응답) ───────────────────────────────
@@ -3514,7 +3733,7 @@ ANALYSIS_REGISTRY: dict = {
     12: ('자산부채교차',    analyze_asset_liability_cross),
     13: ('매출비용교차',    analyze_revenue_expense_cross),
     14: ('심층분석',        analyze_top_accounts),
-    15: ('AI계정별분석',    analyze_ai_preparation),
+    15: ('감사샘플링',      analyze_audit_sampling),
     16: ('헤더확인',        analyze_header_check),
     17: ('거래처분석',      analyze_client_detail),
     18: ('벤포드이탈',      analyze_benford_deviation),
