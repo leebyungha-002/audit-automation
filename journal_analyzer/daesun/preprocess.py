@@ -24,6 +24,15 @@ daesun(대선제분(주)) 분개장 전용 전처리.
 재구성 없이 main_analyzer 기본 로직(전표일자+전표번호)을 그대로 사용한다.
 데이터가 더 들어오면 이 가정을 재검증할 것.
 
+입금전표 현금 라인 보충 (2026-10-22)
+------------------------------------
+전표구분='입금'인 전표는 ERP 출력에 대변 라인(특정금전신탁/당좌예금 인출 등)만
+있고 상대편 현금 차변 라인이 빠져 있다 (당기 35건 1.837억, 전기 40건 확인 —
+계정별원장도 동일하게 누락돼 원장상 현금 잔액이 음수). 이 상태로는 해당 전표의
+차대가 맞지 않고 상대계정분석에서 상대계정이 비어 나오므로, 입금전표 중 차대가
+맞지 않는 전표마다 (대변합계-차변합계) 금액의 '현금' 차변 라인을 1줄 추가한다.
+적요 끝에 ' (현금 보충)'을 붙여 원본 라인과 구분한다.
+
 main_analyzer.py 호출 규약
 --------------------------
 함수 시그니처 :  preprocess(df: pd.DataFrame) -> pd.DataFrame
@@ -52,4 +61,48 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns=rename_dict)
     print(f'  [daesun/preprocess] 컬럼 매핑 적용: {rename_dict}')
-    return df
+    return _add_missing_cash_lines(df)
+
+
+CASH_ACCOUNT = '현금'
+CASH_NOTE_SUFFIX = ' (현금 보충)'
+
+
+def _add_missing_cash_lines(df: pd.DataFrame) -> pd.DataFrame:
+    """전표구분='입금' 전표 중 차대 불일치분에 현금 차변 라인을 추가한다."""
+    need = {'전표구분', '전표번호', '계정명', '차변', '대변'}
+    if not need.issubset(df.columns):
+        return df
+
+    is_in = df['전표구분'].astype(str).str.strip() == '입금'
+    if not is_in.any():
+        return df
+
+    sub = df[is_in].copy()
+    sub['_dr'] = pd.to_numeric(sub['차변'], errors='coerce').fillna(0)
+    sub['_cr'] = pd.to_numeric(sub['대변'], errors='coerce').fillna(0)
+    # 당기/전기 파일이 합쳐진 상태라 '구분'(당기/전기)도 키에 포함
+    keys = ['전표번호'] + (['구분'] if '구분' in sub.columns else [])
+    sums = sub.groupby(keys)[['_dr', '_cr']].sum()
+    gap = (sums['_cr'] - sums['_dr']).round(2)
+    gap = gap[gap > 0]
+    if gap.empty:
+        return df
+
+    # 전표의 첫 라인을 복사해 공통 정보(일자·NO·거래처·부서 등)를 유지
+    first = sub.drop(columns=['_dr', '_cr']).groupby(keys, sort=False).head(1).set_index(keys)
+    new = first.loc[gap.index].reset_index()
+    new['계정명'] = CASH_ACCOUNT
+    new['차변'] = gap.values
+    new['대변'] = 0
+    if '라인번호' in new.columns:
+        max_line = sub.groupby(keys)['라인번호'].max()
+        new['라인번호'] = (pd.to_numeric(max_line.loc[gap.index], errors='coerce')
+                         .fillna(0).astype(int).values + 1)
+    if '적요' in new.columns:
+        new['적요'] = new['적요'].fillna('').astype(str) + CASH_NOTE_SUFFIX
+    new = new[df.columns]
+
+    print(f'  [daesun/preprocess] 입금전표 현금 라인 보충: {len(new)}건, '
+          f'{gap.sum():,.0f}원')
+    return pd.concat([df, new], ignore_index=True)
