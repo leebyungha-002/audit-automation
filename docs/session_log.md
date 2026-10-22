@@ -2801,7 +2801,7 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 
 **완료 작업**: 결과 시트 2행 분석기간 헤더에 분석대상별 기간 표시 — 전체(2번 거래처비교 등)는 "당기 ~ / 전기 ~", 전기는 전기 기간만, 기준월 지정 시 전기도 같은 월말까지
 **변경 파일**: journal_analyzer/main_analyzer.py (save_results sheet_target 인자, main 루프 sheet_target 기록)
-**미해결 이슈**: task_list_daesun.xlsx 15_감사샘플링 시트 미추가(엑셀 열림)
+**미해결 이슈**: 없음 (daesun 15_감사샘플링 시트 추가 완료)
 **다음 할 일**:
 1. daesun task_list 닫히면 scratchpad tl15.py 재실행 후 커밋
 
