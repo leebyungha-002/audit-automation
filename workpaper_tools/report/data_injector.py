@@ -464,7 +464,14 @@ def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
 
     # 2026-10-22 메뉴26 출력이 '결과' 한 시트로 통합되면서 '확인전표' 시트가 없어짐 —
     # 예전 mapping_list의 확인전표 행은 오류 대신 건너뜀 (확인전표는 '결과'의 7번 섹션에 포함)
-    if src_sheet not in pd.ExcelFile(src_path).sheet_names:
+    # 2026-10-22 메뉴26 출력이 계정별 시트(26_AI계정별분석_실행_보통예금 등)로 바뀌어
+    # src_sheet에 계정명만 적어도 찾도록 26번 시트 중 '_계정명'으로 끝나는 시트를 사용
+    sheet_names = pd.ExcelFile(src_path).sheet_names
+    if src_sheet not in sheet_names:
+        cand = [s for s in sheet_names if s.startswith('26_') and s.endswith(f'_{src_sheet}')]
+        if cand:
+            src_sheet = cand[0]
+    if src_sheet not in sheet_names:
         print(f'    [AI] 소스 시트 없음({src_sheet}) — 건너뜀 (메뉴26은 결과 시트 하나로 통합됨)')
         return 0
 

@@ -2579,11 +2579,12 @@ def _build_ai_review_prompt(company_name: str, acct: str, m: dict, cfg: dict) ->
 def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
     """26번 파라미터 시트의 계정별로 스마트샘플을 뽑아 Gemini에 구조화 분석을 요청한다.
 
-    결과는 '결과' 표 하나(세로형: 계정과목/섹션/항목/위험수준/내용/관련전표/비고)로 낸다
-    (2026-10-22 blue sky 요청 — 참조양식 '전체내용' 시트처럼 한 시트에 전부).
+    결과는 계정별 시트 1개(세로형: 섹션/항목/위험수준/내용/관련전표/비고)에 그 계정의
+    내용을 전부 담는다 (2026-10-22 blue sky 요청 — 처음엔 전 계정을 '결과' 한 시트로
+    합쳤으나, 요청 취지는 "계정별로 한 시트"였음). 시트명 = 계정명.
     섹션: 1.샘플링 → 2.계정요약 → 3.거래특징 → 4.위험요소(경영자주장별) → 5.감사인 제언 →
           6.종합결론 → 7.확인필요전표 → 8.샘플내역(실명+가명+선정사유) → 9.가명대조
-    mapping_list AI_INJECT는 src_sheet '결과'를 그대로 읽으므로 시트명은 '결과' 유지.
+    mapping_list AI_INJECT는 src_sheet에 계정명(예: 보통예금)을 적으면 26_..._계정명 시트를 찾는다.
     """
     import json
 
@@ -2686,7 +2687,16 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
             if real in GLOBAL_SAFE_MAP:
                 _add(acct, '9. 가명대조', GLOBAL_SAFE_MAP[real], real)
 
-    return {'결과': pd.DataFrame(rows) if rows else pd.DataFrame({'결과': ['분석 대상 없음']})}
+    if not rows:
+        return {'결과': pd.DataFrame({'결과': ['분석 대상 없음']})}
+    out = {}
+    all_df = pd.DataFrame(rows)
+    for acct, g in all_df.groupby('계정과목', sort=False):
+        sname = _safe_sheet(re.sub(r'[\/*?:\[\]]', '', str(acct))[:17])
+        if sname in out:
+            sname = _safe_sheet(f'{sname[:14]}_{len(out) + 1}')
+        out[sname] = g.drop(columns=['계정과목']).reset_index(drop=True)
+    return out
 
 
 # ── 16. 데이터·헤더 확인 ──────────────────────────────────────────────────────

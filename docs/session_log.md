@@ -2826,3 +2826,13 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 1. 다른 회사 4번 재실행 시 분류 오판 계정 있으면 키워드 보강
 
 ---
+
+## 2026-10-22 18:00
+
+**완료 작업**: 26번 AI계정별분석 결과를 '결과' 단일 시트 → 계정별 시트 1개(26_AI계정별분석_실행_계정명)로 변경(계정과목 열 제거). data_injector AI_INJECT는 src_sheet에 계정명만 적어도 26_..._계정명 시트를 찾도록 보완
+**변경 파일**: journal_analyzer/main_analyzer.py (analyze_ai_review), workpaper_tools/report/data_injector.py (inject_ai_result)
+**미해결 이슈**: mapping_list(kyungnam·samdong 등) AI_INJECT 행의 소스시트 '결과'→'보통예금'으로 수정 필요, '확인전표' 행 삭제 가능
+**다음 할 일**:
+1. 26번 실제 Gemini 실행으로 계정별 시트 확인
+
+---
