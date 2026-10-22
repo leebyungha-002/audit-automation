@@ -3948,7 +3948,7 @@ def _save_lease_completeness_file(results: dict, output_dir: str, company_name: 
 def save_results(results: dict, output_dir: str, company_name: str,
                  settings: dict = None, out_path: str = None,
                  sheet_prefix_map: dict = None, sheet_final_suffix: dict = None,
-                 sheet_end_month: dict = None) -> str:
+                 sheet_end_month: dict = None, sheet_target: dict = None) -> str:
     os.makedirs(output_dir, exist_ok=True)
     if out_path is None:
         out_path = os.path.join(output_dir, f'분석결과_{company_name}.xlsx')
@@ -3989,15 +3989,33 @@ def save_results(results: dict, output_dir: str, company_name: str,
             ws.cell(2, 1).value = header_line2
             # 기준월 지정 태스크는 실제 데이터가 그 월까지만 필터링되므로 종료일도 맞춰 표시
             # (2026-10-16 blue sky 발견: 기준월 8인데 분석기간이 12-31로 찍힘)
+            # 분석대상이 전체(당기+전기)면 전기 기간도, 전기면 전기 기간만 표시
+            # (2026-10-22 blue sky 요청 — 2번 거래처비교에 전기 기간이 안 보임).
+            # 기준월 필터는 당기·전기 모두 같은 월까지 자르므로 전기도 1년 전 같은 월로 계산.
             em = (sheet_end_month or {}).get(ws.title)
-            if em:
-                try:
-                    import calendar
-                    y = int(str(end_date)[:4])
-                    ws.cell(2, 1).value = (f'분석기간: {start_date} ~ '
-                                           f'{y}-{em:02d}-{calendar.monthrange(y, em)[1]:02d} (기준월 {em}월)')
-                except (ValueError, TypeError):
-                    pass
+            target = (sheet_target or {}).get(ws.title, '당기')
+            try:
+                import calendar
+                s = pd.Timestamp(start_date)
+                e = pd.Timestamp(end_date)
+                if em:
+                    e = pd.Timestamp(e.year, em, calendar.monthrange(e.year, em)[1])
+                cur = f'{s:%Y-%m-%d} ~ {e:%Y-%m-%d}'
+                ps = s - pd.DateOffset(years=1)
+                pe = e - pd.DateOffset(years=1)
+                pe = pd.Timestamp(pe.year, pe.month, calendar.monthrange(pe.year, pe.month)[1])
+                prev = f'{ps:%Y-%m-%d} ~ {pe:%Y-%m-%d}'
+                if target == '전체':
+                    text = f'분석기간: 당기 {cur} / 전기 {prev}'
+                elif target == '전기':
+                    text = f'분석기간: 전기 {prev}'
+                else:
+                    text = f'분석기간: {cur}'
+                if em:
+                    text += f' (기준월 {em}월)'
+                ws.cell(2, 1).value = text
+            except (ValueError, TypeError):
+                pass
 
     # 범례(항목|설명) 블록 + 컬럼별 메모(Comment) 삽입 — startrow=2 이므로 헤더는 원래 3행.
     # 범례가 있는 시트는 A/B열에 "항목 | 설명"을 3행부터 세로로 나열하고, 그만큼
@@ -4166,6 +4184,7 @@ def main():
     # "원래시트명"(번호 없이 깨끗한 버전)을 접두어 뒤에 붙인다.
     sheet_final_suffix: dict = {}
     sheet_end_month: dict = {}   # 내부 키 → 기준월(분석기간 헤더 표시용)
+    sheet_target: dict = {}      # 내부 키 → 분석대상(당기/전기/전체, 분석기간 헤더 표시용)
     for task_no, task_name, 분석대상, end_month in active_tasks:
         if task_no not in ANALYSIS_REGISTRY:
             print(f'  [{task_no:>3}] {task_name:<22} → 등록된 함수 없음 (건너뜀)')
@@ -4211,6 +4230,7 @@ def main():
                     sheet_prefix_map[internal_key] = f'{task_no:02d}_{task_name}'
                     sheet_final_suffix[internal_key] = sname
                     if end_month: sheet_end_month[internal_key] = end_month
+                    sheet_target[internal_key] = 분석대상
                     key_map[sname] = internal_key
                 for skey, sval in result.items():
                     if not skey.startswith('_'):
@@ -4238,6 +4258,7 @@ def main():
                 sname = _safe_sheet(f'{task_no:02d}_{task_name}')
                 all_results[sname] = result
                 if end_month: sheet_end_month[sname] = end_month
+                sheet_target[sname] = 분석대상
                 print(f'       → 시트 1개 생성')
         except Exception as e:
             import traceback
@@ -4266,7 +4287,7 @@ def main():
         out_path = save_results(all_results, paths['output'], company_name, settings,
                                 out_path=partial_out_path, sheet_prefix_map=sheet_prefix_map,
                                 sheet_final_suffix=sheet_final_suffix,
-                                sheet_end_month=sheet_end_month)
+                                sheet_end_month=sheet_end_month, sheet_target=sheet_target)
         print(f'\n  ✅ 완료: {out_path}')
         print(f'  시트 수: {len(all_results)}개')
     else:
