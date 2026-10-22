@@ -729,6 +729,55 @@ def _refine_ledger_gubun(acct_name: str, gubun: str) -> str:
         return '자산차감' if gubun == '부채/자본/수익' else '부채차감'
     return gubun
 
+# TB_TO_GL_TEST 시트를 재무상태표·손익계산서 순서(자산→부채→자본→수익→비용)로 정렬하기
+# 위한 분류 (2026-10-22 blue sky 요청). 원장 '구분'은 자산/비용·부채/자본/수익까지만 갈리고
+# 원장 나열 순서도 회사마다 달라(sejoong은 부채부터) 계정명 키워드 + 기초잔액으로 보강한다.
+# 손익계정은 당기 원장 기초잔액이 0이므로, 기초잔액이 있으면 재무상태표 계정으로 본다.
+_TB_CATEGORY_ORDER = ('자산', '부채', '자본', '수익', '비용', '기타')
+_TB_CAPITAL_RE = re.compile(r'자본금|잉여금|결손금|주식발행초과금|자기주식|자본조정|기타포괄|'
+                            r'적립금|준비금|합병차익|주식매수선택권')
+_TB_BS_HINT_RE = re.compile(r'^(장기)?(선급|미지급|미수|선수|예수|선납|가지급|가수|부가)|'
+                            r'충당금(?!전입)|누계액|매출금|매출채권|매입금|매입채무|'
+                            r'자산$|자산\(|부채$|부채\(|보증금|대급금|수탁금')
+_TB_REVENUE_RE = re.compile(r'매출(?!원가)|수익|이익|차익|수입|판매|환입')
+_TB_EXPENSE_RE = re.compile(r'원가|비용|손실|차손|상각|비$|비[(_-]|급여|급료|임금|상여|수당|잡급|'
+                            r'보수|세금과공과|법인세|소득세등|수수료|이자|기부금|보험료|임차료|전입액')
+_TB_CONTRA_ASSET_RE = re.compile(r'대손충당금|평가충당금|누계액|\(국\)')   # (국)=국고보조금 차감
+_TB_LIAB_RE = re.compile(r'차입금|차월|사채|미지급|선수|예수|부채|충당금|가수금|수탁금|매입금|'
+                         r'매입채무|유동성장기|상환할증금|우선주|임대보증금')
+_TB_ASSET_RE = re.compile(r'현금|예금|적금|신탁|증권|CMA|DLB|ELB|RP|어음|매출금|채권|미수|선급|'
+                          r'선납|대여금|보증금|가지급|대급금|전도금|입체금|재고|상품|제품|재료|'
+                          r'재공품|저장품|미착품|토지|건물|구축물|기계|차량|비품|공구|시설|건설중|'
+                          r'권$|권\(|자산|투자|출자금|통화선도|서화|전환금|예치금')
+
+
+def _tb_category(name: str, gubun: str, opening: float) -> str:
+    """계정명·원장 구분·기초잔액으로 자산/부채/자본/수익/비용(못 정하면 기타) 판정."""
+    n = re.sub(r'\s', '', str(name))
+    if gubun == '자산차감':
+        return '자산'
+    if gubun == '부채차감':
+        return '부채'
+    if _TB_CAPITAL_RE.search(n):
+        return '자본'
+    if not opening and not _TB_BS_HINT_RE.search(n):
+        if _TB_REVENUE_RE.search(n):
+            return '수익'
+        if _TB_EXPENSE_RE.search(n):
+            return '비용'
+    if _TB_CONTRA_ASSET_RE.search(n):
+        return '자산'
+    if gubun == '자산/비용':
+        return '자산'
+    if gubun == '부채/자본/수익':
+        return '부채'
+    if _TB_LIAB_RE.search(n):
+        return '부채'
+    if _TB_ASSET_RE.search(n):
+        return '자산'
+    return '기타'
+
+
 def _find_current_ledger_files(current_dir: str) -> list:
     """
     data/current 폴더에서 파일명에 '계정별원장'이 들어간 당기 파일 경로를 모두 탐색.
@@ -1066,7 +1115,17 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
 
                 atest['기말잔액(분개장기준)'] = atest.apply(_calc_ending, axis=1)
                 atest['차이'] = (atest['기말잔액(분개장기준)'] - atest['기말잔액(원장)']).round(2)
-                atest = atest.sort_values('계정명').reset_index(drop=True)
+                # 자산→부채→자본→수익→비용 순, 같은 분류 안에서는 계정별원장 나열 순서
+                # (대개 계정코드순), 원장에 없는 계정은 그 분류 맨 뒤에 계정명순
+                atest['분류'] = [_tb_category(n, g, o) for n, g, o in
+                                 zip(atest['계정명'], atest['구분'], atest['기초잔액'])]
+                ledger_pos = {}
+                for i, n in enumerate(ledger_all['계정명'].map(_acct_match_key)):
+                    ledger_pos.setdefault(n, i)
+                atest['_cat'] = atest['분류'].map(_TB_CATEGORY_ORDER.index)
+                atest['_pos'] = atest['계정명'].map(_acct_match_key).map(ledger_pos).fillna(10**9)
+                atest = (atest.sort_values(['_cat', '_pos', '계정명'])
+                         .drop(columns=['_cat', '_pos']).reset_index(drop=True))
 
                 field_notes = {
                     '기초잔액':
@@ -1092,6 +1151,9 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                         "원인 확인 필요.",
                     '구분':
                         "당기 계정별원장의 거래·기초잔액 부호로 자동 판정한 계정 성격.",
+                    '분류':
+                        "자산/부채/자본/수익/비용 — 계정명 키워드·구분·기초잔액으로 자동 판정"
+                        "(정렬용, 판정 못 하면 기타). 같은 분류 안은 계정별원장 나열 순서.",
                 }
                 gubun_value_notes = {
                     '자산/비용':      '차변 증가 계정 — 기말잔액 = 기초잔액+차변합계-대변합계',
@@ -1111,13 +1173,13 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
 
                 sheet_name = '계정별_기말잔액(TB_TO_GL_TEST)'
                 out[sheet_name] = atest[
-                    ['계정명', '구분', '기초잔액', '차변합계', '대변합계',
+                    ['분류', '계정명', '구분', '기초잔액', '차변합계', '대변합계',
                      '기말잔액(분개장기준)', '기말잔액(원장)', '차이']]
                 out.setdefault('_column_notes', {})[sheet_name] = field_notes
                 out.setdefault('_legend_rows', {})[sheet_name] = (
                     [(k, field_notes[k]) for k in
                      ('기초잔액', '차변합계', '대변합계', '기말잔액(분개장기준)',
-                      '기말잔액(원장)', '차이', '구분')]
+                      '기말잔액(원장)', '차이', '구분', '분류')]
                     + [(f'구분={v}', d) for v, d in gubun_value_notes.items()]
                 )
 
