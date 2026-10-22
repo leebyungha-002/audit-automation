@@ -892,11 +892,46 @@ def _iter_sejoong_style_ledger_accounts(ws):
     if current_name is not None:
         yield current_name, current_records
 
+# daesun 계열: 시트 1개에 '계정명'/'회계일자' 헤더로 여러 계정이 행 단위로 나열됨
+# (2026-10-22 확인). 계정 구분은 0열 계정명 값이 바뀌는 지점, 기초잔액 행은
+# 회계일자 칸이 '전일이월', 집계 행은 '월계'/'누계'. 기초잔액이 없는 계정은
+# '전일이월' 행 없이 바로 거래 행부터 시작한다.
+# 컬럼(0-idx): 0 계정명 / 1 회계일자 / 5 차변 / 6 대변 / 7 잔액
+_DAESUN_STYLE_OPEN_LABELS = ('전일이월', '전기이월', '기초잔액')
+
+def _iter_daesun_style_ledger_accounts(ws):
+    """daesun 계열 시트에서 계정별로 (계정명, records) 를 순서대로 만들어 낸다."""
+    current_name = None
+    current_records = []
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row is None or len(row) < 8:
+            continue
+        name = str(row[0]).strip() if row[0] is not None else ''
+        if not name or name == '계정명':        # 빈 행 또는 재삽입된 헤더 행
+            continue
+        if name != current_name:
+            if current_name is not None:
+                yield current_name, current_records
+            current_name, current_records = name, []
+
+        label = _clean_ledger_text(row[1])
+        if label in _LEDGER_SKIP_KEYWORDS:
+            continue
+        debit  = float(row[5]) if row[5] else 0.0
+        credit = float(row[6]) if row[6] else 0.0
+        kind = 'open' if label in _DAESUN_STYLE_OPEN_LABELS else 'txn'
+        current_records.append((kind, debit, credit, row[7]))
+
+    if current_name is not None:
+        yield current_name, current_records
+
 def _build_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
     """
-    계정별원장 파일 1개를 읽어 계정별 기초/기말잔액표를 만든다. 두 형식을 자동 감지한다:
+    계정별원장 파일 1개를 읽어 계정별 기초/기말잔액표를 만든다. 세 형식을 자동 감지한다:
       - 더존 계열: 시트 1개 = 계정 1개, 시트명 '0_계정명(코드)'
       - sejoong 계열: 시트 1개에 '계정과목'/'계정과목명' 헤더로 여러 계정이 나열됨
+      - daesun 계열: 시트 1개에 '계정명'/'회계일자' 헤더로 여러 계정이 나열됨
     """
     wb = openpyxl.load_workbook(ledger_path, read_only=True, data_only=True)
     try:
@@ -904,9 +939,20 @@ def _build_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
         header = next(first_ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
         is_sejoong_style = (len(wb.sheetnames) == 1 and len(header) >= 2
                              and header[0] == '계정과목' and header[1] == '계정과목명')
+        is_daesun_style = (len(wb.sheetnames) == 1 and len(header) >= 2
+                           and header[0] == '계정명' and header[1] == '회계일자')
 
         rows = []
-        if is_sejoong_style:
+        if is_daesun_style:
+            print(f'  [계정별원장] daesun 계열 형식(단일 시트·계정명/회계일자) 감지: '
+                  f'{os.path.basename(ledger_path)}')
+            for acct_name, records in _iter_daesun_style_ledger_accounts(first_ws):
+                result = _compute_ledger_balance(records)
+                if result is None:
+                    continue
+                result['구분'] = _refine_ledger_gubun(acct_name, result['구분'])
+                rows.append({'계정명': acct_name, **result})
+        elif is_sejoong_style:
             print(f'  [계정별원장] sejoong 계열 형식(단일 시트·전월이월 구분) 감지: '
                   f'{os.path.basename(ledger_path)}')
             for acct_name, records in _iter_sejoong_style_ledger_accounts(first_ws):
