@@ -1894,10 +1894,49 @@ def analyze_ai_preparation(df: pd.DataFrame, params_list: list) -> dict:
 
 
 # ── 26. AI 계정별 분석 실행 (Gemini 구조화 응답) ───────────────────────────────
+# 2026-10-22 개편: 금액상위 10%(최대 30건) 단순 샘플 → 스마트샘플링(샘플링비율·구성비를
+# task_list 26번 시트에서 계정별 지정) + 분석 항목을 계정요약/거래특징/경영자주장별
+# 위험요소/감사인 제언으로 구체화 (blue sky 제공 '총계정원장_AI분석_1_보통예금' 양식 기준).
+# '결과'·'확인전표' 표는 data_injector AI_INJECT 호환을 위해 기존 컬럼을 그대로 유지하고,
+# 상세 내용은 '분석보고서'·'위험요소'·'샘플' 표로 따로 낸다.
+
+# 파라미터 시트에서 비워두면 쓰는 기본값 (비율은 0.05 / 5 / 5% 어느 형식으로 적어도 됨)
+_AI_SAMPLE_DEFAULTS = {'샘플링비율': 0.05, '최소건수': 30, '최대건수': 150}
+_AI_SAMPLE_MIX = {'금액상위': 0.30, '최신': 0.20, '이상치': 0.10, '월별': 0.30, '랜덤': 0.10}
+_AI_RANDOM_SEED = 42   # 재실행해도 같은 표본이 나오도록 고정
+
+_AI_ASSERTIONS = ['발생', '완전성', '정확성·분류', '권한·승인', '기간귀속(Cut-off)', '실질(Substance)']
+
 _AI_REVIEW_SCHEMA = {
     'type': 'OBJECT',
     'properties': {
-        '위험평가':    {'type': 'STRING', 'enum': ['높음', '중간', '낮음']},
+        '계정성격':     {'type': 'STRING', 'description': '계정의 성격과 목적, 회사 내 역할'},
+        '거래규모':     {'type': 'STRING', 'description': '총 거래액·차변/대변 합계·순증감을 숫자로 명시'},
+        '거래패턴':     {'type': 'STRING', 'description': '월별 추이·집중 시기·반복 거래 유형'},
+        '전기대비증감': {'type': 'STRING', 'description': '전기 동기간 대비 증감과 원인 추정. 전기 자료가 없으면 그 사실을 기재'},
+        '주요거래처':   {'type': 'STRING', 'description': '금액 기준 주요 거래처(가명)와 비중, 상대계정 구성'},
+        '금액분포':     {'type': 'STRING', 'description': '중앙값·평균·최대값 등 분포 특징과 이상치'},
+        '거래주기':     {'type': 'STRING', 'description': '정기/비정기 거래, 결산기 집중 여부'},
+        '위험요소': {
+            'type': 'ARRAY',
+            'description': '경영자 주장별 위험 평가. 데이터로 근거를 댈 수 있는 주장만 작성',
+            'items': {
+                'type': 'OBJECT',
+                'properties': {
+                    '경영자주장':   {'type': 'STRING', 'enum': _AI_ASSERTIONS},
+                    '위험수준':     {'type': 'STRING', 'enum': ['높음', '중간', '낮음']},
+                    '주요사례':     {'type': 'STRING', 'description': '일자·금액·거래처(가명)를 포함한 구체적 거래 사례'},
+                    '평가근거':     {'type': 'STRING'},
+                    '제안감사절차': {'type': 'STRING', 'description': '확인할 증빙·문서와 수행할 절차를 구체적으로'},
+                    '관련전표번호': {'type': 'ARRAY', 'items': {'type': 'STRING'},
+                                     'description': '제공된 샘플의 전표번호만 인용(임의 생성 금지), 없으면 []'},
+                },
+                'required': ['경영자주장', '위험수준', '주요사례', '평가근거', '제안감사절차'],
+            },
+        },
+        '감사인제언':   {'type': 'ARRAY', 'items': {'type': 'STRING'},
+                         'description': '추가 감사절차·내부통제 개선 제언 (3개 내외)'},
+        '위험평가':     {'type': 'STRING', 'enum': ['높음', '중간', '낮음']},
         '주요특이사항': {'type': 'STRING'},
         '결론':        {'type': 'STRING', 'enum': ['적정', '추가확인필요', '부적정']},
         '결론근거':     {'type': 'STRING'},
@@ -1919,7 +1958,8 @@ _AI_REVIEW_SCHEMA = {
             },
         },
     },
-    'required': ['위험평가', '주요특이사항', '결론', '결론근거'],
+    'required': ['계정성격', '거래규모', '거래패턴', '전기대비증감', '주요거래처', '금액분포',
+                 '거래주기', '위험요소', '감사인제언', '위험평가', '주요특이사항', '결론', '결론근거'],
 }
 
 
@@ -1948,57 +1988,319 @@ def _get_gemini_client_and_config():
     return client, model_name, config
 
 
-def _build_ai_review_prompt(company_name: str, acct: str, monthly: pd.DataFrame, sample: pd.DataFrame) -> str:
-    monthly_txt = monthly.to_csv(index=False)
-    sample_txt  = sample.head(30).to_csv(index=False)
-    return f"""당신은 외부감사인입니다. 아래는 '{company_name}'의 '{acct}' 계정 분개장 데이터입니다.
-거래처명·민감정보는 이미 가명 처리·마스킹되어 있습니다.
+def _ai_param_num(v, default):
+    """파라미터 셀 값 → float. 비었거나 숫자가 아니면 default."""
+    try:
+        f = float(str(v).replace('%', '').replace(',', '').strip())
+    except (TypeError, ValueError):
+        return default
+    return default if pd.isna(f) else f
+
+
+def _ai_sampling_config(p: dict) -> dict:
+    """26번 파라미터 행 1개에서 샘플링 설정을 읽는다. 빈 칸은 기본값."""
+    def _ratio(v, default):
+        f = _ai_param_num(v, default)
+        return f / 100 if f > 1 else f      # 5 또는 5% 로 적어도 0.05 로 해석
+
+    cfg = {
+        '샘플링비율': _ratio(p.get('샘플링비율'), _AI_SAMPLE_DEFAULTS['샘플링비율']),
+        '최소건수': int(_ai_param_num(p.get('최소건수'), _AI_SAMPLE_DEFAULTS['최소건수'])),
+        '최대건수': int(_ai_param_num(p.get('최대건수'), _AI_SAMPLE_DEFAULTS['최대건수'])),
+    }
+    mix = {k: max(_ratio(p.get(k), d), 0.0) for k, d in _AI_SAMPLE_MIX.items()}
+    total = sum(mix.values())
+    cfg['구성'] = ({k: v / total for k, v in mix.items()} if total > 0 else dict(_AI_SAMPLE_MIX))
+    cfg['중점검토사항'] = _nv(p.get('중점검토사항', ''))
+    return cfg
+
+
+def _ai_anomaly_flags(sub: pd.DataFrame) -> pd.Series:
+    """행별 이상징후 사유 문자열('주말,라운드금액' 등). 해당 없으면 ''."""
+    flags = pd.Series('', index=sub.index)
+
+    def _add(mask, label):
+        flags.loc[mask] = flags.loc[mask] + (label + ',')
+
+    _add(sub['_date'].dt.dayofweek >= 5, '주말전기')
+    amt = sub['_amt']
+    q1, q3 = amt.quantile(0.25), amt.quantile(0.75)
+    if q3 > q1:
+        _add(amt > q3 + 3 * (q3 - q1), '금액이상치(IQR)')
+    _add((amt >= 1_000_000) & (amt % 1_000_000 == 0), '라운드금액')
+    if COL_CLIENT in sub.columns:
+        cli = sub[COL_CLIENT].fillna('').astype(str).str.strip()
+        once = cli.map(cli.value_counts()) == 1
+        _add(once & (cli != ''), '1회성거래처')
+    if COL_DESC in sub.columns:
+        _add(sub[COL_DESC].fillna('').astype(str).str.strip() == '', '적요미기재')
+    return flags.str.rstrip(',')
+
+
+def _ai_smart_sample(sub: pd.DataFrame, cfg: dict):
+    """스마트샘플링. (샘플 DataFrame['샘플선정사유' 포함], 목표 샘플크기) 반환.
+
+    구성비 순서(금액상위→최신→이상치→월별→랜덤)대로 뽑고, 앞 단계에서 이미 뽑힌 행은
+    다시 뽑지 않는다. 어떤 단계에서 후보가 모자라 못 채운 건수는 다음 단계로 넘긴다.
+    """
+    n_total = len(sub)
+    n = int(round(n_total * cfg['샘플링비율']))
+    n = max(cfg['최소건수'], min(cfg['최대건수'], n))
+    n = min(n, n_total)
+
+    alloc = {k: int(round(n * r)) for k, r in cfg['구성'].items()}
+    alloc['랜덤'] += n - sum(alloc.values())        # 반올림 오차는 랜덤에서 흡수
+
+    picked, reasons = [], {}
+    remain = sub.copy()
+    carry = 0
+    for key in ('금액상위', '최신', '이상치', '월별', '랜덤'):
+        quota = alloc[key] + carry
+        if quota <= 0 or remain.empty:
+            carry = max(quota, 0)
+            continue
+        if key == '금액상위':
+            idx = remain.nlargest(quota, '_amt').index.tolist()
+        elif key == '최신':
+            idx = remain.sort_values(['_date', '_amt'], ascending=False).head(quota).index.tolist()
+        elif key == '이상치':
+            cand = remain[remain['_flag'] != '']
+            idx = cand.nlargest(quota, '_amt').index.tolist()
+        elif key == '월별':
+            # 월마다 금액 큰 순으로 한 건씩 돌아가며 뽑아 전 기간을 고르게 덮음
+            by_month = [g.sort_values('_amt', ascending=False).index.tolist()
+                        for _, g in remain.groupby('_ym')]
+            idx, r = [], 0
+            while len(idx) < quota and any(r < len(m) for m in by_month):
+                idx += [m[r] for m in by_month if r < len(m)][:quota - len(idx)]
+                r += 1
+        else:
+            idx = remain.sample(n=min(quota, len(remain)),
+                                random_state=_AI_RANDOM_SEED).index.tolist()
+        for i in idx:
+            picked.append(i)
+            reasons[i] = key if key != '이상치' else f"이상치({remain.at[i, '_flag']})"
+        remain = remain.drop(index=idx)
+        carry = quota - len(idx)
+
+    sample = sub.loc[picked].copy()
+    sample['샘플선정사유'] = [reasons[i] for i in picked]
+    return sample.sort_values('_date'), n
+
+
+def _ai_counter_accounts(df: pd.DataFrame, acct_mask: pd.Series) -> tuple:
+    """(전표그룹키→상대계정 문자열 dict, 상대계정 금액 Top10 DataFrame)."""
+    key_col = COL_JOURNAL_KEY if COL_JOURNAL_KEY in df.columns else COL_JOURNAL_ID
+    if key_col not in df.columns:
+        return {}, pd.DataFrame()
+    keys = df.loc[acct_mask, key_col].dropna().unique()
+    others = df[df[key_col].isin(keys) & ~acct_mask]
+    if others.empty:
+        return {}, pd.DataFrame()
+    per_key = (others.groupby(key_col)[COL_ACCOUNT]
+               .agg(lambda s: ','.join(pd.unique(s.astype(str))[:3])).to_dict())
+    amt = others[COL_DEBIT].fillna(0) + others[COL_CREDIT].fillna(0)
+    top = (others.assign(_a=amt).groupby(COL_ACCOUNT)['_a'].agg(['sum', 'count'])
+           .sort_values('sum', ascending=False).head(10).reset_index())
+    top.columns = ['상대계정', '금액합계', '건수']
+    return per_key, top
+
+
+def _ai_period_summary(sub: pd.DataFrame) -> dict:
+    return {
+        '건수': len(sub),
+        '차변합계': float(sub[COL_DEBIT].sum()), '차변건수': int((sub[COL_DEBIT] != 0).sum()),
+        '대변합계': float(sub[COL_CREDIT].sum()), '대변건수': int((sub[COL_CREDIT] != 0).sum()),
+        '순증감(차-대)': float(sub[COL_DEBIT].sum() - sub[COL_CREDIT].sum()),
+    }
+
+
+def _ai_build_material(df: pd.DataFrame, acct: str, cfg: dict):
+    """계정 1개의 AI 입력 자료. 대상 없으면 None.
+
+    df에 '구분'(당기/전기)이 있으면 당기에서만 샘플을 뽑고 전기는 비교 통계로만 쓴다
+    (분석목록 26번 분석대상을 '전체'로 두어야 전기 비교가 들어감).
+    """
+    acct_mask = _account_match_flexible(df[COL_ACCOUNT], acct)
+    if not acct_mask.any():
+        return None
+    gc = _get_gubun_col(df)
+    is_cur = (df[gc].astype(str).str.strip() == '당기') if gc else pd.Series(True, index=df.index)
+    if gc and not (acct_mask & is_cur).any():
+        is_cur = pd.Series(True, index=df.index)    # 당기 표시가 없는 데이터면 전체를 당기로
+    cur = df[acct_mask & is_cur].copy()
+    prev = df[acct_mask & ~is_cur].copy() if gc else pd.DataFrame()
+
+    cur['_date'] = pd.to_datetime(cur[COL_DATE], errors='coerce')
+    cur['_ym'] = cur['_date'].dt.strftime('%Y-%m')
+    cur['_amt'] = cur[[COL_DEBIT, COL_CREDIT]].abs().max(axis=1)
+    cur['_flag'] = _ai_anomaly_flags(cur)
+
+    sample, target_n = _ai_smart_sample(cur, cfg)
+    per_key, counter_top = _ai_counter_accounts(df[is_cur], acct_mask[is_cur])
+    key_col = COL_JOURNAL_KEY if COL_JOURNAL_KEY in sample.columns else COL_JOURNAL_ID
+    sample['상대계정'] = sample[key_col].map(per_key).fillna('') if key_col in sample.columns else ''
+
+    # 건수는 금액이 0이 아닌 라인만 (count()는 0원 라인까지 세어 차변건수=대변건수가 돼버림)
+    monthly = cur.groupby('_ym').agg(
+        차변합계=(COL_DEBIT, 'sum'), 차변건수=(COL_DEBIT, lambda s: int((s != 0).sum())),
+        대변합계=(COL_CREDIT, 'sum'), 대변건수=(COL_CREDIT, lambda s: int((s != 0).sum())),
+    ).reset_index().rename(columns={'_ym': 'YM'})
+
+    clients = pd.DataFrame()
+    if COL_CLIENT in cur.columns:
+        clients = (cur.assign(_c=cur[COL_CLIENT].apply(get_safe_client_name))
+                   .groupby('_c')['_amt'].agg(['sum', 'count'])
+                   .sort_values('sum', ascending=False).head(10).reset_index())
+        clients.columns = ['거래처(가명)', '금액합계', '건수']
+    descs = pd.DataFrame()
+    if COL_DESC in cur.columns:
+        descs = (cur[COL_DESC].fillna('').astype(str).str.strip().replace('', '(미기재)')
+                 .apply(mask_sensitive_info).value_counts().head(10)
+                 .rename_axis('적요').reset_index(name='건수'))
+
+    nz = cur.loc[cur['_amt'] > 0, '_amt']
+    dist = nz.describe(percentiles=[0.25, 0.5, 0.75]) if not nz.empty else pd.Series(dtype=float)
+    flag_counts = (cur['_flag'].str.split(',').explode().replace('', pd.NA).dropna()
+                   .value_counts().to_dict())
+
+    return {
+        'cur': cur, 'sample': sample, 'target_n': target_n,
+        'summary': _ai_period_summary(cur),
+        'prev_summary': _ai_period_summary(prev) if not prev.empty else None,
+        'period': (cur['_date'].min(), cur['_date'].max()),
+        'monthly': monthly, 'clients': clients, 'counter_top': counter_top,
+        'descs': descs, 'dist': dist, 'flag_counts': flag_counts,
+    }
+
+
+def _ai_sample_for_prompt(sample: pd.DataFrame) -> pd.DataFrame:
+    """AI 전송용 샘플 — 거래처 가명·적요 마스킹, 필요한 컬럼만."""
+    s = pd.DataFrame({
+        '전표일자': sample['_date'].dt.strftime('%Y-%m-%d'),
+        '전표번호': sample[COL_JOURNAL_ID].astype(str) if COL_JOURNAL_ID in sample.columns else '',
+        '거래처': sample[COL_CLIENT].apply(get_safe_client_name) if COL_CLIENT in sample.columns else '',
+        '적요': sample[COL_DESC].apply(mask_sensitive_info) if COL_DESC in sample.columns else '',
+        '차변': sample[COL_DEBIT], '대변': sample[COL_CREDIT],
+        '상대계정': sample['상대계정'], '선정사유': sample['샘플선정사유'],
+    })
+    return s
+
+
+def _build_ai_review_prompt(company_name: str, acct: str, m: dict, cfg: dict) -> str:
+    def _won(v):
+        return f'{v:,.0f}원'
+
+    s, p = m['summary'], m['prev_summary']
+    d = m['dist']
+    mix_txt = ', '.join(f'{k} {v:.0%}' for k, v in cfg['구성'].items())
+    prev_txt = ('전기 자료 없음 (전기 비교 불가)' if p is None else
+                f"전기 동기간: 건수 {p['건수']:,}건, 차변 {_won(p['차변합계'])}({p['차변건수']:,}건), "
+                f"대변 {_won(p['대변합계'])}({p['대변건수']:,}건), 순증감 {_won(p['순증감(차-대)'])}")
+    dist_txt = ('-' if d.empty else
+                f"최소 {_won(d['min'])} / 25% {_won(d['25%'])} / 중앙값 {_won(d['50%'])} / "
+                f"75% {_won(d['75%'])} / 최대 {_won(d['max'])} / 평균 {_won(d['mean'])}")
+    flags_txt = ', '.join(f'{k} {v:,}건' for k, v in m['flag_counts'].items()) or '없음'
+    focus_txt = (f"\n[감사인 중점검토사항]\n{cfg['중점검토사항']}\n"
+                 f"위 사항을 위험요소 평가와 결론에 반드시 반영하세요.\n" if cfg['중점검토사항'] else '')
+
+    return f"""당신은 한국 외부감사인(공인회계사)입니다. 아래는 '{company_name}'의 '{acct}' 계정 분개장
+데이터 분석 자료입니다. 위험기반 감사접근법(Risk-based Approach)에 따라 분석하세요.
+거래처명은 가명(Client_###), 적요의 계좌번호 등 민감정보는 마스킹되어 있습니다.
+
+[분석 기간·규모]
+기간: {m['period'][0]:%Y-%m-%d} ~ {m['period'][1]:%Y-%m-%d}
+당기: 건수 {s['건수']:,}건, 차변 {_won(s['차변합계'])}({s['차변건수']:,}건), 대변 {_won(s['대변합계'])}({s['대변건수']:,}건), 순증감 {_won(s['순증감(차-대)'])}
+{prev_txt}
+
+[금액 분포 (라인별 금액)]
+{dist_txt}
 
 [월별 차변/대변 합계·건수]
-{monthly_txt}
+{m['monthly'].to_csv(index=False)}
+[금액 기준 주요 거래처 Top10]
+{m['clients'].to_csv(index=False) if not m['clients'].empty else '-'}
+[상대계정 Top10 (같은 전표의 다른 계정)]
+{m['counter_top'].to_csv(index=False) if not m['counter_top'].empty else '-'}
+[빈출 적요 Top10]
+{m['descs'].to_csv(index=False) if not m['descs'].empty else '-'}
+[이상징후 집계 (전체 거래 기준)]
+{flags_txt}
 
-[금액 상위 10% 샘플 거래 (최대 30건, 전표번호 포함)]
-{sample_txt}
-
-위 데이터를 바탕으로 이 계정의 위험평가, 주요 특이사항, 감사 결론, 결론근거, 추가로 확인이 필요한 사항을
-JSON 스키마에 맞춰 한국어로 답변하세요. 특히 결론근거·추가확인사항에서 언급한 우려사항과 직접 관련된
-개별 전표가 위 샘플 데이터에 있다면, 그 전표번호를 반드시 '확인필요전표'에 그대로 인용해 나열하세요.
-샘플에 없는 전표번호를 임의로 만들어내지 마세요. 특정할 전표가 없으면 '확인필요전표'를 빈 배열로 두세요."""
+[스마트샘플 {len(m['sample'])}건 — 전체 {s['건수']:,}건 중 샘플링비율 {cfg['샘플링비율']:.0%}(최소 {cfg['최소건수']}건·최대 {cfg['최대건수']}건), 구성: {mix_txt}]
+{_ai_sample_for_prompt(m['sample']).to_csv(index=False)}{focus_txt}
+[작성 지침 — JSON 스키마에 맞춰 한국어로 작성]
+1. 계정요약: 계정성격(성격과 목적), 거래규모(총액·차대변·순증감을 억원 단위 숫자로), 거래패턴(월별 추이·집중 시기),
+   전기대비증감(전기 동기간 대비 증감률과 원인 추정).
+2. 거래특징: 주요거래처(상위 거래처·상대계정 구성과 비중), 금액분포(중앙값 대비 최대값 등 편중도),
+   거래주기(정기/비정기, 결산월·분기말 집중 여부).
+3. 위험요소: 경영자주장({', '.join(_AI_ASSERTIONS)}) 중 이 계정에 의미 있는 항목마다
+   위험수준·주요사례(일자·금액·거래처 가명을 구체적으로)·평가근거·제안감사절차(확인할 증빙과 절차)를 작성하고,
+   근거가 된 샘플 전표번호를 관련전표번호에 인용하세요. 자료로 근거를 댈 수 없는 주장은 넣지 마세요.
+4. 감사인제언: 추가 감사절차·내부통제 개선 제언 3개 내외.
+5. 종합: 위험평가, 주요특이사항, 결론, 결론근거, 추가확인사항, 확인필요전표.
+전표번호는 반드시 위 샘플에 있는 것만 인용하고 임의로 만들어내지 마세요. 숫자는 위 자료에서 계산 가능한 값만 쓰세요."""
 
 
 def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
-    """메뉴15와 동일한 계정과목 파라미터를 읽어 Gemini에 구조화 분석을 요청한다.
+    """26번 파라미터 시트의 계정별로 스마트샘플을 뽑아 Gemini에 구조화 분석을 요청한다.
 
-    두 개의 표를 만든다.
-      AI검토결과      : 계정과목당 1행 요약(위험평가/결론 등) — mapping_list에서
-                        그대로(remarks 비움) 또는 AI_INJECT remarks로 주입.
-      AI검토_확인전표 : AI가 결론 근거로 지목한 개별 전표 1건당 1행. 전표번호로
-                        원본 샘플 데이터(sample)를 다시 찾아 금액·거래처·일자를
-                        채운다(AI가 만든 숫자를 그대로 믿지 않고 원본 대조).
+    표 구성
+      결과      : 계정과목당 1행 요약(위험평가/결론 등) — mapping_list AI_INJECT용, 컬럼 고정.
+      확인전표  : AI가 결론 근거로 지목한 전표 1건당 1행 (원본 샘플에서 금액·거래처·일자 재확인).
+      분석보고서: 샘플링 정보 + 계정요약/거래특징/감사인제언 (섹션·항목·내용 세로형).
+      위험요소  : 경영자주장별 위험수준·사례·평가근거·제안감사절차·관련전표.
+      샘플      : AI에 보낸 스마트샘플 원본(실명) + 거래처 가명 + 샘플선정사유.
     """
     import json
 
-    targets = [_nv(p.get('계정과목','')) for p in params_list if _nv(p.get('계정과목',''))]
+    targets = [(_nv(p.get('계정과목', '')), _ai_sampling_config(p))
+               for p in params_list if _nv(p.get('계정과목', ''))]
     if not targets:
         return {'결과': pd.DataFrame({'안내': ['계정과목 파라미터 없음']})}
 
     company_name = os.path.basename(_COMPANY_DIR) if _COMPANY_DIR else ''
     client, model_name, config = _get_gemini_client_and_config()
 
-    summary_rows, detail_rows = [], []
-    for acct in targets:
-        monthly, sample = _prepare_ai_material(df, acct)
-        if monthly is None:
+    summary_rows, detail_rows, report_rows, risk_rows, sample_frames = [], [], [], [], []
+    for acct, cfg in targets:
+        m = _ai_build_material(df, acct, cfg)
+        if m is None:
             continue
-        # 전표번호 → 원본 행 조회용 (AI가 지목한 전표의 실제 금액·거래처·일자를 원본에서 재확인)
+        sample = m['sample']
         jid_lookup = {}
         if COL_JOURNAL_ID in sample.columns:
             for _, r in sample.iterrows():
                 jid_lookup.setdefault(str(r[COL_JOURNAL_ID]), r)
 
-        print(f'    [AI검토] {acct} → Gemini({model_name}) 호출 중...', flush=True)
+        sample_frames.append(pd.DataFrame({
+            '계정과목': acct,
+            '전표일자': sample['_date'].dt.strftime('%Y-%m-%d'),
+            '전표번호': sample.get(COL_JOURNAL_ID, ''),
+            '거래처명': sample.get(COL_CLIENT, ''),
+            '거래처(가명)': sample[COL_CLIENT].apply(get_safe_client_name) if COL_CLIENT in sample.columns else '',
+            '적요': sample.get(COL_DESC, ''),
+            '차변': sample[COL_DEBIT], '대변': sample[COL_CREDIT],
+            '상대계정': sample['상대계정'], '샘플선정사유': sample['샘플선정사유'],
+        }))
+        mix_txt = ', '.join(f'{k} {v:.0%}' for k, v in cfg['구성'].items())
+        reason_cnt = sample['샘플선정사유'].str.replace(r'\(.*\)', '', regex=True).value_counts()
+        report_rows += [
+            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '전체거래수', '내용': f"{m['summary']['건수']:,}건"},
+            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '샘플크기',
+             '내용': f"{len(sample):,}건 (샘플링비율 {cfg['샘플링비율']:.0%}, 최소 {cfg['최소건수']}·최대 {cfg['최대건수']}건)"},
+            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '스마트샘플링 구성', '내용': mix_txt},
+            {'계정과목': acct, '섹션': '1. 샘플링', '항목': '실제 선정 내역',
+             '내용': ', '.join(f'{k} {v}건' for k, v in reason_cnt.items())},
+        ]
+        if cfg['중점검토사항']:
+            report_rows.append({'계정과목': acct, '섹션': '1. 샘플링', '항목': '중점검토사항',
+                                '내용': cfg['중점검토사항']})
+
+        print(f'    [AI검토] {acct} → 샘플 {len(sample)}건/{m["summary"]["건수"]:,}건, '
+              f'Gemini({model_name}) 호출 중...', flush=True)
         try:
-            prompt = _build_ai_review_prompt(company_name, acct, monthly, sample)
+            prompt = _build_ai_review_prompt(company_name, acct, m, cfg)
             resp = client.models.generate_content(model=model_name, contents=prompt, config=config)
             data = json.loads(resp.text)
             summary_rows.append({
@@ -2009,6 +2311,23 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
                 '결론근거':     data.get('결론근거', ''),
                 '추가확인사항': data.get('추가확인사항', ''),
             })
+            for sec, keys in (('2. 계정요약', ('계정성격', '거래규모', '거래패턴', '전기대비증감')),
+                              ('3. 거래특징', ('주요거래처', '금액분포', '거래주기'))):
+                for k in keys:
+                    report_rows.append({'계정과목': acct, '섹션': sec, '항목': k, '내용': data.get(k, '')})
+            for i, tip in enumerate(data.get('감사인제언') or [], 1):
+                report_rows.append({'계정과목': acct, '섹션': '5. 감사인 제언', '항목': f'제언{i}', '내용': tip})
+            for rk in data.get('위험요소') or []:
+                jids = [str(j).strip() for j in (rk.get('관련전표번호') or [])]
+                risk_rows.append({
+                    '계정과목':     acct,
+                    '경영자주장':   rk.get('경영자주장', ''),
+                    '위험수준':     rk.get('위험수준', ''),
+                    '주요사례':     rk.get('주요사례', ''),
+                    '평가근거':     rk.get('평가근거', ''),
+                    '제안감사절차': rk.get('제안감사절차', ''),
+                    '관련전표':     ', '.join(j if j in jid_lookup else f'{j}(샘플외)' for j in jids),
+                })
             for item in data.get('확인필요전표') or []:
                 jid = str(item.get('전표번호', '')).strip()
                 src_row = jid_lookup.get(jid)
@@ -2034,6 +2353,12 @@ def analyze_ai_review(df: pd.DataFrame, params_list: list) -> dict:
     }
     if detail_rows:
         out['확인전표'] = pd.DataFrame(detail_rows)
+    if report_rows:
+        out['분석보고서'] = pd.DataFrame(report_rows)
+    if risk_rows:
+        out['위험요소'] = pd.DataFrame(risk_rows)
+    if sample_frames:
+        out['샘플'] = pd.concat(sample_frames, ignore_index=True)
     return out
 
 
