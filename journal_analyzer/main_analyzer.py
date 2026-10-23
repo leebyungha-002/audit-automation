@@ -2092,7 +2092,10 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             tm = _sampling_param_amount(p.get('허용왜곡표시'))
             em = _sampling_param_amount(p.get('예상왜곡표시')) or 0.0
             if not tm:
-                cond_rows.append({**cond, '비고': '통계표사용=Y이면 허용왜곡표시 금액 필수'})
+                msg = ('샘플 미추출 — 통계표사용=Y인데 허용왜곡표시가 비어 있음 '
+                       '(허용왜곡표시 금액을 넣거나, 입력한 샘플크기로 뽑으려면 통계표사용=N)')
+                cond_rows.append({**cond, '결과시트': '미추출', '비고': msg})
+                print(f'    [감사샘플링] {acct}: {msg}', flush=True)
                 continue
             try:
                 n, size_basis = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
