@@ -2869,7 +2869,7 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 **변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/*/task_list_*.xlsx (live_pure 제외)
 **미해결 이슈**: live_pure task_list는 엑셀에서 열려 있어 적요 열 미삽입 — 닫은 뒤 추가 필요(코드는 열이 없어도 기존처럼 동작). pdf_redactor 45페이지 처리 속도 측정 중단됨(Word 변환 pdf2docx가 유력 원인)
 **다음 할 일**:
-1. live_pure task_list 17번에 적요 열 추가
+1. (완료) live_pure task_list 17번에 적요 열 추가
 2. pdf_redactor 속도 개선(단계별 진행 표시, pdf2docx multi_processing 검토)
 3. 실데이터로 17번 적요 조건 실행 확인
 
