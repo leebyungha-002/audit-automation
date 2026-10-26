@@ -2807,11 +2807,15 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         ym_cols = sorted(filtered['YM'].dropna().unique().tolist())
         filtered['순액'] = filtered[COL_DEBIT].fillna(0) + filtered[COL_CREDIT].fillna(0)
         group_cols = [COL_CLIENT, COL_ACCOUNT] + extra_cols
-        pivot = (filtered.pivot_table(index=group_cols, columns='YM',
-                                       values='순액', aggfunc='sum', fill_value=0)
+        # 거래처명 빈칸(NaN) 행은 pivot/groupby에서 통째로 빠지므로 표시용 값으로 채워 집계
+        # (적요만으로 추출하면 거래처 없는 거래가 많아 월별합산이 상세보다 작게 나왔음, 2026-10-26)
+        gsrc = filtered.assign(**{COL_CLIENT: filtered[COL_CLIENT].fillna('').astype(str)
+                                  .str.strip().replace('', '(거래처 미기재)')})
+        pivot = (gsrc.pivot_table(index=group_cols, columns='YM',
+                                   values='순액', aggfunc='sum', fill_value=0)
                  .reindex(columns=ym_cols, fill_value=0)
                  .reset_index())
-        totals = (filtered.groupby(group_cols)
+        totals = (gsrc.groupby(group_cols)
                   .agg(차변합계=(COL_DEBIT, 'sum'), 대변합계=(COL_CREDIT, 'sum'))
                   .reset_index())
         totals['합계'] = totals['차변합계'] + totals['대변합계']
