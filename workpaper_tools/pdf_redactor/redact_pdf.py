@@ -291,6 +291,8 @@ def redact_pdf(src, dst, terms, patterns, namer, font, font_path):
 
 
 def to_docx(pdf_path, docx_path):
+    # pdf2docx 내부의 `import fitz`(폐지 예정 API, 경고 출력)를 pymupdf로 연결
+    sys.modules.setdefault('fitz', pymupdf)
     from pdf2docx import Converter
     logging.getLogger().setLevel(logging.ERROR)
     cv = Converter(pdf_path)
