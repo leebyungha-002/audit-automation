@@ -2888,3 +2888,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 2. live_pure task_list 17번 적요 열 추가
 
 ---
+
+## 2026-10-26 16:40
+
+**완료 작업**: pdf_redactor 마무리 — 영문 대소문자 무시(파일명·책갈피 포함, 1f00134), 미니PC 이전용 전용 requirements.txt·install.bat(패키지·OCR 점검, 8d09707). live_pure task_list 17번 적요 열 추가(7685595)로 7개 회사 모두 적용. 미니PC git pull 실패 원인(daesun task_list 로컬 수정 충돌, 17커밋 뒤처짐) 진단 → 백업·restore 후 pull 성공
+**변경 파일**: workpaper_tools/pdf_redactor/(redact_pdf.py, requirements.txt, install.bat), requirements.txt, journal_analyzer/live_pure/task_list_live_pure.xlsx
+**미해결 이슈**: 미니PC에 pdf_redactor install.bat 실행·rules/redact_rules.xlsx 수동 복사 필요(git 제외 파일). 미니PC daesun task_list 백업본(바탕화면) 필요 여부 사용자 확인. pdf_redactor Word 재생성·SISW 등 약칭 규칙 보완은 사용자 확인 대기
+**다음 할 일**:
+1. 미니PC에서 install.bat 실행 결과("패키지 OK", "OCR 사용 가능: ko") 확인
+2. 실데이터로 17번 적요 조건 실행 확인
+3. daesun 15번 재실행 확인 (이월)
+
+---
