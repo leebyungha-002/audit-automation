@@ -54,7 +54,7 @@ task_list 파라미터 시트 규격:
        취득원가_처분분-감가상각누계액_처분분, 처분가액(역산)=장부가액+처분손익.
        한계: 개별 자산이 아닌 계정과목×전표 단위로만 구분됨 — 한 전표에 여러
        자산을 묶어 처분하면 그 전표 전체가 한 줄로 잡힘.)
-  거래처분석   : 작업명 / 계정과목 / 거래처명 / 금액열(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
+  거래처분석   : 작업명 / 계정과목 / 거래처명 / 적요(빈칸=조건 없음) / 금액열(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
   계정별상세내역 : 계정과목 / 금액유형(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
@@ -2739,6 +2739,11 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
                     if a.strip() and a.strip().lower() not in ('nan','(전체)','')]
         clients  = [c.strip() for c in str(p.get('거래처명','')).split(',')
                     if c.strip() and c.strip().lower() not in ('nan','')]
+        # 적요(2026-10-26 blue sky 요청): 기재 시 계정과목·거래처명·금액열 조건에 더해
+        # 적요 부분일치(콤마로 여러 개=OR)도 만족하는 거래만 추출. 공란이면 기존과 동일
+        desc_key = next((k for k in p.keys() if '적요' in str(k)), None)
+        descs    = [d.strip() for d in str(p.get(desc_key, '') if desc_key else '').split(',')
+                    if d.strip() and d.strip().lower() not in ('nan','none','')]
         vtype    = _nv(p.get('금액열',''), blank_vals=('nan','none','')) or 'both'
         if vtype not in ('차변','대변','both'): vtype = 'both'
         job_name = _nv(p.get('작업명','')) or f'거래처{i:02d}'
@@ -2751,25 +2756,33 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
         split_cost = has_cost_col and bool(cost_key) and \
             _nv(str(p.get(cost_key, '')), blank_vals=('nan','none','')).strip().upper() in ('Y', 'O', 'TRUE')
-        if not clients: continue
+        # 거래처명·적요 둘 다 공란이면 전 거래가 잡히므로 건너뜀 (적요만 있으면 적요 기준 추출)
+        if not clients and not descs: continue
 
         mask_a = pd.Series(True, index=df.index) if not accts else pd.Series(False, index=df.index)
         for acct in accts: mask_a |= _account_match_flexible(df[COL_ACCOUNT], acct)
-        mask_c = pd.Series(False, index=df.index)
+        mask_c = pd.Series(True, index=df.index) if not clients else pd.Series(False, index=df.index)
         cli_col = df[COL_CLIENT].fillna('').astype(str)
         for cli in clients: mask_c |= cli_col.str.contains(cli, na=False, regex=False)
+        mask_d = pd.Series(True, index=df.index) if not descs else pd.Series(False, index=df.index)
+        if descs:
+            desc_col = df[COL_DESC].fillna('').astype(str) if COL_DESC in df.columns \
+                else pd.Series('', index=df.index)
+            for d in descs: mask_d |= desc_col.str.contains(d, na=False, regex=False)
 
-        filtered = df[mask_a & mask_c].copy()
+        filtered = df[mask_a & mask_c & mask_d].copy()
         if filtered.empty: continue
         if vtype == '차변': filtered = filtered[filtered[COL_DEBIT]  != 0]
         elif vtype == '대변': filtered = filtered[filtered[COL_CREDIT] != 0]
         if filtered.empty: continue
         # 거래처별 개별 표용: 파라미터에 적은 거래처명(키워드) 기준으로 태깅
-        # (한 키워드가 여러 실제 거래처명에 걸려도 입력한 이름 하나로 묶임)
-        f_cli = filtered[COL_CLIENT].fillna('').astype(str)
+        # (한 키워드가 여러 실제 거래처명에 걸려도 입력한 이름 하나로 묶임).
+        # 거래처명 없이 적요만 지정한 행은 적요 키워드별로 태깅
+        key_col, keys = (COL_CLIENT, clients) if clients else (COL_DESC, descs)
+        f_key = filtered[key_col].fillna('').astype(str)
         filtered['_거래처키'] = ''
-        for cli in reversed(clients):
-            filtered.loc[f_cli.str.contains(cli, na=False, regex=False), '_거래처키'] = cli
+        for k in reversed(keys):
+            filtered.loc[f_key.str.contains(k, na=False, regex=False), '_거래처키'] = k
         if split_unit: filtered[UNIT_COL] = filtered[UNIT_COL].astype(str).str.strip()
         if split_cost: filtered[COST_COL] = filtered[COST_COL].astype(str).str.strip()
 

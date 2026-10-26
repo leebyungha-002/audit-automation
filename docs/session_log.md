@@ -2861,3 +2861,16 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun 15번 재실행 확인 (이전 세션 이월)
 
 ---
+
+## 2026-10-26 (17번 거래처분석 적요 조건 추가)
+
+**완료 작업**: 17번 거래처분석에 `적요` 파라미터 추가 — 기재 시 계정과목·거래처명·금액열 + 적요 부분일치(콤마=OR) AND 조건으로 추출, 공란이면 기존과 동일. 거래처명 없이 적요만 적어도 추출(거래처별 시트는 적요 문구별). 6개 회사 task_list 17번 시트 거래처명 오른쪽에 적요 열 삽입(헤더 코멘트·안내문 갱신). 가상 데이터 6케이스 검증 완료
+- pdf_redactor: fitz 폐지예정 경고 제거(9023910) — pdf2docx 내부 import fitz를 pymupdf로 연결
+**변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/*/task_list_*.xlsx (live_pure 제외)
+**미해결 이슈**: live_pure task_list는 엑셀에서 열려 있어 적요 열 미삽입 — 닫은 뒤 추가 필요(코드는 열이 없어도 기존처럼 동작). pdf_redactor 45페이지 처리 속도 측정 중단됨(Word 변환 pdf2docx가 유력 원인)
+**다음 할 일**:
+1. live_pure task_list 17번에 적요 열 추가
+2. pdf_redactor 속도 개선(단계별 진행 표시, pdf2docx multi_processing 검토)
+3. 실데이터로 17번 적요 조건 실행 확인
+
+---
