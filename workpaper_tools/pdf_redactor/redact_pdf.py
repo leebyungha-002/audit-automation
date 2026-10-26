@@ -24,6 +24,8 @@ Usage:
     PyMuPDF redaction으로 원문 텍스트를 PDF 내부에서 실제 삭제(가리기만 하는 것이 아님)한 뒤
     같은 위치에 대체어를 써 넣는다. 처리 후 결과 파일을 다시 읽어 원문 잔존 여부를 검증하고,
     처리내역·검증결과는 logs/ 에 기록한다 (logs/ 에는 원문이 남으므로 외부 전달 금지).
+    글자 정보가 없는 스캔 페이지는 Windows 내장 OCR(한국어)로 글자 위치를 찾아 그 부분 이미지
+    픽셀을 지우고 대체어를 써 넣는다 (페이지 단위 판단 — 일반/스캔 페이지 혼합 문서도 처리).
 """
 
 import os
@@ -234,16 +236,90 @@ def page_chars(page):
     return chars
 
 
-def collect_targets(page, terms, patterns, namer):
-    """페이지에서 지울 영역 수집. [([줄별 rect...], 대체어, 규칙, 원문)]"""
-    text = page.get_text('text')
-    chars = page_chars(page)
-    flat = _norm(''.join(c for c, _, _ in chars))
+# ── 스캔 페이지 OCR (Windows 내장 OCR, 로컬 처리) ──────────────────────────────
+OCR_DPI = 300
+# OCR이 자주 헷갈리는 영문·숫자(O↔0, I↔l↔1 등)는 같은 글자로 보고 매칭 (글자 수 1:1 유지)
+_OCR_FOLD = str.maketrans({'0': 'o', '1': 'l', 'i': 'l', '|': 'l', '!': 'l'})
+_ocr_engine = None
+
+
+def _fold(s):
+    return _norm(s).translate(_OCR_FOLD)
+
+
+def is_scanned_page(page):
+    """글자 정보가 거의 없고 이미지가 페이지 절반 이상을 덮으면 스캔 페이지로 본다."""
+    if len(page.get_text('text').strip()) >= 20:
+        return False
+    area = sum((pymupdf.Rect(i['bbox']) & page.rect).get_area() for i in page.get_image_info())
+    return area >= page.rect.get_area() * 0.5
+
+
+def _get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        try:
+            from winrt.windows.media.ocr import OcrEngine
+            from winrt.windows.globalization import Language
+        except ImportError:
+            raise RuntimeError('OCR 패키지 없음 — pip install winrt-runtime winrt-Windows.Media.Ocr '
+                               'winrt-Windows.Graphics.Imaging winrt-Windows.Storage.Streams '
+                               'winrt-Windows.Globalization winrt-Windows.Foundation winrt-Windows.Foundation.Collections')
+        _ocr_engine = (OcrEngine.try_create_from_language(Language('ko'))
+                       or OcrEngine.try_create_from_user_profile_languages())
+        if _ocr_engine is None:
+            raise RuntimeError('Windows OCR 언어팩 없음 — 설정 > 시간 및 언어 > 언어에서 한국어 OCR 설치')
+    return _ocr_engine
+
+
+def ocr_page(page, dpi=OCR_DPI):
+    """스캔 페이지를 OCR해 page_chars()와 같은 형식 [(글자, bbox, 줄번호)]과 줄 텍스트를 돌려준다.
+    Windows OCR은 단어 단위 좌표만 주므로 단어 폭을 글자 수로 나눠 글자 좌표를 근사한다."""
+    import asyncio
+    from winrt.windows.graphics.imaging import SoftwareBitmap, BitmapPixelFormat
+    from winrt.windows.storage.streams import DataWriter
+    eng = _get_ocr_engine()
+    pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
+    w = DataWriter()
+    w.write_bytes(bytes(pix.samples))
+    bmp = SoftwareBitmap.create_copy_from_buffer(w.detach_buffer(), BitmapPixelFormat.GRAY8,
+                                                 pix.width, pix.height)
+
+    async def _run():
+        return await eng.recognize_async(bmp)
+    result = asyncio.run(_run())
+
+    s = 72 / dpi
+    chars, lines = [], []
+    for lid, ln in enumerate(result.lines, 1):
+        words = list(ln.words)
+        lines.append(' '.join(wd.text for wd in words))
+        for wd in words:
+            b, t = wd.bounding_rect, wd.text
+            cw = b.width / max(len(t), 1)
+            for k, c in enumerate(t):
+                if not c.isspace():
+                    chars.append((c, pymupdf.Rect((b.x + k * cw) * s, b.y * s,
+                                                  (b.x + (k + 1) * cw) * s, (b.y + b.height) * s), lid))
+    return chars, '\n'.join(lines)
+
+
+def collect_targets(page, terms, patterns, namer, ocr=None):
+    """페이지에서 지울 영역 수집. [([줄별 rect...], 대체어, 규칙, 원문)]
+    ocr=(chars, text)를 주면 글자층 대신 OCR 결과로 찾는다 (O/0·I/l 혼동 무시)."""
+    if ocr:
+        chars, text = ocr
+        keyf = _fold
+    else:
+        text = page.get_text('text')
+        chars = page_chars(page)
+        keyf = _norm
+    flat = keyf(''.join(c for c, _, _ in chars))
     used = bytearray(len(flat))
     targets = []
 
     def add(needle, repl, rule):
-        key = _norm(needle)
+        key = keyf(needle)
         i = flat.find(key) if key else -1
         while i != -1:
             j = i + len(key)
@@ -269,11 +345,6 @@ def collect_targets(page, terms, patterns, namer):
     return targets
 
 
-def is_scanned(doc):
-    chars = sum(len(p.get_text('text').strip()) for p in doc)
-    return chars < 20 * max(len(doc), 1)
-
-
 # ════════════════════════════════════════════════════════════════════════════
 # 처리
 # ════════════════════════════════════════════════════════════════════════════
@@ -284,9 +355,16 @@ def _font_path():
     return None
 
 
-def write_replacement(page, rect, text, font, font_path):
+def write_replacement(page, rect, text, font, font_path, ocr=False):
     unit = font.text_length(text, fontsize=1) or 1
-    # search_for 영역 높이는 줄 높이(글자 크기의 약 1.3~1.4배)라서 0.72배 ≈ 원문 글자 크기
+    if ocr:
+        # OCR 단어 상자는 글자 윗선~밑선(대문자 높이 정도)이라 그 1.3배 ≈ 원문 글자 크기, 밑선에 맞춤
+        fs = max(min(rect.height * 1.3, rect.width * 1.5 / unit), 3)
+        baseline = pymupdf.Point(rect.x0, rect.y1 - rect.height * 0.05)
+        kw = {'fontfile': font_path} if font_path else {}
+        page.insert_text(baseline, text, fontname=FONT_NAME if font_path else 'korea', fontsize=fs, **kw)
+        return
+    # 글자층 영역 높이는 줄 높이(글자 크기의 약 1.3~1.4배)라서 0.72배 ≈ 원문 글자 크기
     fs = max(min(rect.height * 0.72, rect.width * 0.98 / unit), 3)
     baseline = pymupdf.Point(rect.x0, rect.y0 + (rect.height + fs * 0.75) / 2)
     kw = {'fontfile': font_path} if font_path else {}
@@ -353,25 +431,35 @@ def remove_page_images(page, font_path):
 def redact_pdf(src, dst, terms, patterns, namer, font, font_path, remove_images=True):
     doc = pymupdf.open(src)
     strip_hidden_text(doc)
-    log_rows = []
+    log_rows, ocr_texts = [], {}   # ocr_texts: {페이지번호: OCR 텍스트} — 미발견 경고용
     for page in doc:
-        if remove_images:
+        scanned = is_scanned_page(page)
+        ocr = None
+        if scanned:
+            # 스캔 페이지: 페이지 전체가 이미지라 이미지 삭제 대신 OCR로 찾은 자리의 픽셀만 지움
+            print(f'  OCR {page.number + 1}/{len(doc)}쪽…')
+            ocr = ocr_page(page)
+            ocr_texts[page.number] = ocr[1]
+        elif remove_images:
             n = remove_page_images(page, font_path)
             if n:
                 log_rows.append({'파일': os.path.basename(src), '페이지': page.number + 1,
                                  '규칙': '이미지삭제', '원문': f'이미지 {n}개', '대체어': '(이미지 삭제)'})
-        targets = collect_targets(page, terms, patterns, namer)
+        targets = collect_targets(page, terms, patterns, namer, ocr)
         if not targets:
             continue
         for rects, repl, _, _ in targets:
             for rect in rects:
-                page.add_redact_annot(rect, fill=(1, 1, 1) if repl else (0, 0, 0))
-        # 이미지·표 테두리는 그대로 두고 텍스트만 삭제
-        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                # OCR 좌표는 글자에 딱 붙어 있어 획 끝이 남지 않게 조금 넓힘
+                page.add_redact_annot(rect + (-1.5, -1.5, 1.5, 1.5) if scanned else rect,
+                                      fill=(1, 1, 1) if repl else (0, 0, 0))
+        # 일반 페이지: 이미지·표 테두리는 그대로 두고 텍스트만 삭제
+        # 스캔 페이지: 해당 영역의 이미지 픽셀을 지움
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS if scanned else pymupdf.PDF_REDACT_IMAGE_NONE,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
         for rects, repl, rule, needle in targets:
             if repl:   # 줄이 나뉜 원문은 가장 넓은 줄 자리에 대체어, 나머지 줄은 공백
-                write_replacement(page, max(rects, key=lambda r: r.width), repl, font, font_path)
+                write_replacement(page, max(rects, key=lambda r: r.width), repl, font, font_path, ocr=scanned)
             log_rows.append({'파일': os.path.basename(src), '페이지': page.number + 1,
                              '규칙': rule, '원문': needle, '대체어': repl or '(검은박스)'})
 
@@ -383,7 +471,7 @@ def redact_pdf(src, dst, terms, patterns, namer, font, font_path, remove_images=
         doc.set_toc([[lv, apply_terms_to_text(t, terms), pg] for lv, t, pg in toc])
     doc.save(dst, garbage=4, deflate=True, clean=True)
     doc.close()
-    return log_rows
+    return log_rows, ocr_texts
 
 
 def to_docx(pdf_path, docx_path):
@@ -419,13 +507,15 @@ def _docx_text(path):
     return '\n'.join(parts)
 
 
-def verify(text, needles, patterns):
-    """{원문: (정확일치 잔존, 공백무시 잔존)} + 자동패턴 잔존"""
-    low, squeezed = text.lower(), re.sub(r'\s', '', text).lower()
+def verify(text, needles, patterns, ocr=False):
+    """{원문: (정확일치 잔존, 공백무시 잔존)} + 자동패턴 잔존.
+    ocr=True(스캔 페이지 재OCR 텍스트)면 공백무시 비교에 O/0·I/l 혼동도 무시."""
+    keyf = _fold if ocr else _norm
+    low, squeezed = text.lower(), keyf(text)
     res = {}
     for n in needles:
         exact = low.count(n.lower())
-        loose = squeezed.count(re.sub(r'\s', '', n).lower())
+        loose = squeezed.count(keyf(n))
         if exact or loose:
             res[n] = (exact, loose)
     for name, s, _ in find_pattern_hits(text, [p for p in patterns if p[0] != '회사명(법인표기)']):
@@ -469,15 +559,15 @@ def scan(pdfs, terms, patterns):
     all_patterns = [(n, re.compile(rx), r) for n, rx, r, *_ in AUTO_PATTERNS if n != '회사명(법인표기)']
     for src in pdfs:
         with pymupdf.open(src) as doc:
-            if is_scanned(doc):
-                rows.append({'파일': os.path.basename(src), '페이지': '-', '구분': '경고',
-                             '문자열': '텍스트 없음(스캔본) — OCR 필요'})
-                continue
             for page in doc:
-                text = page.get_text('text')
-                flat = _norm(text)
+                scanned = is_scanned_page(page)
+                if scanned:
+                    print(f'  OCR {os.path.basename(src)} {page.number + 1}/{len(doc)}쪽…')
+                text = ocr_page(page)[1] if scanned else page.get_text('text')
+                keyf = _fold if scanned else _norm
+                flat = keyf(text)
                 for src_t, _ in terms:
-                    c = flat.count(_norm(src_t))
+                    c = flat.count(keyf(src_t))
                     if c:
                         rows.append({'파일': os.path.basename(src), '페이지': page.number + 1,
                                      '구분': '대체목록', '문자열': src_t, '건수': c})
@@ -538,23 +628,25 @@ def main():
 
     for src in pdfs:
         name = os.path.basename(src)
-        with pymupdf.open(src) as d:
-            scanned = is_scanned(d)
-        if scanned:
-            print(f'[건너뜀] {name}: 텍스트가 없는 스캔본 PDF — OCR 후 다시 시도하세요')
-            checks.append({'파일': name, '결과': '건너뜀(스캔본)'})
-            continue
-
         stem = apply_terms_to_text(os.path.splitext(name)[0], terms)   # 파일명의 회사명도 대체
         out_pdf = os.path.join(OUTPUT_DIR, f'{stem}_비식별.pdf')
         print(f'[처리중] {name}: PDF 비식별…')
-        logs = redact_pdf(src, out_pdf + '.tmp', terms, patterns, namer, font, font_path,
-                          remove_images=not args.keep_images)
+        try:
+            logs, ocr_texts = redact_pdf(src, out_pdf + '.tmp', terms, patterns, namer, font, font_path,
+                                         remove_images=not args.keep_images)
+        except RuntimeError as e:   # 스캔본인데 OCR을 쓸 수 없는 경우
+            print(f'[건너뜀] {name}: {e}')
+            checks.append({'파일': name, '결과': f'건너뜀: {e}'})
+            if os.path.exists(out_pdf + '.tmp'):
+                os.remove(out_pdf + '.tmp')
+            continue
         out_pdf = _place(out_pdf + '.tmp', out_pdf)
         all_logs.extend(logs)
+        if ocr_texts:
+            print(f'  스캔 페이지 {len(ocr_texts)}쪽은 OCR로 처리 — OCR 오인식 글자는 못 찾을 수 있으니 결과 육안 확인 필요')
 
         with pymupdf.open(src) as d:
-            flat_src = _norm(''.join(p.get_text('text') for p in d))
+            flat_src = _norm(''.join(p.get_text('text') for p in d) + ''.join(ocr_texts.values()))
         for t, sim in find_missing(user_terms, {r['원문'] for r in logs}, flat_src):
             print(f'  ⚠ 대체목록 "{t}" — 문서에서 찾지 못함' + (f' (문서 속 비슷한 표기: {sim})' if sim else ''))
             missing_rows.append({'파일': name, '원문(대체목록)': t, '문서 속 비슷한 표기': sim})
@@ -574,9 +666,17 @@ def main():
 
         for kind, path, reader in outputs:
             left = verify(reader(path), needles, patterns)
-            if kind == 'PDF' and not args.keep_images:
+            if kind == 'PDF':
                 with pymupdf.open(path) as d:
-                    n_img = sum(len(p.get_image_info()) for p in d)
+                    # 스캔 페이지는 결과 PDF를 다시 OCR해서 원문이 남았는지 확인
+                    if ocr_texts:
+                        print('  검증용 재OCR…')
+                        re_ocr = '\n'.join(ocr_page(d[pno])[1] for pno in ocr_texts)
+                        for k, v in verify(re_ocr, needles, patterns, ocr=True).items():
+                            left[f'{k}[OCR]'] = v
+                    # 스캔 페이지 자체 이미지는 남는 게 정상이므로 제외하고 셈
+                    n_img = 0 if args.keep_images else sum(
+                        len(p.get_image_info()) for p in d if p.number not in ocr_texts)
                 if n_img:
                     left['이미지'] = (n_img, n_img)
             ok = not left
