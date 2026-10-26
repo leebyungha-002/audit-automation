@@ -346,6 +346,15 @@ TOOLS = [
         "extra": None,
     },
     {
+        "category": "PDF 민감정보 삭제",
+        "name": "PDF 민감정보 삭제·대체 (pdf_redactor)",
+        "desc": "⚠ 실행 전 workpaper_tools/pdf_redactor/input/ 폴더에 PDF를 넣고, rules/redact_rules.xlsx [대체목록]에 회사명·거래처명 → 대체어를 입력하세요 (최초 실행 시 템플릿 자동 생성).\n원문 텍스트를 PDF에서 실제 삭제 후 대체어 기입 + 계좌번호·사업자번호·전화번호 등 자동 탐지 → output/ 에 _비식별.pdf / .docx 생성 후 결과 파일 재검증. 처리내역은 logs/ (원문 포함, 외부 전달 금지).",
+        "cmd": ["python", str(ROOT / "workpaper_tools" / "pdf_redactor" / "redact_pdf.py")],
+        "cwd": str(ROOT / "workpaper_tools" / "pdf_redactor"),
+        "company": None,
+        "extra": None,
+    },
+    {
         "category": "시트 분리",
         "name": "엑셀 시트 분리 (sheet_splitter)",
         "desc": "시트명 기준(sheet) 또는 컬럼값 기준(col)으로 엑셀 파일을 분리",

@@ -2847,3 +2847,17 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 2. sejoong task_list에 남은 구 '15_AI 계정별 분석' 시트 정리 여부 결정
 
 ---
+
+## 2026-10-26 (PDF 민감정보 삭제 앱 신규)
+
+**완료 작업**: `workpaper_tools/pdf_redactor/` 신규 개발 — PDF의 회사명·거래처명(대체목록 엑셀) + 계좌번호·사업자번호·등록번호·전화·카드·이메일(자동패턴)을 PyMuPDF redaction으로 실제 삭제 후 대체어 기입(빈칸이면 검은 박스), 메타데이터·책갈피·파일명도 대체. output/ 에 `_비식별.pdf`·`.docx`(pdf2docx) 생성, 결과 파일 재추출해 원문 잔존 검증, 처리내역은 logs/. `--scan`으로 회사명 후보 조사. 런처 메뉴 등록. 가상 PDF로 PDF·Word 모두 검증 통과
+- 10/23(금) 작업했다던 동일 앱은 저장소·커밋·로그 어디에도 없어 새로 작성함
+- anaconda lxml이 Python 3.13용(cp313)으로 깨져 있어 lxml 5.3.0 재설치, pdf2docx 0.5.13 설치
+**변경 파일**: workpaper_tools/pdf_redactor/redact_pdf.py, run_redact.bat, launcher.py, .gitignore, requirements.txt
+**미해결 이슈**: 실제 문서 미실행 — 스캔본 PDF(텍스트 없음)는 건너뜀(OCR 미지원), 줄바꿈으로 끊긴 단어는 삭제 안 되고 검증에서 '공백무시' 잔존으로만 잡힘
+**다음 할 일**:
+1. 실제 PDF로 `--scan` → 대체목록 작성 → 실행, Word 변환 품질 확인
+2. 스캔본 PDF 대응(OCR) 필요 여부 결정
+3. daesun 15번 재실행 확인 (이전 세션 이월)
+
+---

@@ -30,3 +30,10 @@ audio_transcriber/output/*
 !audio_transcriber/input/.gitkeep
 !audio_transcriber/output/.gitkeep
 audio_transcriber/models/
+
+# pdf_redactor: 원본·결과·로그·규칙(회사명 포함)은 커밋 금지
+workpaper_tools/pdf_redactor/input/*
+workpaper_tools/pdf_redactor/output/*
+workpaper_tools/pdf_redactor/logs/*
+workpaper_tools/pdf_redactor/rules/*
+!workpaper_tools/pdf_redactor/*/.gitkeep

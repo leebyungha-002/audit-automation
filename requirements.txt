@@ -22,3 +22,4 @@ anthropic==1.11.0
 pydantic==2.12.5
 PyYAML==6.0.2
 faster-whisper
+pdf2docx==0.5.13
