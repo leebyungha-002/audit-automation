@@ -352,7 +352,7 @@ TOOLS = [
         "cmd": ["python", str(ROOT / "workpaper_tools" / "pdf_redactor" / "redact_pdf.py")],
         "cwd": str(ROOT / "workpaper_tools" / "pdf_redactor"),
         "company": None,
-        "extra": None,
+        "extra": "pdf_opts",  # 실행방식·출력형식·이미지·규칙파일·파일명 선택
     },
     {
         "category": "시트 분리",
@@ -558,6 +558,39 @@ class Launcher(QMainWindow):
         mode_layout.addStretch()
         right_layout.addWidget(self._mode_row)
 
+        # PDF 민감정보 삭제 옵션 (pdf_redactor 전용)
+        self._pdf_row = QWidget()
+        pdf_layout = QVBoxLayout(self._pdf_row)
+        pdf_layout.setContentsMargins(0, 0, 0, 0)
+        pdf_line1 = QHBoxLayout()
+        pdf_line1.addWidget(QLabel("실행:"))
+        self._pdf_mode_combo = QComboBox()
+        self._pdf_mode_combo.setFont(QFont("맑은 고딕", 10))
+        self._pdf_mode_combo.addItems(["변환 실행", "후보 조사만 (--scan, 파일 생성 안 함)"])
+        pdf_line1.addWidget(self._pdf_mode_combo)
+        pdf_line1.addWidget(QLabel("  출력:"))
+        self._pdf_format_combo = QComboBox()
+        self._pdf_format_combo.setFont(QFont("맑은 고딕", 10))
+        self._pdf_format_combo.addItems(["PDF + Word", "PDF만", "Word만"])
+        pdf_line1.addWidget(self._pdf_format_combo)
+        self._pdf_keep_img = QCheckBox("이미지 유지 (기본: 이미지 전부 삭제)")
+        pdf_line1.addWidget(self._pdf_keep_img)
+        pdf_line1.addStretch()
+        pdf_line2 = QHBoxLayout()
+        pdf_line2.addWidget(QLabel("규칙 파일:"))
+        self._pdf_rules_combo = QComboBox()
+        self._pdf_rules_combo.setFont(QFont("맑은 고딕", 10))
+        self._pdf_rules_combo.setMinimumWidth(220)
+        pdf_line2.addWidget(self._pdf_rules_combo)
+        pdf_line2.addWidget(QLabel("  파일명 포함:"))
+        self._pdf_file_input = QLineEdit()
+        self._pdf_file_input.setPlaceholderText("비우면 input/ 전체")
+        pdf_line2.addWidget(self._pdf_file_input)
+        pdf_line2.addStretch()
+        pdf_layout.addLayout(pdf_line1)
+        pdf_layout.addLayout(pdf_line2)
+        right_layout.addWidget(self._pdf_row)
+
         # 단계 선택 (감리 지적사항 체크리스트 전용)
         self._afc_row = QWidget()
         afc_layout = QHBoxLayout(self._afc_row)
@@ -733,6 +766,16 @@ class Launcher(QMainWindow):
 
         # 모드 선택 (sheet_splitter 전용)
         self._mode_row.setVisible(t["extra"] == "sheet_mode")
+
+        # PDF 민감정보 삭제 옵션 — 규칙 파일 목록은 선택할 때마다 새로 읽음
+        self._pdf_row.setVisible(t["extra"] == "pdf_opts")
+        if t["extra"] == "pdf_opts":
+            self._pdf_rules_combo.clear()
+            rules = sorted(p.name for p in (ROOT / "workpaper_tools" / "pdf_redactor" / "rules").glob("*.xlsx")
+                           if not p.name.startswith("~$"))
+            self._pdf_rules_combo.addItems(rules or ["redact_rules.xlsx (최초 실행 시 생성)"])
+            if "redact_rules.xlsx" in rules:
+                self._pdf_rules_combo.setCurrentText("redact_rules.xlsx")
 
         # 단계 선택 (감리 지적사항 체크리스트 전용) — 회사 콤보는 단계에 따라 채움
         self._afc_row.setVisible(t["extra"] == "afc_step")
@@ -915,6 +958,20 @@ class Launcher(QMainWindow):
         if t["extra"] == "sheet_mode":
             mode = "sheet" if self._mode_combo.currentIndex() == 0 else "col"
             cmd += ["--mode", mode]
+
+        # PDF 민감정보 삭제 옵션 인자 추가
+        if t["extra"] == "pdf_opts":
+            if self._pdf_mode_combo.currentIndex() == 1:
+                cmd += ["--scan"]
+            cmd += ["--format", ("both", "pdf", "docx")[self._pdf_format_combo.currentIndex()]]
+            if self._pdf_keep_img.isChecked():
+                cmd += ["--keep-images"]
+            rules = self._pdf_rules_combo.currentText()
+            if rules.endswith(".xlsx"):
+                cmd += ["--rules", str(Path("rules") / rules)]
+            name_filter = self._pdf_file_input.text().strip()
+            if name_filter:
+                cmd += ["--file", name_filter]
 
         self._log_line(f"\n▶ 실행: {' '.join(cmd)}", "#60A5FA")
 
