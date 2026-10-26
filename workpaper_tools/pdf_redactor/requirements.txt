@@ -1,0 +1,22 @@
+# PDF 민감정보 삭제·대체 (pdf_redactor) 전용 패키지
+# 설치: install.bat 더블클릭 또는  python -m pip install -r requirements.txt
+# 요구사항: Windows 10/11 (대체어 글꼴=맑은 고딕, 스캔 PDF OCR=Windows 내장 OCR)
+#   스캔 PDF를 처리하려면 Windows 한국어 OCR 언어팩 필요 — 설정 > 시간 및 언어 > 언어 및 지역 >
+#   한국어 > 언어 옵션 > '광학 문자 인식' 설치 (한국어 Windows는 보통 기본 설치됨)
+#   확인: install.bat 마지막에 "OCR 사용 가능: ko" 가 나오면 정상
+
+pandas==2.3.3
+openpyxl==3.1.5
+PyMuPDF==1.28.2
+
+# Word(.docx) 출력 — python-docx·opencv 등은 pdf2docx가 함께 설치
+pdf2docx==0.5.13
+
+# 스캔 PDF OCR (Windows 내장 OCR 연결)
+winrt-runtime==4.0.3
+winrt-Windows.Media.Ocr==4!10.0.28000.2705
+winrt-Windows.Graphics.Imaging==4!10.0.28000.2705
+winrt-Windows.Storage.Streams==4!10.0.28000.2705
+winrt-Windows.Globalization==4!10.0.28000.2705
+winrt-Windows.Foundation==4!10.0.28000.2705
+winrt-Windows.Foundation.Collections==4!10.0.28000.2705

@@ -21,7 +21,11 @@ PyMuPDF==1.28.2
 anthropic==1.11.0
 pydantic==2.12.5
 PyYAML==6.0.2
+
+# audio_transcriber (감사 녹음 텍스트 변환) — 전용 목록: audio_transcriber/requirements.txt
 faster-whisper
+
+# workpaper_tools/pdf_redactor (PDF 민감정보 삭제·대체) — 전용 목록: workpaper_tools/pdf_redactor/requirements.txt
 pdf2docx==0.5.13
 winrt-runtime==4.0.3
 winrt-Windows.Media.Ocr
