@@ -12,6 +12,7 @@ Usage:
     python redact_pdf.py --scan                # 파일 생성 없이 민감정보 후보만 조사 → logs/
     python redact_pdf.py --file 계약서          # 파일명에 '계약서'가 포함된 PDF만
     python redact_pdf.py --rules rules/redact_rules_삼동.xlsx
+    python redact_pdf.py --keep-images         # 이미지 유지 (기본은 이미지 전부 삭제)
 
 규칙 파일 (rules/redact_rules.xlsx, 없으면 템플릿 자동 생성):
     [대체목록]  원문 | 대체어 | 사용(Y/N) | 비고
@@ -292,6 +293,19 @@ def write_replacement(page, rect, text, font, font_path):
     page.insert_text(baseline, text, fontname=FONT_NAME if font_path else 'korea', fontsize=fs, **kw)
 
 
+def _place(tmp, path):
+    """임시 파일을 최종 이름으로 옮긴다. 같은 이름 파일이 뷰어·Word에서 열려 있어
+    교체할 수 없으면 '이름(2)' 식으로 비켜 저장하고 실제 저장 경로를 돌려준다."""
+    base, ext = os.path.splitext(path)
+    cand, n = path, 2
+    while True:
+        try:
+            os.replace(tmp, cand)
+            return cand
+        except PermissionError:
+            cand, n = f'{base}({n}){ext}', n + 1
+
+
 def apply_terms_to_text(s, terms):
     for src, repl in terms:
         s = s.replace(src, repl or '○○')
@@ -311,11 +325,40 @@ def strip_hidden_text(doc):
                 doc.xref_set_key(x, k, 'null')
 
 
-def redact_pdf(src, dst, terms, patterns, namer, font, font_path):
+def remove_page_images(page, font_path):
+    """이미지 속 글자(로고·직인·캡처 화면 등)는 지울 수 없으므로 이미지 자체를 삭제.
+    이미지 위에 겹친 글자·표 테두리는 그대로 두고, 지운 자리에 점선 테두리+표시를 남긴다
+    (페이지 대부분을 덮는 배경 이미지는 표시 없이 삭제만)."""
+    rects = [r for r in (pymupdf.Rect(i['bbox']) & page.rect for i in page.get_image_info())
+             if not r.is_empty]
+    if not rects:
+        return 0
+    for r in rects:
+        page.add_redact_annot(r, fill=False)
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
+                          graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                          text=pymupdf.PDF_REDACT_TEXT_NONE)
+    page_area = page.rect.get_area()
+    kw = {'fontname': FONT_NAME, 'fontfile': font_path} if font_path else {'fontname': 'korea'}
+    for r in rects:
+        if r.get_area() > page_area * 0.8:
+            continue
+        page.draw_rect(r, color=(0.6, 0.6, 0.6), width=0.5, dashes='[2] 0')
+        if r.height >= 9 and r.width >= 40:
+            page.insert_text((r.x0 + 2, r.y0 + 8), '이미지 삭제', fontsize=6.5, color=(0.5, 0.5, 0.5), **kw)
+    return len(rects)
+
+
+def redact_pdf(src, dst, terms, patterns, namer, font, font_path, remove_images=True):
     doc = pymupdf.open(src)
     strip_hidden_text(doc)
     log_rows = []
     for page in doc:
+        if remove_images:
+            n = remove_page_images(page, font_path)
+            if n:
+                log_rows.append({'파일': os.path.basename(src), '페이지': page.number + 1,
+                                 '규칙': '이미지삭제', '원문': f'이미지 {n}개', '대체어': '(이미지 삭제)'})
         targets = collect_targets(page, terms, patterns, namer)
         if not targets:
             continue
@@ -452,6 +495,8 @@ def main():
     ap.add_argument('--rules', default=DEFAULT_RULES)
     ap.add_argument('--file', default='', help='파일명 포함 문자열 필터')
     ap.add_argument('--scan', action='store_true', help='파일 생성 없이 민감정보 후보만 조사')
+    ap.add_argument('--keep-images', action='store_true',
+                    help='이미지 유지 (기본: 이미지 속 글자는 지울 수 없어 이미지를 모두 삭제)')
     args = ap.parse_args()
 
     rules_path = args.rules if os.path.isabs(args.rules) else os.path.join(BASE_DIR, args.rules)
@@ -502,7 +547,9 @@ def main():
         stem = apply_terms_to_text(os.path.splitext(name)[0], terms)   # 파일명의 회사명도 대체
         out_pdf = os.path.join(OUTPUT_DIR, f'{stem}_비식별.pdf')
         print(f'[처리중] {name}: PDF 비식별…')
-        logs = redact_pdf(src, out_pdf, terms, patterns, namer, font, font_path)
+        logs = redact_pdf(src, out_pdf + '.tmp', terms, patterns, namer, font, font_path,
+                          remove_images=not args.keep_images)
+        out_pdf = _place(out_pdf + '.tmp', out_pdf)
         all_logs.extend(logs)
 
         with pymupdf.open(src) as d:
@@ -517,7 +564,8 @@ def main():
             out_docx = os.path.join(OUTPUT_DIR, f'{stem}_비식별.docx')
             print('  Word 변환 중… (페이지 수에 따라 수 분 걸릴 수 있음)')
             try:
-                to_docx(out_pdf, out_docx)
+                to_docx(out_pdf, out_docx + '.tmp')
+                out_docx = _place(out_docx + '.tmp', out_docx)
                 outputs.append(('Word', out_docx, _docx_text))
             except Exception as e:
                 print(f'  [오류] Word 변환 실패: {e}')
@@ -525,6 +573,11 @@ def main():
 
         for kind, path, reader in outputs:
             left = verify(reader(path), needles, patterns)
+            if kind == 'PDF' and not args.keep_images:
+                with pymupdf.open(path) as d:
+                    n_img = sum(len(p.get_image_info()) for p in d)
+                if n_img:
+                    left['이미지'] = (n_img, n_img)
             ok = not left
             fails += 0 if ok else 1
             checks.append({'파일': name, '형식': kind, '결과파일': os.path.basename(path),
