@@ -307,8 +307,9 @@ def _place(tmp, path):
 
 
 def apply_terms_to_text(s, terms):
+    """파일명·책갈피용 치환. 본문 매칭과 같게 영문 대소문자 무시 (abc 규칙 → ABC도 치환)"""
     for src, repl in terms:
-        s = s.replace(src, repl or '○○')
+        s = re.sub(re.escape(src), lambda _m, r=repl or '○○': r, s, flags=re.IGNORECASE)
     return s
 
 
