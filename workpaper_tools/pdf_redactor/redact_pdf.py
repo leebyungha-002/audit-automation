@@ -120,6 +120,14 @@ def create_rules_template(path):
     wb.save(path)
 
 
+CORP_MARK_RE = re.compile(r'\(주\)|㈜|주식회사')
+
+
+def _norm(s):
+    """비교용: 공백 제거 + 소문자 (글자 수가 바뀌지 않도록 한 글자씩 변환)"""
+    return ''.join(c.lower()[:1] or c for c in s if not c.isspace())
+
+
 def _yn(v):
     return str(v).strip().upper() not in ('N', 'NO', '0', 'FALSE')
 
@@ -138,8 +146,17 @@ def load_rules(path):
             src = _cell(src)
             if src and (use is None or _yn(use)):
                 terms.append((src, _cell(repl)))
+    user_terms = [s for s, _ in terms]   # 사용자가 직접 적은 원문 (미발견 경고용)
+    # 법인표기(㈜/(주)/주식회사)를 뺀 이름도 같은 대체어로 자동 등록
+    # → "에스제이세일기공㈜"만 적어도 "에스제이세일기공 주식회사" 표기까지 지워짐
+    known = {_norm(s) for s, _ in terms}
+    for src, repl in list(terms):
+        core = CORP_MARK_RE.sub('', src).strip()
+        if len(_norm(core)) >= 2 and _norm(core) not in known:
+            known.add(_norm(core))
+            terms.append((core, repl))
     # 긴 원문 먼저 → "(주)가나다상사"가 "가나다상사"보다 먼저 처리되도록
-    terms.sort(key=lambda t: len(t[0]), reverse=True)
+    terms.sort(key=lambda t: len(_norm(t[0])), reverse=True)
 
     settings = {name: (use, repl) for name, _, repl, use, _ in AUTO_PATTERNS}
     if '자동패턴' in wb.sheetnames:
@@ -150,7 +167,7 @@ def load_rules(path):
                 settings[name] = ('Y' if (use is None or _yn(use)) else 'N', _cell(repl))
     patterns = [(name, re.compile(rx), settings[name][1])
                 for name, rx, *_ in AUTO_PATTERNS if settings[name][0] == 'Y']
-    return terms, patterns
+    return terms, patterns, user_terms
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -199,26 +216,46 @@ def _alpha_label(i):
     return s
 
 
-def _overlaps(rect, claimed, ratio=0.5):
-    area = rect.get_area() or 1
-    return any((rect & c).get_area() / area > ratio for c in claimed)
+def page_chars(page):
+    """공백을 뺀 글자 단위 목록 [(글자, bbox, 줄번호)].
+    page.search_for()는 띄어쓰기가 다르거나("Co., Ltd"↔"Co.,Ltd"), 글자 사이가 벌어졌거나
+    ("권    장    시"), 줄이 바뀐 단어를 못 찾으므로 글자 좌표로 직접 매칭한다."""
+    chars, lid = [], 0
+    for b in page.get_text('rawdict')['blocks']:
+        if b.get('type') != 0:
+            continue
+        for ln in b['lines']:
+            lid += 1
+            for sp in ln['spans']:
+                for ch in sp['chars']:
+                    if not ch['c'].isspace():
+                        chars.append((ch['c'], pymupdf.Rect(ch['bbox']), lid))
+    return chars
 
 
 def collect_targets(page, terms, patterns, namer):
-    """페이지에서 지울 영역 수집. [(rect, 대체어, 규칙, 원문)]"""
+    """페이지에서 지울 영역 수집. [([줄별 rect...], 대체어, 규칙, 원문)]"""
     text = page.get_text('text')
-    targets, claimed = [], []
+    chars = page_chars(page)
+    flat = _norm(''.join(c for c, _, _ in chars))
+    used = bytearray(len(flat))
+    targets = []
 
     def add(needle, repl, rule):
-        for r in page.search_for(needle):
-            if _overlaps(r, claimed):
-                continue
-            claimed.append(r)
-            targets.append((r, repl, rule, needle))
+        key = _norm(needle)
+        i = flat.find(key) if key else -1
+        while i != -1:
+            j = i + len(key)
+            if not any(used[i:j]):
+                used[i:j] = b'\x01' * (j - i)
+                lines = {}
+                for _, r, lid in chars[i:j]:
+                    lines[lid] = lines[lid] | r if lid in lines else pymupdf.Rect(r)
+                targets.append((list(lines.values()), repl, rule, needle))
+            i = flat.find(key, j)
 
     for src, repl in terms:
-        if src.lower() in text.lower():
-            add(src, repl, '대체목록')
+        add(src, repl, '대체목록')
 
     seen = set()
     for name, s, repl in find_pattern_hits(text, patterns):
@@ -261,21 +298,36 @@ def apply_terms_to_text(s, terms):
     return s
 
 
+def strip_hidden_text(doc):
+    """태그 PDF(Word 'PDF로 저장' 등)의 구조트리에는 화면 글자와 별도로 ActualText/Alt
+    대체텍스트가 들어있어, 화면에서 지워도 텍스트 추출·Word 변환 시 원문이 되살아난다
+    (2026-10-26 세일이엔에스 보고서 목차에서 확인). 구조트리를 통째로 떼어 낸다 — 화면 표시는 그대로."""
+    cat = doc.pdf_catalog()
+    for k in ('StructTreeRoot', 'MarkInfo'):
+        doc.xref_set_key(cat, k, 'null')
+    for x in range(1, doc.xref_length()):
+        for k in ('ActualText', 'Alt'):
+            if doc.xref_get_key(x, k)[0] != 'null':
+                doc.xref_set_key(x, k, 'null')
+
+
 def redact_pdf(src, dst, terms, patterns, namer, font, font_path):
     doc = pymupdf.open(src)
+    strip_hidden_text(doc)
     log_rows = []
     for page in doc:
         targets = collect_targets(page, terms, patterns, namer)
         if not targets:
             continue
-        for rect, repl, _, _ in targets:
-            page.add_redact_annot(rect, fill=(1, 1, 1) if repl else (0, 0, 0))
+        for rects, repl, _, _ in targets:
+            for rect in rects:
+                page.add_redact_annot(rect, fill=(1, 1, 1) if repl else (0, 0, 0))
         # 이미지·표 테두리는 그대로 두고 텍스트만 삭제
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
-        for rect, repl, rule, needle in targets:
-            if repl:
-                write_replacement(page, rect, repl, font, font_path)
+        for rects, repl, rule, needle in targets:
+            if repl:   # 줄이 나뉜 원문은 가장 넓은 줄 자리에 대체어, 나머지 줄은 공백
+                write_replacement(page, max(rects, key=lambda r: r.width), repl, font, font_path)
             log_rows.append({'파일': os.path.basename(src), '페이지': page.number + 1,
                              '규칙': rule, '원문': needle, '대체어': repl or '(검은박스)'})
 
@@ -337,6 +389,30 @@ def verify(text, needles, patterns):
     return res
 
 
+def find_missing(user_terms, hit_needles, flat_text):
+    """대체목록에 적었지만 문서에서 한 번도 못 찾은 원문 + 문서 속 비슷한 문자열(오타 확인용).
+    예: 규칙 '세일이앤에스' ↔ 문서 '세일이엔에스'"""
+    from difflib import SequenceMatcher
+    hits = {_norm(h) for h in hit_needles}
+    out = []
+    for t in user_terms:
+        if _norm(t) in hits or _norm(CORP_MARK_RE.sub('', t)) in hits:
+            continue
+        key, seen, best = _norm(t), set(), []
+        for L in (len(key) - 1, len(key), len(key) + 1):
+            for i in range(max(len(flat_text) - L + 1, 0)):
+                w = flat_text[i:i + L]
+                if w in seen:
+                    continue
+                seen.add(w)
+                sm = SequenceMatcher(None, key, w)
+                if sm.real_quick_ratio() >= 0.75 and sm.quick_ratio() >= 0.75 and sm.ratio() >= 0.75:
+                    best.append((sm.ratio(), w))
+        best.sort(reverse=True)
+        out.append((t, ', '.join(w for _, w in best[:3])))
+    return out
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # 실행
 # ════════════════════════════════════════════════════════════════════════════
@@ -355,8 +431,9 @@ def scan(pdfs, terms, patterns):
                 continue
             for page in doc:
                 text = page.get_text('text')
+                flat = _norm(text)
                 for src_t, _ in terms:
-                    c = text.lower().count(src_t.lower())
+                    c = flat.count(_norm(src_t))
                     if c:
                         rows.append({'파일': os.path.basename(src), '페이지': page.number + 1,
                                      '구분': '대체목록', '문자열': src_t, '건수': c})
@@ -388,7 +465,7 @@ def main():
         print('  (먼저 --scan 으로 실행하면 문서 속 회사명 후보를 logs/ 에서 확인할 수 있습니다)')
         return
 
-    terms, patterns = load_rules(rules_path)
+    terms, patterns, user_terms = load_rules(rules_path)
     pdfs = sorted(p for p in glob.glob(os.path.join(INPUT_DIR, '*.pdf'))
                   if args.file in os.path.basename(p))
     if not pdfs:
@@ -411,7 +488,7 @@ def main():
     font_path = _font_path()
     font = pymupdf.Font(fontfile=font_path) if font_path else pymupdf.Font('korea')
     namer = CompanyNamer()
-    all_logs, checks, fails = [], [], 0
+    all_logs, checks, missing_rows, fails = [], [], [], 0
 
     for src in pdfs:
         name = os.path.basename(src)
@@ -424,13 +501,21 @@ def main():
 
         stem = apply_terms_to_text(os.path.splitext(name)[0], terms)   # 파일명의 회사명도 대체
         out_pdf = os.path.join(OUTPUT_DIR, f'{stem}_비식별.pdf')
+        print(f'[처리중] {name}: PDF 비식별…')
         logs = redact_pdf(src, out_pdf, terms, patterns, namer, font, font_path)
         all_logs.extend(logs)
+
+        with pymupdf.open(src) as d:
+            flat_src = _norm(''.join(p.get_text('text') for p in d))
+        for t, sim in find_missing(user_terms, {r['원문'] for r in logs}, flat_src):
+            print(f'  ⚠ 대체목록 "{t}" — 문서에서 찾지 못함' + (f' (문서 속 비슷한 표기: {sim})' if sim else ''))
+            missing_rows.append({'파일': name, '원문(대체목록)': t, '문서 속 비슷한 표기': sim})
 
         needles = {t for t, _ in terms} | {r['원문'] for r in logs}
         outputs = [('PDF', out_pdf, _pdf_text)]
         if args.format in ('docx', 'both'):
             out_docx = os.path.join(OUTPUT_DIR, f'{stem}_비식별.docx')
+            print('  Word 변환 중… (페이지 수에 따라 수 분 걸릴 수 있음)')
             try:
                 to_docx(out_pdf, out_docx)
                 outputs.append(('Word', out_docx, _docx_text))
@@ -458,6 +543,8 @@ def main():
     with pd.ExcelWriter(report) as xw:
         pd.DataFrame(checks).to_excel(xw, sheet_name='검증', index=False)
         pd.DataFrame(all_logs).to_excel(xw, sheet_name='처리내역', index=False)
+        if missing_rows:
+            pd.DataFrame(missing_rows).to_excel(xw, sheet_name='미발견원문', index=False)
         if namer.map:
             pd.DataFrame([(k, f'회사{v}') for k, v in namer.map.items()],
                          columns=['원문', '대체어']).to_excel(xw, sheet_name='회사명대체표', index=False)
@@ -465,7 +552,10 @@ def main():
     print('  ※ logs/ 파일에는 원문이 들어있으니 외부로 전달하지 마세요. 전달용은 output/ 파일만 사용.')
     if fails:
         print(f'  ⚠ 원문이 남아있는 결과 {fails}건 — [검증] 시트의 잔존내역 확인 '
-              '(괄호: 정확일치/공백무시 건수, 줄바꿈으로 끊긴 단어는 공백무시에서만 잡힘)')
+              '(괄호: 정확일치/공백무시 건수)')
+    if missing_rows:
+        print(f'  ⚠ 문서에서 찾지 못한 대체목록 {len(missing_rows)}건 — 철자 확인 후 규칙 수정 '
+              '([미발견원문] 시트에 비슷한 표기 안내)')
 
 
 if __name__ == '__main__':
