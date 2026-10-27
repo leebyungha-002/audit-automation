@@ -2900,3 +2900,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun 15번 재실행 확인 (이월)
 
 ---
+
+## 2026-10-27 16:30
+
+**완료 작업**: daesun mapping_list 소스시트 오류 12건 원인 분석·오타 3건 수정(04 TB_TO_GL, 14 Top_3/Top_4). 26번 AI계정별분석 NaT strftime 오류 수정 — 당기에 없는 계정(이자비용)이 data/previous 시산표 행(일자 없음)을 당기로 끌어오던 문제 (8c056e3)
+**변경 파일**: journal_analyzer/main_analyzer.py, daesun/감사조서/daesun_mapping_list_26년.xlsx(미추적)
+**미해결 이슈**: daesun 분개장에 '이자비용' 계정 없음(지급이자·원맥대연불이자로 기표) → task_list 26번 계정과목 변경 필요. daesun data/previous에 시산표·부가세·제조원가 파일이 섞여 전기 분개장으로 로드됨. 분석결과_daesun.xlsx 재생성 필요(08·25번 최신 결과 미반영)
+**다음 할 일**:
+1. daesun task_list 26번 '이자비용' → '지급이자'(필요시 원맥대연불이자) 변경 후 재실행
+2. daesun data/previous 폴더 정리 여부 확인
+3. 전체 분석 재실행 후 mapping_list 재가동
+
+---
