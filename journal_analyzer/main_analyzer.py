@@ -2458,12 +2458,19 @@ def _ai_build_material(df: pd.DataFrame, acct: str, cfg: dict, name_re=None, var
         return None
     gc = _get_gubun_col(df)
     is_cur = (df[gc].astype(str).str.strip() == '당기') if gc else pd.Series(True, index=df.index)
-    if gc and not (acct_mask & is_cur).any():
-        is_cur = pd.Series(True, index=df.index)    # 당기 표시가 없는 데이터면 전체를 당기로
+    # 당기 표시가 없는 데이터면 전체를 당기로 — 데이터 전체 기준으로 판단해야 함.
+    # 계정 기준으로 판단하면 당기에 없는 계정이 전기 행(예: data/previous의 시산표 행,
+    # 전표일자 없음)을 당기로 끌어와 기간 표시에서 NaT strftime 오류가 남 (2026-10-27 daesun 이자비용)
+    if gc and not is_cur.any():
+        is_cur = pd.Series(True, index=df.index)
     cur = df[acct_mask & is_cur].copy()
     prev = df[acct_mask & ~is_cur].copy() if gc else pd.DataFrame()
 
     cur['_date'] = pd.to_datetime(cur[COL_DATE], errors='coerce')
+    cur = cur[cur['_date'].notna()]
+    if cur.empty:
+        print(f'    [AI검토] {acct} → 당기 거래(전표일자 있는 행) 없음 — 건너뜀', flush=True)
+        return None
     cur['_ym'] = cur['_date'].dt.strftime('%Y-%m')
     cur['_amt'] = cur[[COL_DEBIT, COL_CREDIT]].abs().max(axis=1)
     cur['_flag'] = _ai_anomaly_flags(cur)
