@@ -12,12 +12,15 @@ Usage: python data_injector.py <company_name>
 import sys
 import os
 import re
+import shutil
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
+from copy import copy
 from openpyxl.styles import PatternFill
 from openpyxl.utils import column_index_from_string
 
@@ -136,6 +139,23 @@ def _parse_range(range_str):
 
 # ─── 데이터 주입 ──────────────────────────────────────────────────────────────
 
+# ─── 주입 셀 글꼴 ────────────────────────────────────────────────────────────
+# 조서에 주입되는 값은 글꼴을 '맑은 고딕'으로 통일한다 (크기·굵기·색 등은 기존 서식 유지).
+# scheme(테마 글꼴 지정)이 남아 있으면 Excel이 name 대신 테마 글꼴을 쓰므로 함께 해제한다.
+
+_FONT_NAME = '맑은 고딕'
+
+
+def _set(cell, value):
+    """셀에 값을 넣고 글꼴을 맑은 고딕으로 맞춘다."""
+    cell.value = value
+    if cell.font.name != _FONT_NAME or cell.font.scheme:
+        font = copy(cell.font)
+        font.name = _FONT_NAME
+        font.scheme = None
+        cell.font = font
+
+
 def inject_data(ws_src, ws_tgt, start_cell, src_range=None):
     """소스 시트 데이터를 대상 시트의 start_cell 부터 값만 주입 (서식·수식 보존).
 
@@ -159,8 +179,8 @@ def inject_data(ws_src, ws_tgt, start_cell, src_range=None):
     for r_idx, row in enumerate(src_rows):
         for c_idx, value in enumerate(row):
             if value is not None:
-                ws_tgt.cell(row=start_row + r_idx,
-                            column=start_col + c_idx).value = value
+                _set(ws_tgt.cell(row=start_row + r_idx,
+                                 column=start_col + c_idx), value)
                 count += 1
     return count
 
@@ -328,11 +348,11 @@ def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
     _clear_range(ws_aging, start_row, start_col)
 
     for c_idx, h in enumerate(headers):
-        ws_aging.cell(row=start_row, column=start_col + c_idx).value = h
+        _set(ws_aging.cell(row=start_row, column=start_col + c_idx), h)
 
     for r_idx, row in enumerate(data_rows, start=1):
         for c_idx, val in enumerate(row):
-            ws_aging.cell(row=start_row + r_idx, column=start_col + c_idx).value = val
+            _set(ws_aging.cell(row=start_row + r_idx, column=start_col + c_idx), val)
 
     # ── 2) Aging_분석: A5부터 거래처 리스트 세로 주입 ────────────────────────
     # data_rows 마지막 행은 '합계' 행이므로 제외
@@ -351,10 +371,10 @@ def inject_pivot_aging(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
 
     month_list = headers[1:-1]  # '거래처명'·'합계' 제외한 월 헤더
     for c_idx, month in enumerate(month_list):
-        ws_analysis.cell(row=4, column=2 + c_idx).value = month
+        _set(ws_analysis.cell(row=4, column=2 + c_idx), month)
 
     for r_idx, name in enumerate(customer_list):
-        ws_analysis.cell(row=5 + r_idx, column=1).value = name
+        _set(ws_analysis.cell(row=5 + r_idx, column=1), name)
     print(f'    [Aging] {analysis_sheet} B4→ 월 {len(month_list)}개 / A5↓ 거래처 {len(customer_list)}개 주입')
 
     return len(data_rows)
@@ -431,7 +451,7 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
 
     # ── 헤더 주입 ─────────────────────────────────────────────────────
     for c_idx, col_name in enumerate(df.columns):
-        ws.cell(row=start_row, column=start_col + c_idx).value = col_name
+        _set(ws.cell(row=start_row, column=start_col + c_idx), col_name)
 
     # ── 데이터 주입 + 유의적 행 강조 ─────────────────────────────────
     sig_count = 0
@@ -441,7 +461,7 @@ def inject_analysis_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_ce
             sig_count += 1
         for c_idx, val in enumerate(row_data):
             cell = ws.cell(row=start_row + r_idx, column=start_col + c_idx)
-            cell.value = None if pd.isna(val) else val
+            _set(cell, None if pd.isna(val) else val)
             if is_sig:
                 cell.fill = _YELLOW_FILL
 
@@ -496,7 +516,7 @@ def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
 
     # ── 헤더 주입 ─────────────────────────────────────────────────────
     for c_idx, col_name in enumerate(df.columns):
-        ws.cell(row=start_row, column=start_col + c_idx).value = col_name
+        _set(ws.cell(row=start_row, column=start_col + c_idx), col_name)
 
     # ── 데이터 주입 + 위험/추가확인 행 강조 ──────────────────────────
     sig_count = 0
@@ -510,7 +530,7 @@ def inject_ai_result(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cell):
             sig_count += 1
         for c_idx, val in enumerate(row_data):
             cell = ws.cell(row=start_row + r_idx, column=start_col + c_idx)
-            cell.value = None if pd.isna(val) else val
+            _set(cell, None if pd.isna(val) else val)
             if is_flag:
                 cell.fill = _YELLOW_FILL
 
@@ -577,13 +597,13 @@ def inject_lease_schedule(src_path, src_sheet, wb_tgt, tgt_sheet_name, start_cel
             try:
                 if pd.Timestamp(cell_b).date() == start_ts:
                     cid = contract.get('리스계약번호', '')
-                    ws.cell(row=row_idx, column=COL_I).value = _v(contract, f'{year}년 리스료지급')
-                    ws.cell(row=row_idx, column=COL_J).value = _v(contract, '유동성대체대상액')
-                    ws.cell(row=row_idx, column=COL_K).value = _v(contract, '비유동성리스부채잔액')
-                    ws.cell(row=row_idx, column=COL_L).value = _v(contract, f'{year}년 이자비용')
-                    ws.cell(row=row_idx, column=COL_P).value = _v(contract, '사용권자산(최초)')
-                    ws.cell(row=row_idx, column=COL_Q).value = _v(contract, '사용권자산 상각누계')
-                    ws.cell(row=row_idx, column=COL_R).value = _v(contract, f'{year}년 감가상각비')
+                    _set(ws.cell(row=row_idx, column=COL_I), _v(contract, f'{year}년 리스료지급'))
+                    _set(ws.cell(row=row_idx, column=COL_J), _v(contract, '유동성대체대상액'))
+                    _set(ws.cell(row=row_idx, column=COL_K), _v(contract, '비유동성리스부채잔액'))
+                    _set(ws.cell(row=row_idx, column=COL_L), _v(contract, f'{year}년 이자비용'))
+                    _set(ws.cell(row=row_idx, column=COL_P), _v(contract, '사용권자산(최초)'))
+                    _set(ws.cell(row=row_idx, column=COL_Q), _v(contract, '사용권자산 상각누계'))
+                    _set(ws.cell(row=row_idx, column=COL_R), _v(contract, f'{year}년 감가상각비'))
                     print(f'    [LEASE] 계약 {cid} ({start_ts}) → row{row_idx} 주입 완료')
                     matched += 1
                     break
@@ -917,6 +937,8 @@ def main():
 
     errors  = []
     success = 0
+    images_injected = 0  # openpyxl 경로(ws.add_image)로 실제 삽입된 이미지 수 —
+                          # xlwings 재저장(Named Range·Drawing 복구)이 필요한지 판단용
 
     # ── 4. 매핑 처리 ─────────────────────────────────────────────────────────
     for row_idx, row in enumerate(mapping_rows, 1):
@@ -1065,6 +1087,8 @@ def main():
                     win32com_pending.append((src_path, resolved_src,
                                              updated_path(tgt_path), resolved_tgt,
                                              start_cell, label))
+                else:
+                    images_injected += injected
                 success += 1
                 suffix = ' (win32com 후처리 예정)' if need_win32 else ''
                 print(f'    [완료] 이미지 {injected}개 복사{suffix}')
@@ -1082,20 +1106,41 @@ def main():
         wb_src.close()
 
     # ── 5. 결과 저장 ─────────────────────────────────────────────────────────
-    print(f'\n[2/3] 저장 중... (아직 끝난 게 아닙니다 — 저장 뒤 [3/3] 정합성 복구가 이어집니다)')
+    # OneDrive 동기화 폴더에 바로 저장하면 openpyxl이 파일을 쓰는 내내 OneDrive가
+    # 감지·업로드를 시도하며 I/O 경합을 일으켜 저장이 느려진다. 로컬 임시 폴더에
+    # 먼저 완성된 파일을 만든 뒤 최종 위치로 옮기면(이동은 한 번의 벌크 전송) 이
+    # 경합을 피할 수 있다 (2026-09-02, blue sky 요청).
+    xlwings_needed = _XLWINGS_OK and images_injected > 0
+    step3_label = '[3/3] xlwings 정합성 복구' if xlwings_needed else '[3/3] (이미지 삽입 없음 — xlwings 정합성 복구 생략)'
+    print(f'\n[2/3] 저장 중... (아직 끝난 게 아닙니다 — 저장 뒤 {step3_label}가 이어집니다)')
     saved_paths = []
     for tgt_path, wb in tgt_book_cache.items():
         out_path = updated_path(tgt_path)
+        tmp_path = None
         try:
             print(f'  ⏳ 저장 중: {os.path.relpath(out_path, company_dir)} (대용량 파일은 시간이 걸릴 수 있습니다)')
-            wb.save(out_path)
+            fd, tmp_path = tempfile.mkstemp(suffix='.xlsx', prefix='di_')
+            os.close(fd)
+            wb.save(tmp_path)
+            shutil.move(tmp_path, out_path)
+            tmp_path = None
             print(f'  ✓ 저장 완료: {os.path.relpath(out_path, company_dir)}')
             saved_paths.append(out_path)
         except Exception as e:
             print(f'  [오류] 저장 실패 ({os.path.basename(tgt_path)}): {e}')
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     # ── 5-1. xlwings 재저장 (Named Range·Drawing 손상 복구) ──────────────────
-    if _XLWINGS_OK and saved_paths:
+    # 이미지를 하나도 삽입하지 않은 실행(순수 데이터 복사만)이면 애초에 복구할
+    # Drawing이 없으므로 이 무거운 단계를 통째로 생략한다.
+    if not xlwings_needed and saved_paths:
+        print('\n[3/3] 이번 실행은 이미지(MOVE_IMAGE) 삽입이 없어 xlwings 정합성 복구를 생략합니다.')
+    if xlwings_needed and saved_paths:
         print('\n[3/3] xlwings 재저장 중 (Named Range·차트 정합성 복구 — 대용량 파일은 수 분 소요될 수 있습니다, 이 단계가 끝나야 전체 작업이 종료됩니다)...')
         xl_app = xw.App(visible=False, add_book=False)
         try:

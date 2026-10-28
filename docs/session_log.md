@@ -2912,3 +2912,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 전체 분석 재실행 후 mapping_list 재가동
 
 ---
+
+## 2026-10-28 10:00
+
+**완료 작업**: data_injector 조서 주입 셀 글꼴을 '맑은 고딕'으로 통일(_set 헬퍼, 크기·굵기·색 유지, 테마글꼴 scheme 해제). 기존 미커밋 변경(임시폴더 저장 후 이동, 이미지 없으면 xlwings 복구 생략)도 함께 커밋
+**변경 파일**: workpaper_tools/report/data_injector.py
+**미해결 이슈**: 실데이터 mapping 실행으로 글꼴 확인 필요. MOVE_IMAGE(이미지)는 글꼴 대상 아님
+**다음 할 일**:
+1. daesun task_list 26번 '이자비용' → '지급이자' 변경 후 재실행
+2. daesun data/previous 폴더 정리 여부 확인
+3. 전체 분석 재실행 후 mapping_list 재가동(맑은 고딕 적용 확인)
+
+---
