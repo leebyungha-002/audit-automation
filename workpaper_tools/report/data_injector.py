@@ -21,6 +21,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from copy import copy
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import PatternFill
 from openpyxl.utils import column_index_from_string
 
@@ -148,6 +149,11 @@ _FONT_NAME = '맑은 고딕'
 
 def _set(cell, value):
     """셀에 값을 넣고 글꼴을 맑은 고딕으로 맞춘다."""
+    if isinstance(cell, MergedCell):
+        # openpyxl 기본 메시지('MergedCell' ... read-only)로는 어느 셀인지 알 수 없어 위치를 알려준다
+        rng = next((str(m) for m in cell.parent.merged_cells.ranges if cell.coordinate in m), '?')
+        raise ValueError(f'대상 셀 {cell.coordinate}이(가) 병합 셀({rng}) 안에 있어 값을 넣을 수 없습니다 '
+                         f'— mapping_list의 시작 셀 좌표를 병합 영역 밖으로 옮기세요')
     cell.value = value
     if cell.font.name != _FONT_NAME or cell.font.scheme:
         font = copy(cell.font)

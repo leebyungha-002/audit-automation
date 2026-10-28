@@ -2936,3 +2936,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun task_list 26번 계정 변경 후 재실행(이월)
 
 ---
+
+## 2026-10-28 15:30
+
+**완료 작업**: kyungnam 매핑 7번째 행(벤포드 미지급금 → 5300_기타유동부채_벤포드분석 A4) 'MergedCell value read-only' 오류 원인 확인 — 대상 시트 A4:J4가 병합(제목 행)이라 B4부터 못 씀. data_injector가 병합 셀 위치·범위를 알려주는 오류 메시지를 내도록 개선
+**변경 파일**: workpaper_tools/report/data_injector.py
+**미해결 이슈**: Kyungnam_mapping_list_26년.xlsx(사용자가 25년→26년 이름 변경·Excel에서 편집 중) 7번째 행 시작 셀을 병합 영역 밖(예: A6)으로 사용자 수정 필요
+**다음 할 일**:
+1. 시작 셀 수정 후 kyungnam data_injector 재실행
+2. 4700 유형자산 증가/감소 값 확인
+3. daesun task_list 26번 계정 변경 후 재실행(이월)
+
+---
