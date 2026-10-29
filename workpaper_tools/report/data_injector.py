@@ -141,23 +141,25 @@ def _parse_range(range_str):
 # ─── 데이터 주입 ──────────────────────────────────────────────────────────────
 
 # ─── 주입 셀 글꼴 ────────────────────────────────────────────────────────────
-# 조서에 주입되는 값은 글꼴을 '맑은 고딕'으로 통일한다 (크기·굵기·색 등은 기존 서식 유지).
+# 조서에 주입되는 값은 글꼴을 '맑은 고딕' 9pt로 통일한다 (굵기·색 등은 기존 서식 유지).
 # scheme(테마 글꼴 지정)이 남아 있으면 Excel이 name 대신 테마 글꼴을 쓰므로 함께 해제한다.
 
 _FONT_NAME = '맑은 고딕'
+_FONT_SIZE = 9
 
 
 def _set(cell, value):
-    """셀에 값을 넣고 글꼴을 맑은 고딕으로 맞춘다."""
+    """셀에 값을 넣고 글꼴을 맑은 고딕 9pt로 맞춘다."""
     if isinstance(cell, MergedCell):
         # openpyxl 기본 메시지('MergedCell' ... read-only)로는 어느 셀인지 알 수 없어 위치를 알려준다
         rng = next((str(m) for m in cell.parent.merged_cells.ranges if cell.coordinate in m), '?')
         raise ValueError(f'대상 셀 {cell.coordinate}이(가) 병합 셀({rng}) 안에 있어 값을 넣을 수 없습니다 '
                          f'— mapping_list의 시작 셀 좌표를 병합 영역 밖으로 옮기세요')
     cell.value = value
-    if cell.font.name != _FONT_NAME or cell.font.scheme:
+    if cell.font.name != _FONT_NAME or cell.font.scheme or cell.font.sz != _FONT_SIZE:
         font = copy(cell.font)
         font.name = _FONT_NAME
+        font.sz = _FONT_SIZE
         font.scheme = None
         cell.font = font
 
