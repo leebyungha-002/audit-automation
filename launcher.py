@@ -13,12 +13,17 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QComboBox, QPushButton,
     QTextEdit, QGroupBox, QSplitter, QFrame, QSizePolicy, QLineEdit,
-    QCheckBox,
+    QCheckBox, QProgressBar,
 )
-from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
+from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtGui import QFont, QColor, QTextCursor
 
 ROOT = Path(__file__).parent
+
+BUSY_NOTICE_SEC = 3  # 실행 후 이 시간(초)이 지나도 끝나지 않으면 '작업 중' 표시줄을 띄움
+# 하위 스크립트 출력에서 진행 상황 추출: 들여쓴 "  [3/45] ..." = 항목 진행, 줄 맨 앞 "[2/3] ..." = 단계
+_ITEM_PROGRESS_RE  = re.compile(r"^\s+\[(\d+)/(\d+)\]")
+_STAGE_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)")
 
 
 def format_elapsed(seconds: float) -> str:
@@ -448,6 +453,12 @@ class Launcher(QMainWindow):
         self._leave_input_files: list[tuple[str, str]] = detect_leave_input_files()
         self._ar_input_files: list[tuple[str, str]] = detect_ar_allowance_input_files()
         self._afc_account_files: list[tuple[str, Path]] = []
+        self._stage_text = ""
+
+        # 진행 표시줄 갱신용 1초 타이머 (실행 중에만 동작)
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setInterval(1000)
+        self._busy_timer.timeout.connect(self._on_busy_tick)
 
         self._build_ui()
         self._tool_list.setCurrentRow(0)
@@ -655,6 +666,23 @@ class Launcher(QMainWindow):
         btn_row.addWidget(self._btn_run)
         btn_row.addWidget(self._btn_stop)
         right_layout.addLayout(btn_row)
+
+        # 작업 중 표시 (실행 후 BUSY_NOTICE_SEC 초 경과 시 노출)
+        self._busy_row = QWidget()
+        busy_layout = QVBoxLayout(self._busy_row)
+        busy_layout.setContentsMargins(0, 0, 0, 0)
+        busy_layout.setSpacing(4)
+        self._busy_label = QLabel("")
+        self._busy_label.setFont(QFont("맑은 고딕", 9))
+        self._busy_label.setStyleSheet("color:#2563EB;")
+        self._busy_label.setWordWrap(True)
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setMaximumHeight(16)
+        self._busy_bar.setTextVisible(True)
+        busy_layout.addWidget(self._busy_label)
+        busy_layout.addWidget(self._busy_bar)
+        self._busy_row.setVisible(False)
+        right_layout.addWidget(self._busy_row)
 
         splitter.addWidget(right)
         splitter.setSizes([320, 560])
@@ -979,6 +1007,8 @@ class Launcher(QMainWindow):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONIOENCODING", "utf-8")
         env.insert("PYTHONUTF8", "1")
+        # 파이프 출력은 기본이 블록 버퍼링이라 로그가 끝에 한꺼번에 나옴 → 즉시 출력되도록 해제
+        env.insert("PYTHONUNBUFFERED", "1")
         self._process.setProcessEnvironment(env)
         self._process.setWorkingDirectory(run_cwd)
         self._process.readyReadStandardOutput.connect(self._on_stdout)
@@ -989,11 +1019,15 @@ class Launcher(QMainWindow):
         self._btn_stop.setEnabled(True)
 
         self._start_time = time.monotonic()
+        self._stage_text = ""
+        self._busy_bar.setRange(0, 0)  # 진행 정보가 들어오기 전엔 '움직이는 막대'(불확정) 모드
         self._process.start(cmd[0], cmd[1:])
         if not self._process.waitForStarted(3000):
             self._log_line("✗ 프로세스를 시작할 수 없습니다.", "#F87171")
             self._start_time = None
             self._reset_buttons()
+            return
+        self._busy_timer.start()
 
     def _stop(self):
         if self._process and self._process.state() != QProcess.ProcessState.NotRunning:
@@ -1006,6 +1040,7 @@ class Launcher(QMainWindow):
     def _on_stdout(self):
         data = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
         self._log_line(data.rstrip(), "#D4D4D4")
+        self._update_progress(data)
 
     def _on_stderr(self):
         data = bytes(self._process.readAllStandardError()).decode("utf-8", errors="replace")
@@ -1026,6 +1061,39 @@ class Launcher(QMainWindow):
     def _reset_buttons(self):
         self._btn_run.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._busy_timer.stop()
+        self._busy_row.setVisible(False)
+
+    def _update_progress(self, data: str):
+        """하위 스크립트 출력에서 [i/N] 항목 진행·[k/K] 단계를 읽어 진행 표시줄에 반영"""
+        for line in data.splitlines():
+            m = _ITEM_PROGRESS_RE.match(line)
+            if m:
+                cur, total = int(m.group(1)), int(m.group(2))
+                if total > 0:
+                    self._busy_bar.setRange(0, total)
+                    self._busy_bar.setValue(min(cur, total))
+                    self._busy_bar.setFormat(f"{cur}/{total}건 (%p%)")
+                continue
+            m = _STAGE_PROGRESS_RE.match(line.strip())
+            if m:
+                self._stage_text = f"[{m.group(1)}/{m.group(2)}] {m.group(3)}".strip()
+                # 항목 단위 진행이 없는 단계(저장·재저장 등)는 불확정 막대로 전환
+                if not m.group(3).startswith("데이터 주입"):
+                    self._busy_bar.setRange(0, 0)
+        self._on_busy_tick()
+
+    def _on_busy_tick(self):
+        if self._start_time is None:
+            return
+        elapsed = time.monotonic() - self._start_time
+        if elapsed < BUSY_NOTICE_SEC:
+            return
+        text = f"⏳ 작업 중입니다... 경과 {format_elapsed(elapsed)} (오류가 나면 로그에 빨간색으로 표시됩니다)"
+        if self._stage_text:
+            text += f"\n현재 단계: {self._stage_text}"
+        self._busy_label.setText(text)
+        self._busy_row.setVisible(True)
 
     def _log_line(self, text: str, color: str = "#D4D4D4"):
         self._log.moveCursor(QTextCursor.MoveOperation.End)
