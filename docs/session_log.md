@@ -2960,3 +2960,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun task_list 26번 계정 변경 후 재실행(이월)
 
 ---
+
+## 2026-10-29 11:00
+
+**완료 작업**: 주입 셀에 쉼표·백분율 스타일 적용 시 바탕체로 바뀌던 문제 해결 — openpyxl 저장 시 셀 스타일의 applyFont="0" 등 플래그가 사라지는 것이 원인. 저장 직후 원본 템플릿 플래그를 styles.xml에 복원(restore_style_apply_flags). Excel에서 '쉼표 [0]' 적용 테스트: 수정 전 바탕체 → 수정 후 맑은 고딕 유지
+**변경 파일**: workpaper_tools/report/data_injector.py
+**미해결 이슈**: 기존 _updated 파일은 data_injector 재실행해야 반영. Kyungnam_mapping_list_26년.xlsx 7번째 행 시작 셀 사용자 수정 필요(이월)
+**다음 할 일**:
+1. 대용량 회사로 data_injector 실행해 진행 표시·글꼴 유지 확인
+2. 시작 셀 수정 후 kyungnam data_injector 재실행, 4700 유형자산 증가/감소 값 확인
+3. daesun task_list 26번 계정 변경 후 재실행(이월)
+
+---

@@ -888,6 +888,66 @@ def inject_image_win32com(src_path, src_sheet, tgt_path, tgt_sheet, start_cell):
 
 # ─── 경로 헬퍼 ───────────────────────────────────────────────────────────────
 
+# ─── 셀 스타일 apply 플래그 복원 ─────────────────────────────────────────────
+# openpyxl은 저장 시 셀 스타일(cellStyleXfs)의 applyFont="0"·applyBorder="0" 등 플래그를 버린다.
+# 그러면 Excel에서 [쉼표 스타일]·[백분율] 등을 적용할 때 '표시형식만 바꾸는' 스타일이
+# 글꼴·테두리·채우기까지 스타일 값(템플릿 기준 바탕체)으로 덮어써 버린다 → 원본의 플래그를 되살린다.
+
+_XF_TAG_RE    = re.compile(r'<xf\b[^>]*?/?>')
+_APPLY_ATTR_RE = re.compile(r'\s+apply\w+="[^"]*"')
+
+
+def _style_apply_flags(styles_xml):
+    """styles.xml에서 {셀 스타일명: (cellStyleXfs 내 xf 순번, apply 속성 문자열)} 추출"""
+    m = re.search(r'<cellStyleXfs\b.*?</cellStyleXfs>', styles_xml, re.S)
+    if not m:
+        return {}, None
+    xfs = list(_XF_TAG_RE.finditer(m.group(0)))
+    result = {}
+    for cs in re.finditer(r'<cellStyle\b[^>]*?name="([^"]+)"[^>]*?xfId="(\d+)"', styles_xml):
+        idx = int(cs.group(2))
+        if idx < len(xfs):
+            result[cs.group(1)] = (idx, ''.join(_APPLY_ATTR_RE.findall(xfs[idx].group(0))))
+    return result, m
+
+
+def restore_style_apply_flags(original_path, saved_path):
+    """원본 템플릿의 셀 스타일 apply 플래그를 저장된 파일의 styles.xml에 다시 써 넣는다. 복원 건수 반환."""
+    with zipfile.ZipFile(original_path) as z:
+        orig_flags, _ = _style_apply_flags(z.read('xl/styles.xml').decode('utf-8'))
+    with zipfile.ZipFile(saved_path) as z:
+        entries = [(info, z.read(info.filename)) for info in z.infolist()]
+    styles_xml = next(data for info, data in entries if info.filename == 'xl/styles.xml').decode('utf-8')
+    saved_flags, block = _style_apply_flags(styles_xml)
+    if not block:
+        return 0
+
+    patch = {}  # xf 순번 → 원본 apply 속성
+    for name, (idx, attrs) in saved_flags.items():
+        if name in orig_flags and orig_flags[name][1] and orig_flags[name][1] != attrs:
+            patch[idx] = orig_flags[name][1]
+    if not patch:
+        return 0
+
+    counter = iter(range(10**9))
+
+    def _fix(m):
+        i = next(counter)
+        if i not in patch:
+            return m.group(0)
+        tag = _APPLY_ATTR_RE.sub('', m.group(0))
+        end = '/>' if tag.endswith('/>') else '>'
+        return tag[:-len(end)] + patch[i] + end
+
+    new_block = _XF_TAG_RE.sub(_fix, block.group(0))
+    styles_xml = styles_xml[:block.start()] + new_block + styles_xml[block.end():]
+
+    with zipfile.ZipFile(saved_path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for info, data in entries:
+            z.writestr(info, styles_xml.encode('utf-8') if info.filename == 'xl/styles.xml' else data)
+    return len(patch)
+
+
 def updated_path(original_path):
     """파일명 뒤에 _updated 를 붙인 경로 반환 (이미 있으면 그대로)."""
     base, ext = os.path.splitext(original_path)
@@ -1128,6 +1188,12 @@ def main():
             fd, tmp_path = tempfile.mkstemp(suffix='.xlsx', prefix='di_')
             os.close(fd)
             wb.save(tmp_path)
+            try:
+                n_fixed = restore_style_apply_flags(tgt_path, tmp_path)
+                if n_fixed:
+                    print(f'    셀 스타일 서식 플래그 복원: {n_fixed}개 (쉼표·백분율 등 적용 시 글꼴 바뀜 방지)')
+            except Exception as e:
+                print(f'    [경고] 셀 스타일 플래그 복원 실패(저장은 계속): {e}')
             shutil.move(tmp_path, out_path)
             tmp_path = None
             print(f'  ✓ 저장 완료: {os.path.relpath(out_path, company_dir)}')
