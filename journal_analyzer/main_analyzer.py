@@ -89,7 +89,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import openpyxl
-import xlrd
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils.dataframe import dataframe_to_rows
 
@@ -1039,6 +1038,7 @@ def _merge_ledger_sections(sections: list) -> dict:
 
 def _build_xls_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
     """.xls 계정별원장(samdong 계열)의 계정별 기초/기말잔액표를 만든다."""
+    import xlrd   # .xls 원장이 있는 회사만 필요 — 없는 PC에서 다른 회사 실행까지 막지 않도록 여기서 로드
     ws = xlrd.open_workbook(ledger_path).sheet_by_index(0)
     is_samdong_style = (ws.nrows > 1 and ws.ncols >= 14
                         and '보조원장' in _clean_ledger_text(ws.cell_value(1, 2)))
