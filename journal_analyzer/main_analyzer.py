@@ -1040,6 +1040,11 @@ def _merge_ledger_sections(sections: list) -> dict:
 def _build_xls_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
     """.xls 계정별원장(samdong 계열)의 계정별 기초/기말잔액표를 만든다."""
     ws = xlrd.open_workbook(ledger_path).sheet_by_index(0)
+    is_samdong_style = (ws.nrows > 1 and ws.ncols >= 14
+                        and '보조원장' in _clean_ledger_text(ws.cell_value(1, 2)))
+    if not is_samdong_style:
+        print(f'  [계정별원장] 지원하지 않는 .xls 형식이라 건너뜀: {os.path.basename(ledger_path)}')
+        return pd.DataFrame()
     print(f'  [계정별원장] samdong 계열 형식(.xls 보조원장) 감지: {os.path.basename(ledger_path)}')
     accounts = {}
     for acct_name, records in _iter_samdong_style_ledger_accounts(ws):
