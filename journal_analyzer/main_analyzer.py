@@ -562,6 +562,41 @@ def load_data(company_dir: str) -> pd.DataFrame:
 # =============================================================================
 
 # ── 2. 거래처 전기/당기 비교 ──────────────────────────────────────────────────
+def _client_comparison_top_n(result: pd.DataFrame, sub: pd.DataFrame, top_n: int,
+                             acct: str, unit_col) -> pd.DataFrame:
+    """2번 거래처비교 결과를 (단위별) 당기금액 상위 top_n 거래처 + 소계/기타/합계 행으로 재구성."""
+    amt_cols = ['전기금액', '당기금액', '전기전표수', '당기전표수']
+    groups = list(result.groupby(unit_col, sort=True)) if unit_col else [(None, result)]
+    pieces = []
+    for unit, g in groups:
+        g = g.sort_values(['당기금액', '전기금액'], ascending=[False, False])
+        top, rest = g.head(top_n).copy(), g.iloc[top_n:]
+        top.insert(0, '순위', range(1, len(top) + 1))
+        label = f'{unit} ' if unit is not None else ''
+        summary = []
+        for name, part in ((f'{label}Top{top_n} 소계', top), (f'{label}기타({len(rest)}개사)', rest),
+                           (f'{label}합계', g)):
+            row = {'순위': '', '거래처명': name}
+            if unit_col: row[unit_col] = unit
+            for c in amt_cols: row[c] = part[c].sum() if not part.empty else 0
+            summary.append(row)
+        summ = pd.DataFrame(summary)
+        summ['증감금액'] = summ['당기금액'] - summ['전기금액']
+        summ['증감비율(%)'] = [(d / p * 100) if p else 0.0
+                             for d, p in zip(summ['증감금액'], summ['전기금액'])]
+        pieces += [top, summ]
+
+        # 검증: 단위 합계 = 원장 해당 계정(단위) 금액 합계
+        src = sub[sub[unit_col] == unit] if unit_col else sub
+        for gb, col in (('전기', '전기금액'), ('당기', '당기금액')):
+            src_sum = src.loc[src['구분'].astype(str).str.strip() == gb, '_amt'].sum()
+            if abs(src_sum - g[col].sum()) > 0.5:
+                print(f'  [경고] 거래처비교 {acct} {label}{gb} 합계 불일치: '
+                      f'원장 {src_sum:,.0f} vs 결과 {g[col].sum():,.0f}')
+    out_df = pd.concat(pieces, ignore_index=True)
+    return out_df[['순위'] + [c for c in out_df.columns if c != '순위']]
+
+
 def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     UNIT_COL = '전표관리단위'
     COST_COL = '비용구분'
@@ -569,10 +604,16 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
     # samdong 등 원장에 '전표관리단위'(본사/2공장 등)·'비용구분'(판관/제조 등) 컬럼이
     # 있는 회사에서만 파라미터 시트에 같은 이름의 열을 Y로 채워 사용 — 계정마다
     # 개별 지정, 없으면 기존과 동일하게 미적용)
-    acct_dir, acct_split_unit, acct_split_cost = {}, {}, {}
+    # 개수(선택, 2026-11-02 blue sky 요청): 숫자를 적은 계정은 (관리단위 Y면 단위별로)
+    # 당기금액 상위 N개 거래처만 남기고 'Top N 소계'/'기타'/'합계' 행을 덧붙인다.
+    # 합계 행이 곧 계정별(단위별) 전기·당기 총액이라 원장 합계와 검증한다.
+    acct_dir, acct_split_unit, acct_split_cost, acct_top_n = {}, {}, {}, {}
     for p in params_list:
         acct = _nv(p.get('계정과목',''))
         if not acct: continue
+        n_key = next((k for k in p.keys() if str(k).strip() == '개수'), None)
+        n_val = int(_safe_float(p.get(n_key), 0)) if n_key else 0
+        if n_val > 0: acct_top_n[acct] = n_val
         vtype = (_nv(p.get('금액열',''), blank_vals=('nan','none',''))
                  or _nv(p.get('구분',''), blank_vals=('nan','none',''))
                  or '차변')
@@ -639,6 +680,11 @@ def analyze_client_comparison(df: pd.DataFrame, params_list: list) -> dict:
                         .sort_values(sort_cols, ascending=sort_asc)
                         .drop(columns=['_abs']).reset_index())
         result = result.rename(columns={COL_ACCOUNT: '계정명', COL_CLIENT: '거래처명'}).drop(columns=['계정명'])
+
+        top_n = acct_top_n.get(acct)
+        if top_n:
+            result = _client_comparison_top_n(result, sub, top_n, acct,
+                                              UNIT_COL if split_unit else None)
 
         sname = _safe_sheet(re.sub(r"[^가-힣a-zA-Z0-9]","",str(acct))[:20])
         out[sname] = result
