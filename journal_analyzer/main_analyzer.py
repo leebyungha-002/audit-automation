@@ -59,7 +59,7 @@ task_list 파라미터 시트 규격:
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
 4번(데이터개요) 부가 기능 — 당기 계정별원장 기초/기말잔액표:
-  data/current 폴더에 파일명에 '계정별원장'이 들어간 xlsx/xls가 있으면(파라미터 불필요,
+  data/current 폴더에 파일명에 '계정별원장'이 들어간 xlsx가 있으면(파라미터 불필요,
   회사 무관 자동 감지), 4번 실행 시 '계정별원장_잔액표' 시트를 추가로 만든다.
   시트 1개 = 계정 1개(예: '0_당좌예금(10200)') 형식을 전제로 시트명 앞의 순번 접두어와
   뒤의 '(계정코드)' 접미어를 정규식으로 제거해 계정명을 뽑는다.
@@ -786,7 +786,7 @@ def _find_current_ledger_files(current_dir: str) -> list:
     if not os.path.isdir(current_dir):
         return []
     return [os.path.join(current_dir, f) for f in sorted(os.listdir(current_dir))
-            if '계정별원장' in f and f.endswith(('.xlsx', '.xls')) and not f.startswith('~$')]
+            if '계정별원장' in f and f.endswith('.xlsx') and not f.startswith('~$')]
 
 def _clean_ledger_account_name(sheet_name: str) -> str:
     """시트명 '0_당좌예금(10200)' -> '당좌예금' (순번 접두어 + 계정코드 접미어 제거)."""
@@ -985,91 +985,13 @@ def _iter_daesun_style_ledger_accounts(ws):
     if current_name is not None:
         yield current_name, current_records
 
-# samdong 계열: .xls 인쇄형 보고서 '보조원장(계정별)'. 시트 1개에 페이지마다 제목·
-# '계정과목' 머리글이 반복되고, 같은 계정이 여러 페이지로 이어진다 (2026-11-02 확인).
-# 비용 계정은 판관/제조 구간이 따로 출력되어 같은 계정명이 두 번 나오고, 구간마다
-# '전월이월' 행으로 시작하며 잔액도 새로 쌓인다. 금액은 콤마가 든 문자열이다.
-# 컬럼(0-idx): 1 일자 / 3 계정명('계정과목' 머리글 행) / 8 적요 / 11 차변 / 12 대변 / 13 잔액
-_SAMDONG_STYLE_DATE_RE = re.compile(r'\d{4}-\d{2}-\d{2}')
-
-def _parse_ledger_amount(value):
-    """'1,234,567' -> 1234567.0, 빈 칸은 None."""
-    text = str(value).replace(',', '').strip()
-    return float(text) if text else None
-
-def _iter_samdong_style_ledger_accounts(ws):
-    """samdong 계열 시트에서 판관/제조 구간별로 (계정명, records) 를 순서대로 만들어 낸다."""
-    page_name = current_name = None
-    current_records = []
-
-    for r in range(ws.nrows):
-        row = ws.row_values(r)
-        if len(row) < 14:
-            continue
-        if _clean_ledger_text(row[1]) == '계정과목':
-            page_name = str(row[3]).strip()
-            continue
-
-        is_open = _clean_ledger_text(row[8]) == '전월이월'
-        if not is_open and not _SAMDONG_STYLE_DATE_RE.fullmatch(str(row[1]).strip()):
-            continue                             # 제목·헤더·빈 행·페이지 번호 행
-        if is_open or page_name != current_name:
-            if current_name is not None:
-                yield current_name, current_records
-            current_name, current_records = page_name, []
-
-        debit   = _parse_ledger_amount(row[11]) or 0.0
-        credit  = _parse_ledger_amount(row[12]) or 0.0
-        balance = _parse_ledger_amount(row[13])
-        current_records.append(('open' if is_open else 'txn', debit, credit, balance))
-
-    if current_name is not None:
-        yield current_name, current_records
-
-def _merge_ledger_sections(sections: list) -> dict:
-    """같은 계정의 구간별 _compute_ledger_balance 결과를 1행으로 합친다."""
-    merged = dict(sections[0])
-    for section in sections[1:]:
-        for key in ('기초잔액', '차변합계', '대변합계', '기말잔액(계산)', '최종표시잔액(원장)', '차이'):
-            merged[key] += section[key]
-        if merged['구분'] == '데이터없음':
-            merged['구분'] = section['구분']
-    return merged
-
-def _build_xls_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
-    """.xls 계정별원장(samdong 계열)의 계정별 기초/기말잔액표를 만든다."""
-    import xlrd   # .xls 원장이 있는 회사만 필요 — 없는 PC에서 다른 회사 실행까지 막지 않도록 여기서 로드
-    ws = xlrd.open_workbook(ledger_path).sheet_by_index(0)
-    is_samdong_style = (ws.nrows > 1 and ws.ncols >= 14
-                        and '보조원장' in _clean_ledger_text(ws.cell_value(1, 2)))
-    if not is_samdong_style:
-        print(f'  [계정별원장] 지원하지 않는 .xls 형식이라 건너뜀: {os.path.basename(ledger_path)}')
-        return pd.DataFrame()
-    print(f'  [계정별원장] samdong 계열 형식(.xls 보조원장) 감지: {os.path.basename(ledger_path)}')
-    accounts = {}
-    for acct_name, records in _iter_samdong_style_ledger_accounts(ws):
-        result = _compute_ledger_balance(records)
-        if result is not None:
-            accounts.setdefault(acct_name, []).append(result)
-
-    rows = []
-    for acct_name, sections in accounts.items():
-        result = _merge_ledger_sections(sections)
-        result['구분'] = _refine_ledger_gubun(acct_name, result['구분'])
-        rows.append({'계정명': acct_name, **result})
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
-
 def _build_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
     """
-    계정별원장 파일 1개를 읽어 계정별 기초/기말잔액표를 만든다. 네 형식을 자동 감지한다:
+    계정별원장 파일 1개를 읽어 계정별 기초/기말잔액표를 만든다. 세 형식을 자동 감지한다:
       - 더존 계열: 시트 1개 = 계정 1개, 시트명 '0_계정명(코드)'
       - sejoong 계열: 시트 1개에 '계정과목'/'계정과목명' 헤더로 여러 계정이 나열됨
       - daesun 계열: 시트 1개에 '계정명'/'회계일자' 헤더로 여러 계정이 나열됨
-      - samdong 계열: .xls 인쇄형 보고서, 시트 1개에 페이지 단위로 여러 계정이 나열됨
     """
-    if ledger_path.endswith('.xls'):
-        return _build_xls_ledger_balance_table(ledger_path)
-
     wb = openpyxl.load_workbook(ledger_path, read_only=True, data_only=True)
     try:
         first_ws = wb[wb.sheetnames[0]]

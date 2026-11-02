@@ -2996,3 +2996,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun task_list 26번 계정 변경 후 재실행(이월)
 
 ---
+
+## 2026-11-02 14:00
+
+**완료 작업**: 사용자 요청으로 .xls 원장 처리를 공용 엔진에서 빼고 samdong 전용으로 변경 — main_analyzer.py를 1db939b 상태로 복원, samdong/preprocess.py의 convert_ledgers()가 data/current의 보조원장 .xls를 계정별 시트 xlsx(당기_samdong_계정별원장_변환.xlsx)로 변환. 전월이월 잔액을 차/대변 성격에 맞게 옮기고 제조·판관 구간을 1시트로 합침. 164개 계정 잔액 차이 0, 기초잔액 56개 인식, 1~9월 149개 계정 중 146개 분개장 일치
+**변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/samdong/preprocess.py
+**미해결 이슈**: 당기_계정별원장_부채_26년.xls가 1935페이지 중 1491페이지에서 잘림(미지급금-사원 7월 중간 이후와 뒤 계정 전부 없음, 분개장에만 있는 계정 44개). 원장은 10/31까지, 분개장은 9월까지라 기간 불일치. 자본 원장 없음. 분개장 전표승인번호 없는 2행(현금·본지점 148,990원) 원장에 없음. 직전 항목의 main_analyzer 변경 내용과 data/current 이동 안내는 무효. Kyungnam_mapping_list_26년.xlsx 7번째 행 시작 셀 사용자 수정 필요(이월)
+**다음 할 일**:
+1. samdong 부채 원장 재출력, 자본 원장 추가, 분개장을 10월까지 받거나 원장을 9월까지로 재출력 후 4번 실행
+2. 승인번호 없는 2행 확인
+3. 시작 셀 수정 후 kyungnam data_injector 재실행, daesun task_list 26번 재실행(이월)
+
+---
