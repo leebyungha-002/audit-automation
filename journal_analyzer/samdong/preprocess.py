@@ -98,25 +98,30 @@ def _amount(value):
     return float(text) if text else None
 
 
-def _read_ledger_sections(ws) -> list:
-    """보조원장 시트에서 [계정명, 전월이월행, 거래행 리스트] 구간을 순서대로 뽑는다."""
+def _read_ledger_sections(sheets: list) -> list:
+    """
+    보조원장 시트들에서 [계정명, 전월이월행, 거래행 리스트] 구간을 순서대로 뽑는다.
+    행이 많은 파일은 ERP가 Col1, Col1-1처럼 시트를 나눠 저장하고 계정이 시트 경계를
+    넘어 이어지므로, 시트들을 한 흐름으로 읽는다.
+    """
     sections = []
     page_name = None
-    for r in range(ws.nrows):
-        row = ws.row_values(r)
-        if re.sub(r'\s', '', str(row[1])) == '계정과목':
-            page_name = str(row[3]).strip()
-            continue
-        is_open = re.sub(r'\s', '', str(row[8])) == '전월이월'
-        if not is_open and not _LEDGER_DATE_RE.fullmatch(str(row[1]).strip()):
-            continue                             # 제목·헤더·빈 행·페이지 번호 행
-        amounts = (_amount(row[11]) or 0.0, _amount(row[12]) or 0.0, _amount(row[13]))
-        if is_open:
-            sections.append([page_name, amounts, []])
-            continue
-        if not sections or sections[-1][0] != page_name:
-            sections.append([page_name, (0.0, 0.0, None), []])
-        sections[-1][2].append((str(row[1]).strip(), str(row[8]).strip()) + amounts)
+    for ws in sheets:
+        for r in range(ws.nrows):
+            row = ws.row_values(r)
+            if re.sub(r'\s', '', str(row[1])) == '계정과목':
+                page_name = str(row[3]).strip()
+                continue
+            is_open = re.sub(r'\s', '', str(row[8])) == '전월이월'
+            if not is_open and not _LEDGER_DATE_RE.fullmatch(str(row[1]).strip()):
+                continue                         # 제목·헤더·빈 행·페이지 번호 행
+            amounts = (_amount(row[11]) or 0.0, _amount(row[12]) or 0.0, _amount(row[13]))
+            if is_open:
+                sections.append([page_name, amounts, []])
+                continue
+            if not sections or sections[-1][0] != page_name:
+                sections.append([page_name, (0.0, 0.0, None), []])
+            sections[-1][2].append((str(row[1]).strip(), str(row[8]).strip()) + amounts)
     return sections
 
 
@@ -188,11 +193,12 @@ def convert_ledgers(current_dir: str = _CURRENT_DIR) -> None:
     sections = []
     for path in sources:
         with open(os.devnull, 'w') as log:       # OLE2 경고가 로그를 덮지 않도록
-            ws = xlrd.open_workbook(path, logfile=log).sheet_by_index(0)
+            sheets = xlrd.open_workbook(path, logfile=log).sheets()
+        ws = sheets[0]
         if ws.ncols < 14 or ws.nrows < 2 or '보조원장' not in re.sub(r'\s', '', str(ws.cell_value(1, 2))):
             print(f'  [samdong/preprocess] 보조원장 형식이 아니라 건너뜀: {os.path.basename(path)}')
             continue
-        sections.extend(_read_ledger_sections(ws))
+        sections.extend(_read_ledger_sections(sheets))
     if not sections:
         return
 
