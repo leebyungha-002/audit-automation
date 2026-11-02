@@ -2984,3 +2984,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. daesun task_list 26번 계정 변경 후 재실행(이월)
 
 ---
+
+## 2026-11-02 12:30
+
+**완료 작업**: .xls 계정별원장을 확장자만으로 samdong 형식으로 처리하던 문제 수정 — '보조원장' 제목이 있을 때만 읽고 그 외 .xls는 건너뜀. live_pure .xls(88시트)는 건너뜀 확인, samdong 원장 97개 계정은 재업로드 파일로 분개장 대사 일치(차이 0) 재확인
+**변경 파일**: journal_analyzer/main_analyzer.py
+**미해결 이슈**: 직전 항목의 'data/current로 옮기기'는 취소. samdong 폴더가 당기 26년/전기 25년으로 바뀌어 25년 원장은 data/previous가 맞고, 앱은 현재 previous의 원장을 읽지 않음. 26년 원장은 아직 없음. live_pure .xls 원장은 시트별 형식이라 미지원(이전과 동일하게 미사용). 보조원장 기초잔액 있는 계정은 미검증. Kyungnam_mapping_list_26년.xlsx 7번째 행 시작 셀 사용자 수정 필요(이월)
+**다음 할 일**:
+1. samdong 26년 보조원장(전체 계정)을 파일명에 '계정별원장'을 넣어 data/current에 넣고 기초잔액 형식 점검 후 4번 실행
+2. 시작 셀 수정 후 kyungnam data_injector 재실행, 4700 유형자산 증가/감소 값 확인
+3. daesun task_list 26번 계정 변경 후 재실행(이월)
+
+---
