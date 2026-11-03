@@ -3227,6 +3227,86 @@ def _leading_token(s: str) -> str:
     return s.split(' ', 1)[0] if s else s
 
 
+def _code_like_share(rows: list) -> float:
+    """거래처명이 '#10925' / '#10925 기업구매자금'처럼 관리번호형인 행의 비율."""
+    if not rows:
+        return 0.0
+    n = sum(1 for r in rows
+            if _is_code_like(_leading_token(r['거래처명'])) and str(r['거래처명']).startswith('#'))
+    return n / len(rows)
+
+
+def _build_loan_kind_lookup(df: pd.DataFrame, prev_xl) -> tuple:
+    """({관리번호: 종류}, 전기명세 관리번호 집합) — 종류는 당기 분개장 거래처명
+    ('#10925 기업구매자금')의 설명부를 우선, 없으면 전기명세의 '종류' 열에서 가져온다.
+    전기명세에 '관리번호' 열이 없는 회사는 집합이 비어 차입금 정리 형식이 발동하지 않는다
+    (타사 결과 불변 보장)."""
+    lookup, prev_ids = {}, set()
+    try:
+        for sheet in prev_xl.sheet_names:
+            sdf = prev_xl.parse(sheet)
+            sdf.columns = [str(c).strip() for c in sdf.columns]
+            if '관리번호' not in sdf.columns:
+                continue
+            kinds = sdf['종류'] if '종류' in sdf.columns else [''] * len(sdf)
+            for no, kind in zip(sdf['관리번호'], kinds):
+                no, kind = str(no).strip(), str(kind).strip()
+                if not no.startswith('#'):
+                    continue
+                prev_ids.add(no)
+                if kind and kind != 'nan':
+                    lookup.setdefault(no, kind)
+    except Exception as e:
+        print(f'    ⚠️ 전기명세 관리번호 읽기 실패: {e}')
+    if not prev_ids:
+        return lookup, prev_ids
+    if COL_CLIENT in df.columns:
+        for v in df[COL_CLIENT].dropna().astype(str).str.strip().unique():
+            tok = _leading_token(v)
+            if tok.startswith('#') and _is_code_like(tok) and tok != v:
+                lookup[tok] = v[len(tok):].strip()
+    return lookup, prev_ids
+
+
+def _restructure_loan_rows(rows: list, acct_name: str, kind_lookup: dict) -> pd.DataFrame:
+    """차입금류(관리번호형) 증감표 정리 — 2026-11-03 blue sky 요청.
+    1) 거래처명은 관리번호만 남기고(같은 번호의 표기 변형은 합산) 설명은 '종류' 열로 분리
+    2) 대출구분(구매자금/일반대출)별로 묶어 각 구분 아래 소계, 맨 아래 합계
+    유동성대체는 계정별로 각각 집계되므로(장기차입금 감소 / 유동성장기부채 증가) 그대로 둔다."""
+    amt_cols = ['기초잔액', '당기감소', '당기증가', '기말잔액']
+    merged = {}
+    for r in rows:
+        tok = _leading_token(r['거래처명'])
+        no = tok if (tok.startswith('#') and _is_code_like(tok)) else str(r['거래처명']).strip()
+        m = merged.setdefault(no, {c: 0.0 for c in amt_cols})
+        for c in amt_cols:
+            m[c] += r.get(c, 0) or 0
+    out = []
+    for no, m in merged.items():
+        if sum(abs(v) for v in m.values()) == 0:
+            continue
+        # 전기명세에 관리번호 없이 '농협구매'처럼 이름만 있는 행은 이름으로 구분
+        kind = kind_lookup.get(no, '') or ('' if no.startswith('#') else no)
+        out.append({'계정명': acct_name, '대출구분': '구매자금' if '구매' in kind else '일반대출',
+                    '관리번호': no, '종류': kind, **m})
+    if not out:
+        return pd.DataFrame()
+    df_out = pd.DataFrame(out)
+    blocks = []
+    for grp in ('일반대출', '구매자금'):
+        g = df_out[df_out['대출구분'] == grp]
+        if g.empty:
+            continue
+        g = g.sort_values('기말잔액', key=abs, ascending=False)
+        sub = {c: g[c].sum() for c in amt_cols}
+        sub.update({'계정명': acct_name, '대출구분': grp, '관리번호': f'{grp} 소계', '종류': ''})
+        blocks += [g, pd.DataFrame([sub])]
+    total = {c: df_out[c].sum() for c in amt_cols}
+    total.update({'계정명': acct_name, '대출구분': '', '관리번호': '합  계', '종류': ''})
+    blocks.append(pd.DataFrame([total]))
+    return pd.concat(blocks, ignore_index=True)[['계정명', '대출구분', '관리번호', '종류'] + amt_cols]
+
+
 def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
     """전기 계정별_거래처별명세에서 기초잔액, 당기 분개장에서 증감 산출하여 기말잔액 계산.
     자산(차변): 기초잔액 + 당기증가(차변) - 당기감소(대변) = 기말잔액
@@ -3303,6 +3383,7 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
 
     # ── 전기 명세 ExcelFile ──
     prev_xl = pd.ExcelFile(prev_file)
+    kind_lookup, prev_loan_ids = _build_loan_kind_lookup(df, prev_xl)
 
     # ── 계정별 분석 실행 ──
     all_results = {}
@@ -3398,6 +3479,18 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
                     '당기증가': increase, '기말잔액': ending,
                 }
             rows.append(row)
+
+        # 관리번호형(차입금류, 현재 samdong) — 전기명세에 '관리번호' 열이 있고 이 계정 행의
+        # 절반 이상이 '#번호'이며 그 번호가 전기명세 관리번호와 실제로 겹칠 때만 발동.
+        # 그 외 회사/계정은 아래 기존 경로 그대로(결과 불변).
+        if (rows and prev_loan_ids and _code_like_share(rows) >= 0.5
+                and any(_leading_token(r['거래처명']) in prev_loan_ids for r in rows)):
+            # 번호만 남기고 종류별(구매자금/일반대출)로 나눠 소계
+            result_df = _restructure_loan_rows(rows, acct_name, kind_lookup)
+            if not result_df.empty:
+                sname = _safe_sheet(re.sub(r"[^가-힣a-zA-Z0-9]", "", acct_name)[:20])
+                all_results[sname] = result_df
+            continue
 
         if rows:
             result_df = pd.DataFrame(rows)
