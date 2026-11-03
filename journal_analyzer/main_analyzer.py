@@ -3124,9 +3124,19 @@ def _load_prev_balances(prev_xl: pd.ExcelFile, sheet_name: str, acct_name: str =
             pdf = pdf[pdf[acct_col].apply(
                 lambda v: _normalize_account_for_match(v) == target if pd.notna(v) else False)]
 
+    # '관리번호'를 거래처 키로 쓰는 시트에서 관리번호가 비어 있는 행(samdong 사채·
+    # 유동성사채처럼 관리번호 없이 은행명만 적힌 행)은 은행명을 키로 대신 쓴다 —
+    # 이전엔 키가 비어 행 자체가 버려져 기초잔액이 0으로 누락됐음(2026-11-03).
+    # '관리번호' 열은 samdong 전기명세에만 있어 타사 경로에는 영향 없음.
+    alt_col = None
+    if '관리번호' in vendor_col:
+        alt_col = next((c for c in pdf.columns if c and ('은행' in c or '금융기관' in c)), None)
+
     balances = {}
     for _, row in pdf.iterrows():
         vendor = str(row[vendor_col]).strip() if pd.notna(row[vendor_col]) else ''
+        if not vendor and alt_col and pd.notna(row[alt_col]):
+            vendor = str(row[alt_col]).strip()
         code = str(row[code_col]).strip() if code_col and pd.notna(row[code_col]) else ''
         label = re.sub(r'\s+', '', vendor) or re.sub(r'\s+', '', code)
         if label in ('합계:', '합계', 'nan', ''):
@@ -3398,6 +3408,12 @@ def analyze_balance_movement(df: pd.DataFrame, params_list: list) -> dict:
             print(f'      {acct_name}: 전기 명세 없음')
 
         mask = _account_match_flexible(df[COL_ACCOUNT], acct_name)
+        # 잔액증감(재무상태표 계정) 분석에서 정확 일치 계정이 없어 유사매칭으로
+        # 대체될 때 '이자' 계정(예: '사채' → '사채이자')은 손익 계정이라 잔액 증감에
+        # 섞이면 안 되므로 제외한다(2026-11-03, samdong 사채 시트에서 발견).
+        # 정확 일치가 있으면 이 단계는 아무것도 바꾸지 않는다.
+        if '이자' not in acct_name and not _account_match_exact(df[COL_ACCOUNT], acct_name).any():
+            mask = mask & ~df[COL_ACCOUNT].astype(str).str.contains('이자', na=False)
         current = df[mask].copy()
 
         journal_vendors = {}
