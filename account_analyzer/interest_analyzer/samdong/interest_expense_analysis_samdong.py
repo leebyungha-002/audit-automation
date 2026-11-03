@@ -218,14 +218,23 @@ def analyze():
 
         prev_date = period_start
         total_expected, total_actual, no_rate_cnt = 0.0, 0.0, 0
-        for _, r in int_sub.iterrows():
-            pay_date = r['전표일자']
-            if pd.isna(pay_date) or pay_date < prev_date:
+        # 같은 관리번호에 같은 날 이자 전표가 여러 건이면 한 지급 구간으로 묶어 실제이자를
+        # 합산한다(2026-11-03 blue sky 발견: 예전엔 구간 시작일이 지급일+1로 넘어가 같은 날
+        # 두 번째 전표부터 통째로 누락 — 23건 76,819,716원이 빠져 분개장 합계와 불일치).
+        for pay_date, grp in int_sub.groupby('전표일자', sort=True):
+            if pay_date < prev_date:
                 continue
             days = (pay_date - prev_date).days + 1
             avg_bal = daily_balance.loc[prev_date:pay_date].mean()
-            rate = r['적용금리']
-            actual = r['차변금액']
+            actual = float(grp['차변금액'].sum() - grp['대변금액'].sum())
+            rates = grp['적용금리'].dropna()
+            if rates.empty:
+                rate = float('nan')
+            elif rates.nunique() == 1 or not actual:
+                rate = float(rates.iloc[0])
+            else:  # 같은 날 금리가 다르면 실제이자 가중평균 금리 사용
+                w = grp.loc[rates.index, '차변금액']
+                rate = float((rates * w).sum() / w.sum()) if w.sum() else float(rates.mean())
             if pd.isna(rate):
                 expected = 0.0
                 no_rate_cnt += 1
@@ -234,10 +243,11 @@ def analyze():
 
             detail_rows.append({
                 '관리번호': mgmt_id, '은행명': bank, '종류': kind,
-                '계정과목': r['계정과목'], '지급일자': pay_date.date(),
+                '계정과목': grp['계정과목'].iloc[0], '지급일자': pay_date.date(),
                 '기간시작': prev_date.date(), '기간일수': days,
                 '기간평균잔액': round(float(avg_bal)),
-                '적용금리(%)': rate if pd.notna(rate) else '',
+                '전표건수': len(grp),
+                '적용금리(%)': round(rate, 4) if pd.notna(rate) else '',
                 '기대이자': round(expected), '실제이자': round(float(actual)),
                 '차이': round(float(actual) - expected),
             })
@@ -293,6 +303,21 @@ def analyze():
         {'항목': '차이율 (%)',                                   '금액(원)': round(total_diff_pct, 2)},
         {'항목': '확인필요로 제외된 관리번호 수',                 '금액(원)': len(review_df)},
     ])
+
+    # 검증: 분개장 이자비용 총액 = 비교 대상 실제이자 + 확인필요 제외분 (+ 관리번호 없는 전표)
+    gl_lines = df[df['계정과목'].isin(INTEREST_ACCOUNTS)]
+    gl_total = float(gl_lines['차변금액'].sum() - gl_lines['대변금액'].sum())
+    excluded_actual = float(review_df['실제이자합계'].sum()) if not review_df.empty else 0.0
+    unmatched = gl_total - float(summary_df['실제이자합계'].sum())
+    comparison_df = pd.concat([comparison_df, pd.DataFrame([
+        {'항목': '', '금액(원)': None},
+        {'항목': f'[검증] 분개장 {"/".join(INTEREST_ACCOUNTS)} 총액', '금액(원)': round(gl_total)},
+        {'항목': '  (-) 확인필요로 제외된 실제이자',                 '금액(원)': round(excluded_actual)},
+        {'항목': '  (-) 관리번호/일자 없어 분석 안 된 금액',         '금액(원)': round(unmatched)},
+        {'항목': '  = 장부상 이자비용 (Actual, 확인필요 건 제외)',   '금액(원)': round(gl_total - excluded_actual - unmatched)},
+    ])], ignore_index=True)
+    if abs(unmatched) >= 1:
+        print(f'  [경고] 분개장 이자비용 중 {unmatched:,.0f}원이 관리번호/일자 누락으로 분석에서 빠짐')
 
     print('=' * 58)
     print(f'  총 기대이자비용  : {total_expected:>16,.0f} 원')
