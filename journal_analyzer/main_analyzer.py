@@ -3759,7 +3759,7 @@ def analyze_lease_completeness(df, params_list):
 _PL_CATEGORIES = ['매출', '매출원가', '판관비', '제조원가', '영업외수익', '영업외비용']
 
 def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
-    """25. 손익항목 월별 추이 (당기, 손익구분별 시트)
+    """25. 손익항목 월별 추이 (손익구분별 시트, 계정마다 당기/전기/증감 행 — 분석대상 따라)
     task_list 파라미터: 계정과목 / 구분(차변·대변·both) / 손익구분(매출·매출원가·판관비·
         제조원가·영업외수익·영업외비용) / 실행여부 / 관리단위(선택) / 비용구분(선택)
     결과: 손익구분마다 시트 1개(행=계정명, 열=1월~12월+합계)로 정리.
@@ -3803,9 +3803,17 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
     if not targets:
         return {'손익월별분석': pd.DataFrame({'안내': ['계정과목 파라미터가 없습니다.']})}
 
-    cur = df[df['구분'] == '당기'] if '구분' in df.columns else df
-    has_unit_col = UNIT_COL in cur.columns
-    has_cost_col = COST_COL in cur.columns
+    # 기간 구분: 분석대상이 전체면 당기·전기 행을 나란히 + 증감 행, 당기/전기 단독이면 그 기간만
+    # (2026-11-03 blue sky 요청 — 분석대상 '전체'인데 당기만 나와 헤더와 표가 안 맞았음)
+    data = df
+    if '구분' in data.columns:
+        present = set(data['구분'].dropna().astype(str))
+        periods = [p for p in ('당기', '전기') if p in present]
+        data = data[data['구분'].isin(periods)]
+    else:
+        periods = ['당기']
+    has_unit_col = UNIT_COL in data.columns
+    has_cost_col = COST_COL in data.columns
 
     out = {}
     for cat in _PL_CATEGORIES:
@@ -3814,8 +3822,8 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             continue
         rows = []
         for acct_name, direction, split_unit, split_cost in cat_targets:
-            mask = _account_match_flexible(cur[COL_ACCOUNT], acct_name)
-            sub = cur[mask].copy()
+            mask = _account_match_flexible(data[COL_ACCOUNT], acct_name)
+            sub = data[mask].copy()
             if sub.empty:
                 continue
             if direction == '차변':
@@ -3834,25 +3842,32 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
                 sub[COST_COL] = sub[COST_COL].astype(str).str.strip()
                 extra_cols.append(COST_COL)
 
+            sub['_period'] = sub['구분'].astype(str) if '구분' in sub.columns else '당기'
+            grouped = sub.groupby(extra_cols + ['_period', '_month'])['_amt'].sum()
             if extra_cols:
-                grouped = sub.groupby(extra_cols + ['_month'])['_amt'].sum()
-                combos = grouped.reset_index()[extra_cols].drop_duplicates()
-                for _, combo_row in combos.iterrows():
-                    key_prefix = tuple(combo_row[c] for c in extra_cols)
-                    row = {'계정명': acct_name}
-                    for c, v in zip(extra_cols, key_prefix):
-                        row[c] = v
-                    for m in range(1, 13):
-                        row[f'{m}월'] = grouped.get(key_prefix + (m,), 0)
-                    row['합계'] = grouped.loc[key_prefix].sum()
-                    rows.append(row)
+                combos = [tuple(r) for r in
+                          sub[extra_cols].drop_duplicates().itertuples(index=False)]
             else:
-                monthly = sub.groupby('_month')['_amt'].sum()
-                row = {'계정명': acct_name}
-                for m in range(1, 13):
-                    row[f'{m}월'] = monthly.get(m, 0)
-                row['합계'] = monthly.sum()
-                rows.append(row)
+                combos = [()]
+            months = [f'{m}월' for m in range(1, 13)] + ['합계']
+            for key_prefix in combos:
+                base = {'계정명': acct_name}
+                for c, v in zip(extra_cols, key_prefix):
+                    base[c] = v
+                period_rows = {}
+                for per in periods:
+                    row = dict(base, 구분=per)
+                    for m in range(1, 13):
+                        row[f'{m}월'] = grouped.get(key_prefix + (per, m), 0)
+                    row['합계'] = sum(row[f'{m}월'] for m in range(1, 13))
+                    period_rows[per] = row
+                    rows.append(row)
+                if len(periods) == 2:
+                    cur_r, prev_r = period_rows['당기'], period_rows['전기']
+                    row = dict(base, 구분='증감')
+                    for k in months:
+                        row[k] = cur_r[k] - prev_r[k]
+                    rows.append(row)
         if rows:
             # 비용구분(판관/제조)이 섞인 시트는 판관 → 제조 순으로 묶어서 정렬
             # (2026-09-07 blue sky 요청 — 계정별로 판관/제조가 번갈아 나와 보기 불편함).
