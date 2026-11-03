@@ -989,6 +989,8 @@ def main():
     basis = load_basis(input_path)
 
     target_fy = args.fiscal_year
+    name_month = None      # 파일명이 fy<YYMM>(예: fy2609 = 26년 9월)이면 그 월
+    output_tag = None
     if not target_fy:
         base = os.path.basename(input_path)
         idx = base.lower().find("fy")
@@ -1000,10 +1002,17 @@ def main():
                 digits += ch
             else:
                 break
-        target_fy = f"20{digits}" if len(digits) == 2 else digits
+        if len(digits) == 4 and digits[:2] not in ("19", "20") and 1 <= int(digits[2:]) <= 12:
+            # fy2609 처럼 연도 2자리+월 2자리(YYMM) — 2609년이 아니라 2026년 9월로 해석
+            # (2026-11-03 blue sky: fy2609가 2609년으로 읽혀 결산기준일이 2609-12-31로 잡힘)
+            target_fy, name_month, output_tag = f"20{digits[:2]}", int(digits[2:]), digits
+        else:
+            target_fy = f"20{digits}" if len(digits) == 2 else digits
+    output_tag = output_tag or target_fy
 
     print(f"[입력] {input_path}")
-    print(f"[대상] 회사={company}, 회계연도={target_fy}, 결산월={args.fiscal_month}")
+    print(f"[대상] 회사={company}, 회계연도={target_fy}, 결산월={args.fiscal_month}"
+          + (f", 파일명 기준월={name_month}월" if name_month else ""))
 
     결산일_override = basis_current_period_override(basis)
     if 결산일_override is not None:
@@ -1012,7 +1021,7 @@ def main():
               f"--fiscal-month/--fiscal-year/--interim-month 옵션 무시됨)")
     else:
         _, fy_end_ym = _fy_bounds(target_fy, args.fiscal_month)
-        fy_end_ym = _apply_interim(fy_end_ym, target_fy, args.interim_month)
+        fy_end_ym = _apply_interim(fy_end_ym, target_fy, args.interim_month or name_month)
         결산일 = _ym_to_end_date(fy_end_ym)
         print(f"[결산기준일] {결산일}")
 
@@ -1062,8 +1071,20 @@ def main():
     if result["current_period_warning"]:
         print(f"[경고] {result['current_period_warning']}")
 
+    # 입력방식과 실제 데이터가 든 시트가 어긋나면 거의 모든 거래처가 0원이 됨 — 커버리지 경고
+    # (2026-11-03 blue sky: 입력방식 '회사연령표'인데 데이터는 분기말잔액/차변발생내역에만 있었음)
+    cp = result["current_period"]
+    src = aging_table if method == "회사연령표" else balances
+    covered = sum(1 for n in customers if (n, cp) in src)
+    print(f"[데이터] 거래처 {len(customers)}곳 중 당기말({cp}) {method} 데이터 있는 곳 {covered}곳")
+    if customers and covered < len(customers) * 0.5:
+        other = "차변발생내역" if method == "회사연령표" else "회사연령표"
+        print(f"[경고] 절반 이상 거래처의 당기말 데이터가 없어 순채권액이 0원으로 나옵니다. "
+              f"기준정보의 '연령산정 입력방식'({method})이 실제 데이터를 넣은 시트와 맞는지 확인하세요"
+              f"(다른 방식: {other}).")
+
     suffix = f"_interim{args.interim_month:02d}" if args.interim_month else ""
-    output_path = os.path.join(OUTPUT_DIR, f"ar_allowance_schedule_{company}_{target_fy}{suffix}.xlsx")
+    output_path = os.path.join(OUTPUT_DIR, f"ar_allowance_schedule_{company}_{output_tag}{suffix}.xlsx")
     save_results(result, output_path, company, target_fy, 결산일, labels, rate_table, basis, listed, method)
     print(f"[완료] {output_path}")
 
