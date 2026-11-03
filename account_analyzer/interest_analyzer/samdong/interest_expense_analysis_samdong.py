@@ -66,6 +66,9 @@ OUTPUT_PATH = Path(__file__).parent / 'output' / '이자비용분석결과_samdo
 LOAN_ACCOUNTS     = ['단기차입금-일반대출', '장기차입금', '유동성장기부채-원화']
 INTEREST_ACCOUNTS = ['이자비용-일반대출']
 FLAG_PCT_THRESHOLD = 30  # |차이율(%)| 이 이 값을 넘으면 확인필요로 플래그
+# 전기 명세 시트명 → 당기 분개장 계정과목 (관리번호별 계정과목 잔액 산출용)
+SHEET_TO_ACCOUNT = {'단기차입금': '단기차입금-일반대출', '장기차입금': '장기차입금',
+                    '유동성장기부채': '유동성장기부채-원화'}
 
 _ID_RE   = re.compile(r'^(\S+)')
 _DATE_RE = re.compile(r'(20\d{6})')
@@ -119,7 +122,7 @@ def load_opening_balances():
     print(f'[전기명세] {path}')
     xl = pd.ExcelFile(path)
 
-    opening, labels = {}, {}
+    opening, labels, opening_by_acct = {}, {}, {}
     for sheet in ['단기차입금', '장기차입금', '유동성장기부채']:
         if sheet not in xl.sheet_names:
             continue
@@ -135,12 +138,15 @@ def load_opening_balances():
             if '구매자금' in str(r.get('종류', '')):  # 구매자금대출은 테스트 대상 아님
                 continue
             bal = pd.to_numeric(r.get(bal_col), errors='coerce')
-            opening[mgmt_id] = opening.get(mgmt_id, 0) + (0 if pd.isna(bal) else bal)
+            bal = 0 if pd.isna(bal) else bal
+            opening[mgmt_id] = opening.get(mgmt_id, 0) + bal
+            acct_key = (mgmt_id, SHEET_TO_ACCOUNT[sheet])
+            opening_by_acct[acct_key] = opening_by_acct.get(acct_key, 0) + bal
             labels.setdefault(mgmt_id, {
                 '은행명': str(r.get('은행명', '')).strip(),
                 '종류':   str(r.get('종류', '')).strip(),
             })
-    return opening, labels
+    return opening, labels, opening_by_acct
 
 
 def build_loan_ledger(df):
@@ -182,7 +188,7 @@ def calc_daily_balance(loan_sub, opening_bal, period_start, period_end):
 
 def analyze():
     df = load_journal()
-    opening, labels = load_opening_balances()
+    opening, labels, opening_by_acct = load_opening_balances()
 
     valid_year = df['전표일자'].dt.year.dropna()
     year = int(valid_year.mode().iloc[0])
@@ -195,7 +201,7 @@ def analyze():
     all_ids = sorted(set(opening) | set(loan_all['관리번호']) | set(int_all['관리번호']))
     print(f'[관리번호] 총 {len(all_ids)}건')
 
-    detail_rows, summary_rows = [], []
+    detail_rows, summary_rows, acct_rows = [], [], []
 
     for mgmt_id in all_ids:
         loan_sub = loan_all[loan_all['관리번호'] == mgmt_id]
@@ -215,6 +221,24 @@ def analyze():
         opening_bal = opening.get(mgmt_id, 0)
         daily_balance = calc_daily_balance(loan_sub, opening_bal, period_start, period_end)
         closing_bal = daily_balance.iloc[-1]
+
+        # 계정과목별 기초/기말 잔액(유동성대체로 한 관리번호가 여러 계정에 걸칠 수 있음)
+        # — 2026-11-03 blue sky 요청: ERP 계정별 잔액과 대조하기 위해
+        moves = (loan_sub.assign(_d=loan_sub['대변금액'] - loan_sub['차변금액'])
+                 .groupby('계정과목')['_d'].sum())
+        id_accts = [a for a in LOAN_ACCOUNTS
+                    if (mgmt_id, a) in opening_by_acct or a in moves.index]
+        acct_closing = {}
+        for a in id_accts:
+            ob = opening_by_acct.get((mgmt_id, a), 0)
+            cb = ob + moves.get(a, 0)
+            acct_closing[a] = cb
+            acct_rows.append({'계정과목': a, '기초잔액': ob, '기말잔액': cb})
+        acct_label = ', '.join(a for a, v in acct_closing.items() if round(v) != 0)
+        if not acct_label and not loan_sub.empty:
+            acct_label = loan_sub.sort_values('전표일자')['계정과목'].iloc[-1]
+        elif not acct_label and id_accts:
+            acct_label = id_accts[-1]
 
         prev_date = period_start
         total_expected, total_actual, no_rate_cnt = 0.0, 0.0, 0
@@ -273,7 +297,7 @@ def analyze():
         need_review = suspect_rollover or large_diff
 
         summary_rows.append({
-            '관리번호': mgmt_id, '은행명': bank, '종류': kind,
+            '관리번호': mgmt_id, '계정과목': acct_label, '은행명': bank, '종류': kind,
             '기초잔액': round(opening_bal), '기말잔액': round(float(closing_bal)),
             '이자지급건수': len(int_sub), '기대이자합계': round(total_expected),
             '실제이자합계': round(total_actual), '차이': round(diff),
@@ -328,9 +352,30 @@ def analyze():
     print(f'  확인필요(제외)   : {len(review_df):>16} 건')
     print('=' * 58)
 
+    # 계정과목별 기초/기말 잔액 합계 표 (Summary 시트 아래에 별도 표로 출력)
+    acct_df = pd.DataFrame(acct_rows, columns=['계정과목', '기초잔액', '기말잔액'])
+    acct_df = (acct_df.groupby('계정과목', sort=False)[['기초잔액', '기말잔액']].sum()
+               .reindex([a for a in LOAN_ACCOUNTS if a in set(acct_df['계정과목'])])
+               .round().reset_index())
+    acct_df = pd.concat([acct_df, pd.DataFrame([{
+        '계정과목': '합계', '기초잔액': acct_df['기초잔액'].sum(), '기말잔액': acct_df['기말잔액'].sum()}])],
+        ignore_index=True)
+    # 검증: 계정별 합계 = Summary 관리번호별 합계
+    for col in ('기초잔액', '기말잔액'):
+        gap = acct_df[col].iloc[-1] - summary_df[col].sum()
+        if abs(gap) >= 1:
+            print(f'  [경고] 계정별 {col} 합계와 관리번호별 합계 차이 {gap:,.0f}원')
+    print('  [계정과목별 기말잔액]')
+    for _, r in acct_df.iterrows():
+        print(f'    {r["계정과목"]:<14} {r["기말잔액"]:>18,.0f} 원')
+
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(OUTPUT_PATH, engine='openpyxl') as writer:
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        acct_start = len(summary_df) + 3   # 본 표 아래 두 줄 띄우고
+        acct_ws = writer.sheets['Summary']
+        acct_ws.cell(row=acct_start, column=1, value='[계정과목별 잔액 합계]')
+        acct_df.to_excel(writer, sheet_name='Summary', index=False, startrow=acct_start)
         review_df.to_excel(writer, sheet_name='확인필요', index=False)
         detail_df.to_excel(writer, sheet_name='이자비용_상세', index=False)
         comparison_df.to_excel(writer, sheet_name='비교', index=False)
