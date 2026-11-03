@@ -3116,3 +3116,20 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 25번 재실행 후 mapping_list/조서 주입 위치 확인
 
 ---
+
+## 2026-11-03 14:40
+
+**완료 작업**: 다른 분석앱(account_analyzer) 결과물의 감사조서 주입 가능 여부 검토 — 코드 변경 없음, 미해결 이슈로 보류
+**변경 파일**: 없음
+**미해결 이슈**: [보류] data_injector가 소스를 `<회사>/results`, `raw_data`, `<회사>/`에서만 찾아 account_analyzer/<앱>/output 결과물(대손충당금·감가상각·리스·퇴직급여·연차·이자비용)은 주입 불가. 검토한 해결안:
+  - 소스 탐색 폴더에 `account_analyzer/*/output`, `account_analyzer/*/<회사>/output` 추가(최하위 우선순위), 매칭 경로 로그 표시. mapping_list는 B열 키워드만 적으면 됨(예: ar_allowance_schedule_samdong_2609, 이자비용분석결과_samdong)
+  - 키워드 부분일치로 `lease_schedule_kyungnam_2026`이 `_interim06` 파일도 매칭 → 정확일치 파일 우선 로직 필요
+  - 앱별 출력 파일명의 회사명 표기 불일치(severance=대일개발, leave=dae, dae_il 이자비용=회사명 없음) → 영문 회사명 통일 권장(별도 작업)
+  - 앱 결과 시트는 1~2행 제목이 있어 D열 소스 범위 지정 필요
+**다음 할 일**:
+1. 이자비용 분석 재실행으로 output 갱신, #10875 확인
+2. samdong fy2609 대손충당금 입력방식 변경 후 재실행, 차변발생내역 기간 보완
+3. 25번 재실행 후 mapping_list/조서 주입 위치 확인
+4. (보류) 다른 앱 결과물 주입 기능 구현
+
+---
