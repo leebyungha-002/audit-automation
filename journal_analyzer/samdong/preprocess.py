@@ -211,6 +211,42 @@ def convert_ledgers(current_dir: str = _CURRENT_DIR) -> None:
           f'차변 {sum_debit:,.0f} / 대변 {sum_credit:,.0f}')
 
 
+# 비용 계정 행의 관리항목1은 거래처가 아니라 증빙유형이다('세금계산서'/'신용카드' 등).
+_EVIDENCE_VALUES = {'세금계산서', '계산서', '영수증', '간이영수증', '신용카드', '현금영수증', '제외대상'}
+# 대변 행에서 거래처로 보지 않을 값: 사업장명('삼동산업 본사' 등)과 내부 구분값
+_NON_VENDOR_VALUES = {'본사', '2공장', '사원선급금'}
+_HANGUL_RE = re.compile(r'[가-힣]')
+
+
+def _to_amount(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s.astype(str).str.replace(',', '', regex=False), errors='coerce').fillna(0)
+
+
+def _fill_vendor_from_voucher(df: pd.DataFrame) -> None:
+    """차변 행의 거래처명이 증빙유형이면 같은 전표 대변 행의 실거래처로 바꾼다.
+    예: 지급수수료-판매(거래처명 '세금계산서') / 미지급금-알선수수료(거래처명 '삼동파머스')
+    전표 → 비용 행 거래처명을 '삼동파머스'로. 대변 실거래처가 정확히 1개인 전표만
+    바꾸고, 0개거나 2개 이상이면 그대로 둔다(blue sky 결정, 2026-11-04 — 13번 매출vs비용
+    교차가 비던 문제)."""
+    debit_col = next((c for c in ('차변', '차변금액') if c in df.columns), None)
+    credit_col = next((c for c in ('대변', '대변금액') if c in df.columns), None)
+    if not debit_col or not credit_col:
+        return
+    vendor = df['거래처명'].astype(str).str.strip()
+    is_ev = vendor.isin(_EVIDENCE_VALUES)
+    real = ((_to_amount(df[credit_col]) != 0) & ~is_ev
+            & vendor.str.contains(_HANGUL_RE)
+            & ~vendor.str.startswith('삼동산업') & ~vendor.isin(_NON_VENDOR_VALUES))
+    per_voucher = vendor[real].groupby(df.loc[real, JOURNAL_KEY_COL]).unique()
+    single = per_voucher[per_voucher.map(len) == 1].map(lambda v: v[0])
+    target = is_ev & (_to_amount(df[debit_col]) != 0)
+    new_vendor = df.loc[target, JOURNAL_KEY_COL].map(single)
+    hit = new_vendor.dropna()
+    df.loc[hit.index, '거래처명'] = hit.values
+    print(f'  [samdong/preprocess] 증빙유형 거래처명 보정: 대상 {int(target.sum()):,}행 중 '
+          f'{len(hit):,}행을 같은 전표 대변 거래처로 변경')
+
+
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     convert_ledgers()
 
@@ -238,6 +274,8 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
             df['거래처명'] = df['관리항목1']
         else:
             df['거래처명'] = ''
+    _fill_vendor_from_voucher(df)
+
     # 기표자 → 사원명 (사원별집계 메뉴 인식용)
     if '사원명' not in df.columns and '기표자' in df.columns:
         df = df.rename(columns={'기표자': '사원명'})
