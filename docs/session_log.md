@@ -3194,3 +3194,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 2. 이전 이월 항목(samdong mapping_list G77 수정 후 20번 재실행, 사채 기말 ERP 대사 등)
 
 ---
+
+## 2026-11-04 11:20
+
+**완료 작업**: samdong_material TB_TO_GL_TEST 계정명 불일치 원인 — 원본 분개장 xlsx 자체에 ERP가 5xx '(제)'/8xx '(판)'를 자동 덧붙여 마스터명에 접미어 있는 계정은 '(판)(판)'으로 중복(당기 36·전기 33개), 접미어 없는 계정(감가상각비·인력개발비·접대비)은 분개장에만 붙음. `samdong_material/preprocess.py` 신규: 원장 시트명 코드(81800=분개장 818×100)로 분개장 계정명을 원장명에 맞추고, 원장에 없는 코드는 반복 접미어만 1개로 축소. 감가상각비(제)/(판)은 원장명 '감가상각비'로 합침(blue sky 결정). 당기 분개장 계정 전부 원장 매칭, 차대 합계 불변, task_list·mapping_list 참조 영향 없음.
+**변경 파일**: journal_analyzer/samdong_material/preprocess.py
+**미해결 이슈**: samdong_material task_list 실제 재실행 미수행
+**다음 할 일**:
+1. samdong_material task_list 재실행 → 04 TB_TO_GL_TEST 차이 확인
+2. 이전 이월 항목(samdong mapping_list G77 수정 후 20번 재실행, 사채 기말 ERP 대사 등)
+
+---
