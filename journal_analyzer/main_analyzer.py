@@ -936,11 +936,21 @@ def _extract_duzon_style_records(ws) -> list:
     더존 계열(예: graphy, dae_il) 시트 1개(열: 날짜/적요란/코드/거래처명/사업자등록번호/
     차변/대변/잔액)에서 (종류, 차변, 대변, 잔액) 레코드 리스트를 뽑는다.
     """
+    # 사업자등록번호 열이 없는 7열 더존 양식(날짜/적요란/코드/거래처/차변/대변/잔액,
+    # 예: samdong_material, 2026-11-04)은 머리글로 판별해 차변·대변·잔액 위치를 한 칸 당긴다.
+    # 그 외(기존 8열 양식)는 종전 위치 그대로 — 타사 결과 불변.
+    header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ()) or ()
+    hdr = [str(h).strip() if h is not None else '' for h in header]
+    if hdr[:7] == ['날짜', '적요란', '코드', '거래처', '차변', '대변', '잔액']:
+        min_len, i_dr, i_cr, i_bal = 7, 4, 5, 6
+    else:
+        min_len, i_dr, i_cr, i_bal = 8, 5, 6, 7
+
     records = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if row is None or len(row) < 8:
+        if row is None or len(row) < min_len:
             continue
-        desc, debit, credit, balance = row[1], row[5] or 0, row[6] or 0, row[7]
+        desc, debit, credit, balance = row[1], row[i_dr] or 0, row[i_cr] or 0, row[i_bal]
         debit, credit = float(debit) if debit else 0.0, float(credit) if credit else 0.0
         text = _clean_ledger_text(desc)
         if not text and not debit and not credit and balance is None:

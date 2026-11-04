@@ -3183,3 +3183,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 이전 이월 항목(이자비용 앱 재실행, ar_allowance 입력방식 변경 등)
 
 ---
+
+## 2026-11-04 10:30
+
+**완료 작업**: samdong_material 당기 계정별원장 미인식 해결 — 엔진은 .xlsx만 읽어 .xls는 제외됐고, 사용자가 xlsx로 바꾼 뒤에도 사업자등록번호 열이 없는 7열 더존 양식이라 8열 전제 파서가 전 행을 건너뜀(잔액표 0건). `_extract_duzon_style_records`가 1행 머리글이 [날짜/적요란/코드/거래처/차변/대변/잔액]이면 7열 위치로 읽도록 분기 추가. samdong_material 84개 계정 인식, 원장 대사 차이 0건. 타사(graphy·samdong 8열, daesun·sejoong 별도 형식) 머리글 미해당 확인.
+**변경 파일**: journal_analyzer/main_analyzer.py
+**미해결 이슈**: samdong_material 4번 등 실제 재실행 미수행
+**다음 할 일**:
+1. samdong_material task_list 재실행(4번 잔액표·롤포워드 기초잔액 확인)
+2. 이전 이월 항목(samdong mapping_list G77 수정 후 20번 재실행, 사채 기말 ERP 대사 등)
+
+---
