@@ -3286,10 +3286,10 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 
 **완료 작업**: 15번 감사샘플링 — 비용구분(판관/제조)을 지정한 계정의 샘플을 계정별 시트 대신 `15_감사샘플링_판관비`·`15_감사샘플링_제조경비` 통합 시트로 출력(판관비→제조경비 순, No는 시트별 연번, 샘플링조건 결과시트 열에 통합 시트명). 비용구분 빈칸 계정(매출·원재료·부재료)은 기존처럼 계정별 시트. samdong 15번 단독 실행으로 확인(판관비 13건, 제조경비 21건).
 **변경 파일**: journal_analyzer/main_analyzer.py (4710f59)
-**미해결 이슈**: 분석결과_samdong.xlsx가 Excel에 열려 있어 전체 재실행 저장 실패 → 닫고 재실행 필요. blue sky가 추가한 15번 task_list 행 중 운반비-원료가 9·17행 중복(제조경비 시트에 같은 샘플 2건 중복), task_list 변경분은 blue sky 편집 중이라 커밋 안 함
+**추가 완료**: 운반비-원료 중복행 blue sky가 정리, task_list 커밋, samdong 전체 재실행 125시트·경고 0(15번 판관비 13건·제조경비 19건).
+**미해결 이슈**: 없음
 **다음 할 일**:
-1. 분석결과_samdong.xlsx 닫은 뒤 samdong 전체 재실행
-2. kindus mapping_list 작성 → data_injector
-3. samdong_material task_list 재실행(04·20번)
+1. kindus mapping_list 작성 → data_injector
+2. samdong_material task_list 재실행(04·20번)
 
 ---
