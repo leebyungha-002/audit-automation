@@ -2256,8 +2256,13 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
                 '상대계정': sample['상대계정'].values,
                 '선정사유': sample['선정사유'].values,
             })
-            if cost_val is not None:
-                tbl.insert(4, '비용구분', sample[COST_COL].values)
+            # 비용구분 열: 분리(Y) 여부와 관계없이 원장에 비용구분 값이 있는 계정이면 항상 표시
+            # (2026-11-05 blue sky 요청 — 시트명은 그대로, 제조/판관만 보이게). 매출·원재료처럼
+            # 값이 전부 비어 있는 계정은 열을 넣지 않는다.
+            if has_cost_col:
+                cvals = sample[COST_COL].fillna('').astype(str).str.strip()
+                if cost_val is not None or (cvals != '').any():
+                    tbl.insert(4, '비용구분', cvals.values)
             for c in _EVIDENCE_COLS:
                 tbl[c] = ''
 
