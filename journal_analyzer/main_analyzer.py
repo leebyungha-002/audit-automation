@@ -2016,6 +2016,7 @@ def analyze_top_accounts(df: pd.DataFrame, params_list: list) -> dict:
 # 처리 순서: 모집단(계정·기간·금액타입) → 개별유의금액 이상 전수(샘플크기와 별도)
 #           → 이상거래 우선 포함(샘플크기에 포함) → 나머지를 선택한 방법으로 추출.
 _SAMPLING_METHODS = ('MUS', '체계적', '무작위', '금액상위')
+_COST_SHEET_NAMES = {'판관': '판관비', '제조': '제조경비'}   # 15번 비용구분 통합 시트명
 _SAMPLING_SEED = 42                 # 재실행 시 같은 샘플 (조서 재현성)
 _SAMPLING_DEFAULT_SIZE = 30
 _SAMPLING_ANOMALY_CAP = 0.20        # 이상거래 우선 포함은 샘플크기의 20%까지
@@ -2114,6 +2115,7 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
     COST_COL = '비용구분'
     has_cost_col = COST_COL in df.columns
     _cost_order = {'판관': 0, '제조': 1}
+    grouped = {}      # 비용구분 통합 시트명 -> [계정별 샘플표]
 
     for p in rows:
         acct = _nv(p.get('계정과목', ''))
@@ -2273,13 +2275,20 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             for c in _EVIDENCE_COLS:
                 tbl[c] = ''
 
-            base = f'{acct}_{cost_val}' if cost_val is not None else acct
-            sname = _safe_sheet(f'{base}_{dir_tag[side]}')
-            while sname in out:      # 같은 계정·방향을 방법만 달리 여러 줄 적은 경우
-                sname = _safe_sheet(f'{base}_{dir_tag[side]}_{method}')
-                if sname in out:
-                    sname = _safe_sheet(f'{sname}{len(out)}')
-            out[sname] = tbl
+            if cost_val is not None:
+                # 비용구분을 지정한 계정은 계정별 시트 대신 구분별 통합 시트(판관비/제조경비)에
+                # 모아 담는다 (2026-11-05 blue sky 요청). 시트 위치는 처음 나온 자리.
+                sname = _safe_sheet(_COST_SHEET_NAMES.get(cost_val, cost_val))
+                grouped.setdefault(sname, [])
+                out.setdefault(sname, None)
+                grouped[sname].append(tbl)
+            else:
+                sname = _safe_sheet(f'{acct}_{dir_tag[side]}')
+                while sname in out:      # 같은 계정·방향을 방법만 달리 여러 줄 적은 경우
+                    sname = _safe_sheet(f'{acct}_{dir_tag[side]}_{method}')
+                    if sname in out:
+                        sname = _safe_sheet(f'{sname}{len(out)}')
+                out[sname] = tbl
             fmt[sname] = {'차변': '#,##0', '대변': '#,##0', '샘플금액': '#,##0'}
 
             sample_total = float(sample['_amt'].sum())
@@ -2295,6 +2304,23 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             cond_rows.append(cond)
             print(f'    [감사샘플링] {acct}{"(" + cost_val + ")" if cost_val else ""}({side}, {method}) 모집단 {len(pop):,}건 → 샘플 {len(sample)}건 '
                   f'(전수 {key_n}·이상 {anomaly_n}·{method} {len(idx)})', flush=True)
+
+    if grouped:
+        # 통합 시트는 처음 나온 자리에 판관비 → 제조경비 → 그 외 순으로 배치
+        order = {name: i for i, name in enumerate(_COST_SHEET_NAMES.values())}
+        gnames = sorted(grouped, key=lambda n: (order.get(n, len(order)), n))
+        first = next(i for i, k in enumerate(out) if k in grouped)
+        keys = [k for k in out if k not in grouped]
+        keys[first:first] = gnames
+        merged_out = {}
+        for k in keys:
+            if k in grouped:
+                merged = pd.concat(grouped[k], ignore_index=True)
+                merged['No'] = range(1, len(merged) + 1)
+                merged_out[k] = merged
+            else:
+                merged_out[k] = out[k]
+        out = merged_out
 
     result = {'샘플링조건': pd.DataFrame(cond_rows)}
     result.update(out)
