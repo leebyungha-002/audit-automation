@@ -225,7 +225,10 @@ def _account_match_exact(acct_series, acct_str):
     return norm_series == norm_user
 
 
-def _account_match_flexible(acct_series, acct_str):
+def _account_match_flexible(acct_series, acct_str, allow_reverse=True):
+    """allow_reverse=False: 마지막 양방향 부분문자열 폴백을 끈다. '대손상각비-외상매출금'처럼
+    해당 기간 거래가 없는 계정이 이름 안에 든 다른 계정('외상매출금')으로 대체되는 것 방지
+    (2026-11-05 samdong 25번 — 판관비 시트에 외상매출금 금액이 들어갔음)."""
     acct_str = str(acct_str).strip()
     if not acct_str:
         return pd.Series(False, index=acct_series.index)
@@ -237,7 +240,7 @@ def _account_match_flexible(acct_series, acct_str):
     mask = norm_series.str.startswith(norm_user)
     if mask.any(): return mask
     mask = norm_series.str.contains(re.escape(norm_user), na=False, regex=True, case=False)
-    if mask.any(): return mask
+    if mask.any() or not allow_reverse: return mask
     def _row(val):
         nv = _normalize_account_for_match(str(val) if pd.notna(val) else '')
         if not nv: return False
@@ -3990,7 +3993,7 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
             continue
         rows = []
         for acct_name, direction, split_unit, split_cost in cat_targets:
-            mask = _account_match_flexible(data[COL_ACCOUNT], acct_name)
+            mask = _account_match_flexible(data[COL_ACCOUNT], acct_name, allow_reverse=False)
             sub = data[mask].copy()
             if sub.empty:
                 continue
