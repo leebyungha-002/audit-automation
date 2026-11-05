@@ -2138,9 +2138,16 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
         # 비용구분(선택, samdong 등 원장에 '비용구분'(판관/제조) 컬럼이 있는 회사 전용):
         # Y 지정 시 같은 계정을 비용구분별 모집단으로 나눠 각각 샘플크기만큼 추출
         # (2026-11-05 blue sky 결정 — 구분별 모집단이 다르므로 합계 배분 대신 각각 추출).
+        # 값에 '판관'·'제조'(콤마로 복수 가능)를 적으면 그 구분만 모집단으로 추출
+        # (2026-11-05 blue sky 요청). Y = 원장에 있는 구분 전부 각각.
         cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
-        split_cost = has_cost_col and bool(cost_key) and _nv(str(p.get(cost_key, ''))).strip().upper() in ('Y', 'O', 'TRUE')
+        cost_raw = _nv(str(p.get(cost_key, ''))).strip() if (has_cost_col and cost_key) else ''
+        split_cost = cost_raw.upper() in ('Y', 'O', 'TRUE')
         groups = [(None, pd.Series(True, index=df.index))]
+        if cost_raw and not split_cost:
+            cv = df[COST_COL].fillna('').astype(str).str.strip()
+            picks = [v.strip() for v in re.split(r'[,/\n]', cost_raw) if v.strip()]
+            groups = [(v, cv == v) for v in picks]
         if split_cost:
             cv = df[COST_COL].fillna('').astype(str).str.strip()
             vals = [v for v in pd.unique(cv[acct_mask]) if v]
