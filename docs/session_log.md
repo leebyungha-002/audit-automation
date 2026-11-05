@@ -3269,3 +3269,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. mapping_list 작성 → data_injector
 
 ---
+
+## 2026-11-05 17:00
+
+**완료 작업**: 15번 감사샘플링 샘플 표의 `비용구분` 열을 비용구분=Y(분리) 행뿐 아니라 원장에 비용구분 값이 있는 계정이면 항상 표시(시트명 불변). samdong 15번 재실행 확인: 전력비 등 제조 계정에 '제조' 표시, 매출·원재료·부재료는 열 없음. 비용구분 컬럼 없는 타사는 영향 없음.
+**변경 파일**: journal_analyzer/main_analyzer.py
+**미해결 이슈**: 없음
+**다음 할 일**:
+1. kindus mapping_list 작성 → data_injector
+2. samdong_material task_list 재실행(04·20번)
+3. 사채 기말 ERP 대사
+
+---
