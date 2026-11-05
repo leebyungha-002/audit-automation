@@ -1111,6 +1111,30 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
 
     out = {'요약': summary, '계정별': stats}
 
+    # 계정별(비용구분): samdong 등 원장에 '비용구분'(판관/제조) 컬럼이 있는 회사 전용.
+    # 같은 계정명이 제조·판관에 함께 쓰이는 경우를 보도록 계정×비용구분 합계를 별도 시트로
+    # 낸다. '계정별' 시트와 TB_TO_GL_TEST는 계정별원장 대사용이라 계정 합계 그대로 둔다
+    # (2026-11-05 blue sky 요청).
+    if '비용구분' in df.columns and not stats.empty:
+        cv = df['비용구분'].fillna('').astype(str).str.strip()
+        sub = df[cv != ''].assign(비용구분=cv[cv != ''])
+        if not sub.empty:
+            g = sub.groupby([COL_ACCOUNT, '비용구분'])
+            split = pd.DataFrame({
+                '전표건수(차)': g[COL_DEBIT].apply(lambda s: int((s != 0).sum())),
+                '차변합계': g[COL_DEBIT].sum(),
+                '전표건수(대)': g[COL_CREDIT].apply(lambda s: int((s != 0).sum())),
+                '대변합계': g[COL_CREDIT].sum(),
+            }).reset_index()
+            n_cost = split.groupby(COL_ACCOUNT)['비용구분'].transform('nunique')
+            split.insert(2, '혼재여부', np.where(n_cost > 1, '제조·판관 혼재', ''))
+            acct_pos = {a: i for i, a in enumerate(stats[COL_ACCOUNT])}
+            cost_order = {'판관': 0, '제조': 1}
+            split['_a'] = split[COL_ACCOUNT].map(acct_pos).fillna(10**9)
+            split['_c'] = split['비용구분'].map(cost_order).fillna(2)
+            split = split.sort_values(['_a', '_c']).drop(columns=['_a', '_c']).reset_index(drop=True)
+            out['계정별(비용구분)'] = split
+
     if _COMPANY_DIR:
         ledger_paths = _find_current_ledger_files(os.path.join(_COMPANY_DIR, 'data', 'current'))
         ledger_tables = []
@@ -2084,6 +2108,9 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
     dates = pd.to_datetime(df[COL_DATE], errors='coerce')
     cond_rows, out, fmt = [], {}, {}
     dir_tag = {'차변': '차', '대변': '대', 'both': '양'}
+    COST_COL = '비용구분'
+    has_cost_col = COST_COL in df.columns
+    _cost_order = {'판관': 0, '제조': 1}
 
     for p in rows:
         acct = _nv(p.get('계정과목', ''))
@@ -2105,132 +2132,154 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             acct_mask &= dates >= start
         if end is not None:
             acct_mask &= dates <= end
-        lines = df[acct_mask].copy()
-        dr, cr = lines[COL_DEBIT].fillna(0), lines[COL_CREDIT].fillna(0)
-        if side == '차변':
-            lines['_amt'] = dr.abs()
-        elif side == '대변':
-            lines['_amt'] = cr.abs()
-        else:
-            lines['_amt'] = dr.abs() + cr.abs()
-        pop = lines[lines['_amt'] > 0].copy()
-        pop['_date'] = dates[pop.index]
-        sort_cols = ['_date'] + ([COL_JOURNAL_ID] if COL_JOURNAL_ID in pop.columns else [])
-        pop = pop.sort_values(sort_cols, kind='stable')
+        # 비용구분(선택, samdong 등 원장에 '비용구분'(판관/제조) 컬럼이 있는 회사 전용):
+        # Y 지정 시 같은 계정을 비용구분별 모집단으로 나눠 각각 샘플크기만큼 추출
+        # (2026-11-05 blue sky 결정 — 구분별 모집단이 다르므로 합계 배분 대신 각각 추출).
+        cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
+        split_cost = has_cost_col and bool(cost_key) and _nv(str(p.get(cost_key, ''))).strip().upper() in ('Y', 'O', 'TRUE')
+        groups = [(None, pd.Series(True, index=df.index))]
+        if split_cost:
+            cv = df[COST_COL].fillna('').astype(str).str.strip()
+            vals = [v for v in pd.unique(cv[acct_mask]) if v]
+            vals.sort(key=lambda v: (_cost_order.get(v, 2), v))
+            if vals:
+                groups = [(v, cv == v) for v in vals]
+                if (acct_mask & (cv == '')).any():
+                    groups.append(('미지정', cv == ''))
+        cond0 = cond
+        for cost_val, grp_mask in groups:
+            lines = df[acct_mask & grp_mask].copy()
+            dr, cr = lines[COL_DEBIT].fillna(0), lines[COL_CREDIT].fillna(0)
+            if side == '차변':
+                lines['_amt'] = dr.abs()
+            elif side == '대변':
+                lines['_amt'] = cr.abs()
+            else:
+                lines['_amt'] = dr.abs() + cr.abs()
+            pop = lines[lines['_amt'] > 0].copy()
+            pop['_date'] = dates[pop.index]
+            sort_cols = ['_date'] + ([COL_JOURNAL_ID] if COL_JOURNAL_ID in pop.columns else [])
+            pop = pop.sort_values(sort_cols, kind='stable')
 
-        # 모집단 대사: 원장(분개장) 해당 계정·기간·방향 합계 vs 모집단 합계
-        ledger_total = float(lines['_amt'].sum())
-        pop_total = float(pop['_amt'].sum())
-        cond.update({'모집단건수': len(pop), '모집단금액': pop_total,
-                     '대사(원장합계)': ledger_total, '대사차이': round(ledger_total - pop_total, 2)})
-        if pop.empty:
-            cond_rows.append({**cond, '비고': '모집단 없음 (계정명·기간·금액타입 확인)'})
-            continue
-
-        rng = np.random.default_rng(_SAMPLING_SEED)
-        reasons = {}
-
-        # ① 개별유의금액 이상 전수 (샘플크기와 별도)
-        key_amt = _sampling_param_amount(p.get('개별유의금액'))
-        if key_amt:
-            for i in pop.index[pop['_amt'] >= key_amt]:
-                reasons[i] = f'개별유의금액 이상 전수({key_amt:,.0f}원↑)'
-        key_n = len(reasons)
-        rest = pop.drop(index=list(reasons))
-
-        # ② 샘플크기 (통계표 사용 시 MUS 공식, 아니면 입력값)
-        size_basis = ''
-        n = int(_ai_param_num(p.get('샘플크기'), _SAMPLING_DEFAULT_SIZE))
-        use_table = _nv(str(p.get('통계표사용', ''))).upper() in ('Y', 'O', 'TRUE')
-        if use_table:
-            conf = _ai_param_num(p.get('신뢰수준'), 0.95)
-            conf = conf / 100 if conf > 1 else conf
-            tm = _sampling_param_amount(p.get('허용왜곡표시'))
-            em = _sampling_param_amount(p.get('예상왜곡표시')) or 0.0
-            if not tm:
-                msg = ('샘플 미추출 — 통계표사용=Y인데 허용왜곡표시가 비어 있음 '
-                       '(허용왜곡표시 금액을 넣거나, 입력한 샘플크기로 뽑으려면 통계표사용=N)')
-                cond_rows.append({**cond, '결과시트': '미추출', '비고': msg})
-                print(f'    [감사샘플링] {acct}: {msg}', flush=True)
+            # 모집단 대사: 원장(분개장) 해당 계정·기간·방향 합계 vs 모집단 합계
+            ledger_total = float(lines['_amt'].sum())
+            pop_total = float(pop['_amt'].sum())
+            cond = dict(cond0)
+            if cost_val is not None:
+                cond['비용구분'] = cost_val
+            cond.update({'모집단건수': len(pop), '모집단금액': pop_total,
+                         '대사(원장합계)': ledger_total, '대사차이': round(ledger_total - pop_total, 2)})
+            if pop.empty:
+                cond_rows.append({**cond, '비고': '모집단 없음 (계정명·기간·금액타입 확인)'})
                 continue
-            try:
-                n, size_basis = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
-            except ValueError as e:
-                cond_rows.append({**cond, '비고': str(e)})
-                continue
-        else:
-            size_basis = f'입력값 {n}건'
 
-        # ③ 이상거래 우선 포함 (샘플크기에 포함): 최대값 + Z-score 3 이상(높은 순).
-        #    금액 분포가 한쪽으로 긴 계정(외상매출금 등)은 Z≥3이 수백 건이라 샘플 전체를
-        #    이상거래가 차지해 버림(2026-10-22 daesun 테스트) → 샘플크기의 20%까지만.
-        anomaly_n = 0
-        if _nv(str(p.get('이상거래포함', ''))).upper() in ('Y', 'O', 'TRUE') and not rest.empty:
-            amt = rest['_amt']
-            sd = amt.std(ddof=0)
-            z = (amt - amt.mean()) / sd if sd > 0 else amt * 0
-            picks = {amt.idxmax(): f'이상거래(최대값, Z={z[amt.idxmax()]:.1f})'}
-            for i in z[z >= 3].sort_values(ascending=False).index:
-                picks.setdefault(i, f'이상거래(Z={z[i]:.1f})')
-            cap = max(1, int(round(n * _SAMPLING_ANOMALY_CAP)))
-            for i in list(picks)[:cap]:
-                reasons[i] = picks[i]
-            anomaly_n = min(len(picks), cap)
-            if len(picks) > cap:
-                cond['이상거래 후보'] = f'{len(picks)}건 중 상위 {cap}건 포함'
-            rest = rest.drop(index=[i for i in rest.index if i in reasons])
+            rng = np.random.default_rng(_SAMPLING_SEED)
+            reasons = {}
 
-        # ④ 나머지를 선택한 방법으로 추출
-        idx, why, extra = _sampling_select(rest, n - anomaly_n, method, rng)
-        reasons.update(why)
+            # ① 개별유의금액 이상 전수 (샘플크기와 별도)
+            key_amt = _sampling_param_amount(p.get('개별유의금액'))
+            if key_amt:
+                for i in pop.index[pop['_amt'] >= key_amt]:
+                    reasons[i] = f'개별유의금액 이상 전수({key_amt:,.0f}원↑)'
+            key_n = len(reasons)
+            rest = pop.drop(index=list(reasons))
 
-        sample = pop.loc[[i for i in pop.index if i in reasons]].copy()
-        sample['선정사유'] = [reasons[i] for i in sample.index]
-        if key_col in df.columns:
-            keys = set(sample[key_col].dropna())
-            others = df[df[key_col].isin(keys) & ~_account_match_flexible(df[COL_ACCOUNT], acct)]
-            per_key = (others.groupby(key_col)[COL_ACCOUNT]
-                       .agg(lambda s: ','.join(pd.unique(s.astype(str)))).to_dict())
-            sample['상대계정'] = sample[key_col].map(per_key).fillna('')
-        else:
-            sample['상대계정'] = ''
+            # ② 샘플크기 (통계표 사용 시 MUS 공식, 아니면 입력값)
+            size_basis = ''
+            n = int(_ai_param_num(p.get('샘플크기'), _SAMPLING_DEFAULT_SIZE))
+            use_table = _nv(str(p.get('통계표사용', ''))).upper() in ('Y', 'O', 'TRUE')
+            if use_table:
+                conf = _ai_param_num(p.get('신뢰수준'), 0.95)
+                conf = conf / 100 if conf > 1 else conf
+                tm = _sampling_param_amount(p.get('허용왜곡표시'))
+                em = _sampling_param_amount(p.get('예상왜곡표시')) or 0.0
+                if not tm:
+                    msg = ('샘플 미추출 — 통계표사용=Y인데 허용왜곡표시가 비어 있음 '
+                           '(허용왜곡표시 금액을 넣거나, 입력한 샘플크기로 뽑으려면 통계표사용=N)')
+                    cond_rows.append({**cond, '결과시트': '미추출', '비고': msg})
+                    print(f'    [감사샘플링] {acct}: {msg}', flush=True)
+                    continue
+                try:
+                    n, size_basis = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
+                except ValueError as e:
+                    cond_rows.append({**cond, '비고': str(e)})
+                    continue
+            else:
+                size_basis = f'입력값 {n}건'
 
-        tbl = pd.DataFrame({
-            'No': range(1, len(sample) + 1),
-            '전표일자': sample['_date'].dt.strftime('%Y-%m-%d').values,
-            '전표번호': sample[COL_JOURNAL_ID].values if COL_JOURNAL_ID in sample.columns else '',
-            '계정명': sample[COL_ACCOUNT].values,
-            '거래처명': sample[COL_CLIENT].values if COL_CLIENT in sample.columns else '',
-            '적요': sample[COL_DESC].values if COL_DESC in sample.columns else '',
-            '차변': sample[COL_DEBIT].values, '대변': sample[COL_CREDIT].values,
-            '샘플금액': sample['_amt'].values,
-            '상대계정': sample['상대계정'].values,
-            '선정사유': sample['선정사유'].values,
-        })
-        for c in _EVIDENCE_COLS:
-            tbl[c] = ''
+            # ③ 이상거래 우선 포함 (샘플크기에 포함): 최대값 + Z-score 3 이상(높은 순).
+            #    금액 분포가 한쪽으로 긴 계정(외상매출금 등)은 Z≥3이 수백 건이라 샘플 전체를
+            #    이상거래가 차지해 버림(2026-10-22 daesun 테스트) → 샘플크기의 20%까지만.
+            anomaly_n = 0
+            if _nv(str(p.get('이상거래포함', ''))).upper() in ('Y', 'O', 'TRUE') and not rest.empty:
+                amt = rest['_amt']
+                sd = amt.std(ddof=0)
+                z = (amt - amt.mean()) / sd if sd > 0 else amt * 0
+                picks = {amt.idxmax(): f'이상거래(최대값, Z={z[amt.idxmax()]:.1f})'}
+                for i in z[z >= 3].sort_values(ascending=False).index:
+                    picks.setdefault(i, f'이상거래(Z={z[i]:.1f})')
+                cap = max(1, int(round(n * _SAMPLING_ANOMALY_CAP)))
+                for i in list(picks)[:cap]:
+                    reasons[i] = picks[i]
+                anomaly_n = min(len(picks), cap)
+                if len(picks) > cap:
+                    cond['이상거래 후보'] = f'{len(picks)}건 중 상위 {cap}건 포함'
+                rest = rest.drop(index=[i for i in rest.index if i in reasons])
 
-        sname = _safe_sheet(f'{acct}_{dir_tag[side]}')
-        while sname in out:      # 같은 계정·방향을 방법만 달리 여러 줄 적은 경우
-            sname = _safe_sheet(f'{acct}_{dir_tag[side]}_{method}')
-            if sname in out:
-                sname = _safe_sheet(f'{sname}{len(out)}')
-        out[sname] = tbl
-        fmt[sname] = {'차변': '#,##0', '대변': '#,##0', '샘플금액': '#,##0'}
+            # ④ 나머지를 선택한 방법으로 추출
+            idx, why, extra = _sampling_select(rest, n - anomaly_n, method, rng)
+            reasons.update(why)
 
-        sample_total = float(sample['_amt'].sum())
-        cond.update({
-            '샘플크기 근거': size_basis,
-            '개별유의 전수': key_n, '이상거래': anomaly_n, '방법추출': len(idx),
-            '샘플합계건수': len(sample), '샘플금액': sample_total,
-            '금액커버리지': f'{sample_total / pop_total:.1%}' if pop_total else '-',
-            '추출조건': ', '.join(f'{k} {v}' for k, v in extra.items()),
-            '시드': _SAMPLING_SEED, '결과시트': sname,
-            '비고': '' if len(idx) + anomaly_n >= min(n, len(pop) - key_n) else '모집단이 샘플크기보다 작아 전체 추출',
-        })
-        cond_rows.append(cond)
-        print(f'    [감사샘플링] {acct}({side}, {method}) 모집단 {len(pop):,}건 → 샘플 {len(sample)}건 '
-              f'(전수 {key_n}·이상 {anomaly_n}·{method} {len(idx)})', flush=True)
+            sample = pop.loc[[i for i in pop.index if i in reasons]].copy()
+            sample['선정사유'] = [reasons[i] for i in sample.index]
+            if key_col in df.columns:
+                keys = set(sample[key_col].dropna())
+                others = df[df[key_col].isin(keys) & ~_account_match_flexible(df[COL_ACCOUNT], acct)]
+                per_key = (others.groupby(key_col)[COL_ACCOUNT]
+                           .agg(lambda s: ','.join(pd.unique(s.astype(str)))).to_dict())
+                sample['상대계정'] = sample[key_col].map(per_key).fillna('')
+            else:
+                sample['상대계정'] = ''
+
+            tbl = pd.DataFrame({
+                'No': range(1, len(sample) + 1),
+                '전표일자': sample['_date'].dt.strftime('%Y-%m-%d').values,
+                '전표번호': sample[COL_JOURNAL_ID].values if COL_JOURNAL_ID in sample.columns else '',
+                '계정명': sample[COL_ACCOUNT].values,
+                '거래처명': sample[COL_CLIENT].values if COL_CLIENT in sample.columns else '',
+                '적요': sample[COL_DESC].values if COL_DESC in sample.columns else '',
+                '차변': sample[COL_DEBIT].values, '대변': sample[COL_CREDIT].values,
+                '샘플금액': sample['_amt'].values,
+                '상대계정': sample['상대계정'].values,
+                '선정사유': sample['선정사유'].values,
+            })
+            if cost_val is not None:
+                tbl.insert(4, '비용구분', sample[COST_COL].values)
+            for c in _EVIDENCE_COLS:
+                tbl[c] = ''
+
+            base = f'{acct}_{cost_val}' if cost_val is not None else acct
+            sname = _safe_sheet(f'{base}_{dir_tag[side]}')
+            while sname in out:      # 같은 계정·방향을 방법만 달리 여러 줄 적은 경우
+                sname = _safe_sheet(f'{base}_{dir_tag[side]}_{method}')
+                if sname in out:
+                    sname = _safe_sheet(f'{sname}{len(out)}')
+            out[sname] = tbl
+            fmt[sname] = {'차변': '#,##0', '대변': '#,##0', '샘플금액': '#,##0'}
+
+            sample_total = float(sample['_amt'].sum())
+            cond.update({
+                '샘플크기 근거': size_basis,
+                '개별유의 전수': key_n, '이상거래': anomaly_n, '방법추출': len(idx),
+                '샘플합계건수': len(sample), '샘플금액': sample_total,
+                '금액커버리지': f'{sample_total / pop_total:.1%}' if pop_total else '-',
+                '추출조건': ', '.join(f'{k} {v}' for k, v in extra.items()),
+                '시드': _SAMPLING_SEED, '결과시트': sname,
+                '비고': '' if len(idx) + anomaly_n >= min(n, len(pop) - key_n) else '모집단이 샘플크기보다 작아 전체 추출',
+            })
+            cond_rows.append(cond)
+            print(f'    [감사샘플링] {acct}{"(" + cost_val + ")" if cost_val else ""}({side}, {method}) 모집단 {len(pop):,}건 → 샘플 {len(sample)}건 '
+                  f'(전수 {key_n}·이상 {anomaly_n}·{method} {len(idx)})', flush=True)
 
     result = {'샘플링조건': pd.DataFrame(cond_rows)}
     result.update(out)
