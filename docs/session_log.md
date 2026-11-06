@@ -3317,3 +3317,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. kindus mapping_list 작성 → data_injector
 
 ---
+
+## 2026-11-06 (kindus 15번 판관비·제조경비 통합)
+
+**완료 작업**: kindus 15번이 계정별 시트로 나오던 원인 = task_list 15번에 `비용구분` 열이 없었음(엔진 문제 아님). O열 `비용구분` 추가해 (판)→판관, (제)→제조 입력(자산·보증금 계정은 빈칸). 15번 단독 재실행: 샘플링조건 + 판관비(퇴직급여(판) 포함 7계정) + 제조경비(퇴직급여(제)) + 자산 4계정 시트 = 7시트.
+**변경 파일**: journal_analyzer/kindus/task_list_kindus.xlsx
+**미해결 이슈**: kindus 분석결과_kindus.xlsx(전체 실행본)는 아직 계정별 15번 시트 — 전체 재실행 필요. mapping_list가 15번 계정별 시트명을 참조하면 수정 필요
+**다음 할 일**:
+1. kindus 전체 재실행(분석결과 파일 닫은 뒤)
+2. kindus task_list 4번 '전체' 전환 여부 결정
+3. kindus mapping_list 작성 → data_injector
+
+---
