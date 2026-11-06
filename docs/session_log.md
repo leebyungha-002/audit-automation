@@ -3305,3 +3305,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. samdong_material task_list 재실행(04·20번)
 
 ---
+
+## 2026-11-06 (samdong_material 15번 판관비·제조경비 통합)
+
+**완료 작업**: 15번 비용구분 통합 시트를 원장에 비용구분 컬럼이 없는 회사에도 적용 — task_list 15번 `비용구분` 열 값(판관/제조)을 모집단 필터 없이 통합 시트 배치 기준으로만 사용(계정명 자체가 (제)/(판)으로 갈리는 samdong_material용). samdong_material task_list 15번에 비용구분 열 추가·(제)→제조/(판)→판관 입력. 실행 결과: 제품매출_대(10건) + 판관비(4건) + 제조경비(9건). 비용구분 컬럼 있는 samdong 경로는 그대로.
+**변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/samdong_material/task_list_samdong_material.xlsx
+**미해결 이슈**: samdong_material mapping_list가 15번 계정별 시트명을 참조하고 있으면 판관비/제조경비 시트로 수정 필요
+**다음 할 일**:
+1. samdong_material mapping_list 15번 시트 참조 확인
+2. kindus task_list 4번 '전체' 전환 여부 결정
+3. kindus mapping_list 작성 → data_injector
+
+---

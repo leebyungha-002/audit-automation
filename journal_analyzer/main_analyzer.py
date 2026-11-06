@@ -2173,10 +2173,17 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
         # 값에 '판관'·'제조'(콤마로 복수 가능)를 적으면 그 구분만 모집단으로 추출
         # (2026-11-05 blue sky 요청). Y = 원장에 있는 구분 전부 각각.
         cost_key = next((k for k in p.keys() if '비용구분' in str(k)), None)
-        cost_raw = _nv(str(p.get(cost_key, ''))).strip() if (has_cost_col and cost_key) else ''
-        split_cost = cost_raw.upper() in ('Y', 'O', 'TRUE')
+        cost_raw = _nv(str(p.get(cost_key, ''))).strip() if cost_key else ''
+        split_cost = has_cost_col and cost_raw.upper() in ('Y', 'O', 'TRUE')
         groups = [(None, pd.Series(True, index=df.index))]
-        if cost_raw and not split_cost:
+        if cost_raw and not has_cost_col:
+            # 원장에 비용구분 컬럼이 없고 계정명 자체로 판관/제조가 갈리는 회사
+            # (samdong_material: '복리후생비(제)'·'운반비(판)'): task_list 비용구분 값은
+            # 모집단 필터 없이 통합 시트(판관비/제조경비) 배치 기준으로만 쓴다
+            # (2026-11-06 blue sky 요청).
+            if cost_raw in _COST_SHEET_NAMES:
+                groups = [(cost_raw, pd.Series(True, index=df.index))]
+        elif cost_raw and not split_cost:
             cv = df[COST_COL].fillna('').astype(str).str.strip()
             picks = [v.strip() for v in re.split(r'[,/\n]', cost_raw) if v.strip()]
             groups = [(v, cv == v) for v in picks]
@@ -2302,6 +2309,8 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
                 cvals = sample[COST_COL].fillna('').astype(str).str.strip()
                 if cost_val is not None or (cvals != '').any():
                     tbl.insert(4, '비용구분', cvals.values)
+            elif cost_val is not None:
+                tbl.insert(4, '비용구분', cost_val)
             for c in _EVIDENCE_COLS:
                 tbl[c] = ''
 
