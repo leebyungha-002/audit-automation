@@ -3293,3 +3293,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 2. samdong_material task_list 재실행(04·20번)
 
 ---
+
+## 2026-11-06 (4번 전기 TB_TO_GL_TEST)
+
+**완료 작업**: 4번 데이터개요를 기간별로 분리 — 분석대상 '전체'면 당기 시트(기존 이름 그대로) + 전기 시트(`전기_요약`·`전기_계정별`·`전기_계정별원장_잔액표`·`전기_기말잔액(TB_TO_GL_TEST)`)를 따로 출력, '전기'면 전기 시트만. 전기 TB는 data/previous 전기 계정별원장과 대사. 이전엔 '전체'면 당기+전기 전표를 합산해 당기 원장과 대사하는 오류. 전기 시트명은 mapping_list 부분일치(`계정별_기말잔액(TB_TO_GL_TEST)`)에 안 걸리게 지음. 분석기간 헤더도 시트별 기간만 표시. kindus 4번 '전체' 테스트: 당기 117계정·전기 126계정 모두 차이 0. 모든 회사 task_list 4번이 '당기'라 타사 영향 없음.
+**변경 파일**: journal_analyzer/main_analyzer.py
+**미해결 이슈**: kindus task_list 4번 분석대상은 아직 '당기'(전기 TB 원하면 '전체'로 변경 필요)
+**다음 할 일**:
+1. kindus task_list 4번 '전체' 전환 여부 결정 → mapping_list에 전기 TB 시트 연결
+2. kindus mapping_list 작성 → data_injector
+3. samdong_material task_list 재실행(04·20번)
+
+---

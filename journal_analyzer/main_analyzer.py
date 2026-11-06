@@ -58,7 +58,8 @@ task_list 파라미터 시트 규격:
   계정별상세내역 : 계정과목 / 금액유형(차변·대변·both) / 실행여부 / 표시방식(통합·분리, 빈칸=통합)
   벤포드이탈   : 계정과목 / 금액열 / 임계값 / 최대건수 / 실행여부
 
-4번(데이터개요) 부가 기능 — 당기 계정별원장 기초/기말잔액표:
+4번(데이터개요) 부가 기능 — 계정별원장 기초/기말잔액표:
+  분석대상 당기=data/current, 전기=data/previous, 전체=당기·전기 시트를 따로('전기_' 접두어).
   data/current 폴더에 파일명에 '계정별원장'이 들어간 xlsx가 있으면(파라미터 불필요,
   회사 무관 자동 감지), 4번 실행 시 '계정별원장_잔액표' 시트를 추가로 만든다.
   시트 1개 = 계정 1개(예: '0_당좌예금(10200)') 형식을 전제로 시트명 앞의 순번 접두어와
@@ -1094,6 +1095,35 @@ def _build_ledger_balance_table(ledger_path: str) -> pd.DataFrame:
 
 # ── 4. 데이터 개요 ────────────────────────────────────────────────────────────
 def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
+    """4. 데이터 개요 — 분석대상(구분)에 따라 기간별로 따로 만든다.
+    당기: 기존 시트명 그대로(data/current 계정별원장과 대사).
+    전기: 시트명 앞에 '전기_'(data/previous 전기 계정별원장과 대사).
+    전체: 당기 시트 + 전기 시트를 따로 출력 — 당기·전기 전표를 합산하면 당기 원장과
+    대사하는 TB_TO_GL_TEST가 틀어지므로 절대 합치지 않는다(2026-11-06 blue sky 요청).
+    전기 시트명은 mapping_list가 부분일치로 찾는 당기 시트명('계정별_기말잔액(TB_TO_GL_TEST)'
+    등)을 포함하지 않도록 '전기_기말잔액(TB_TO_GL_TEST)'처럼 짓고, 당기 시트 뒤에 둔다."""
+    periods = (set(df['구분'].dropna().astype(str)) if '구분' in df.columns else set())
+    if '전기' not in periods:
+        return _data_overview_one(df, '당기')
+    out = {}
+    if '당기' in periods:
+        out.update(_data_overview_one(df[df['구분'] == '당기'], '당기'))
+    prev = _data_overview_one(df[df['구분'] == '전기'], '전기')
+    rename = {k: ('전기_기말잔액(TB_TO_GL_TEST)' if k == '계정별_기말잔액(TB_TO_GL_TEST)'
+                  else f'전기_{k}') for k in prev if not k.startswith('_')}
+    for k, v in prev.items():
+        if k.startswith('_'):
+            if isinstance(v, dict):
+                out.setdefault(k, {}).update({rename.get(sk, sk): sv for sk, sv in v.items()})
+            continue
+        out[rename[k]] = v
+    return out
+
+
+def _data_overview_one(df: pd.DataFrame, period: str) -> dict:
+    """한 기간(당기/전기) 분의 데이터 개요. 계정별원장은 당기=data/current,
+    전기=data/previous에서 읽는다."""
+    ledger_sub = 'current' if period == '당기' else 'previous'
     summary = pd.DataFrame({
         '항목': ['총 행수','총 차변','총 대변','계정 수','시작일','종료일'],
         '값': [len(df),
@@ -1139,7 +1169,7 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
             out['계정별(비용구분)'] = split
 
     if _COMPANY_DIR:
-        ledger_paths = _find_current_ledger_files(os.path.join(_COMPANY_DIR, 'data', 'current'))
+        ledger_paths = _find_current_ledger_files(os.path.join(_COMPANY_DIR, 'data', ledger_sub))
         ledger_tables = []
         for path in ledger_paths:
             t = _build_ledger_balance_table(path)
@@ -1212,13 +1242,13 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
 
                 field_notes = {
                     '기초잔액':
-                        "출처: 계정별원장(data/current 원장 파일) — 각 계정 시트의 "
+                        f"출처: {period} 계정별원장(data/{ledger_sub} 원장 파일) — 각 계정 시트의 "
                         "'전기이월'/'기초잔액' 행 차변·대변에서 추출.",
                     '차변합계':
-                        "출처: 분개장(당기 전표) — '04_데이터개요_계정별' 시트와 동일한 합계"
+                        f"출처: 분개장({period} 전표) — 같은 기간 '계정별' 시트와 동일한 합계"
                         "(계정별원장이 아님).",
                     '대변합계':
-                        "출처: 분개장(당기 전표) — '04_데이터개요_계정별' 시트와 동일한 합계"
+                        f"출처: 분개장({period} 전표) — 같은 기간 '계정별' 시트와 동일한 합계"
                         "(계정별원장이 아님).",
                     '기말잔액(분개장기준)':
                         "계산식(구분에 따라 자동 선택): 자산/비용 = 기초잔액+차변합계-대변합계 / "
@@ -1233,7 +1263,7 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                         "표시잔액이 불일치 — 전기말수정분개·원장 갱신 누락·계정명 매칭 실패 등 "
                         "원인 확인 필요.",
                     '구분':
-                        "당기 계정별원장의 거래·기초잔액 부호로 자동 판정한 계정 성격.",
+                        f"{period} 계정별원장의 거래·기초잔액 부호로 자동 판정한 계정 성격.",
                     '분류':
                         "자산/부채/자본/수익/비용 — 계정명 키워드·구분·기초잔액으로 자동 판정"
                         "(정렬용, 판정 못 하면 기타). 같은 분류 안은 계정별원장 나열 순서.",
@@ -1249,7 +1279,7 @@ def analyze_data_overview(df: pd.DataFrame, params_list: list) -> dict:
                                       '기말잔액 = 기초잔액+차변합계-대변합계',
                     '검증필요':       '원장상 잔액이 자산형·부채형 계산식 어느 쪽과도 맞지 않아 '
                                       '자동판정 실패(원장 데이터 확인 필요).',
-                    '데이터없음':     '당기 계정별원장에 기초잔액도 당기 거래도 없는 휴면 계정.',
+                    '데이터없음':     f'{period} 계정별원장에 기초잔액도 {period} 거래도 없는 휴면 계정.',
                     '원장매칭안됨':   '분개장에는 있으나 계정별원장에서 동일 계정명을 찾지 못해 '
                                       '매칭 실패(기초잔액·기말잔액(원장) 0으로 처리됨).',
                 }
@@ -4596,13 +4626,18 @@ def main():
                 # (2026-09-14 실제 발견: _benford_images가 여기 섞여 들어가면서
                 # 벤포드 차트 이미지가 전부 빠짐).
                 normal_items = [(k, v) for k, v in result.items() if not k.startswith('_')]
+                # 분석대상 '전체'인데 결과가 기간별로 나뉜 경우(4번: '전기_' 시트 별도) —
+                # 분석기간 헤더도 시트마다 그 기간만 표시한다.
+                split_period = (분석대상 == '전체'
+                                and any(k.startswith('전기_') for k, _ in normal_items))
                 for sname, sub_df in normal_items:
                     internal_key = _safe_sheet(f'{task_no:02d}_{sname}')
                     all_results[internal_key] = sub_df
                     sheet_prefix_map[internal_key] = f'{task_no:02d}_{task_name}'
                     sheet_final_suffix[internal_key] = sname
                     if end_month: sheet_end_month[internal_key] = end_month
-                    sheet_target[internal_key] = 분석대상
+                    sheet_target[internal_key] = (
+                        ('전기' if sname.startswith('전기_') else '당기') if split_period else 분석대상)
                     key_map[sname] = internal_key
                 for skey, sval in result.items():
                     if not skey.startswith('_'):
