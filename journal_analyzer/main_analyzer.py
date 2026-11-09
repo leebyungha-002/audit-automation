@@ -2996,17 +2996,23 @@ def analyze_client_detail(df: pd.DataFrame, params_list: list) -> dict:
         # 기존엔 파라미터에 걸린 계정을 전부 합쳐 월별 1줄로만 보여줘 계정별 구분이
         # 안 되고 거래처명도 빠져 있었음). 행 = 거래처명×계정명(×관리단위·비용구분,
         # 지정 시), 열 = 실제 발생월(YM) + 기간 전체 차변/대변/합계.
+        # 월별 칸은 차변/대변 열로 나눠 출력(2026-11-09 blue sky 요청 — 기존엔 차변+대변을
+        # 더한 값 한 칸이라 외상매출금처럼 양방향 계정은 발생·회수가 섞여 의미가 불분명했음).
+        # 열 순서: 2025-01_차변, 2025-01_대변, 2025-02_차변, ...
         ym_cols = sorted(filtered['YM'].dropna().unique().tolist())
-        filtered['순액'] = filtered[COL_DEBIT].fillna(0) + filtered[COL_CREDIT].fillna(0)
         group_cols = [COL_CLIENT, COL_ACCOUNT] + extra_cols
         # 거래처명 빈칸(NaN) 행은 pivot/groupby에서 통째로 빠지므로 표시용 값으로 채워 집계
         # (적요만으로 추출하면 거래처 없는 거래가 많아 월별합산이 상세보다 작게 나왔음, 2026-10-26)
         gsrc = filtered.assign(**{COL_CLIENT: filtered[COL_CLIENT].fillna('').astype(str)
-                                  .str.strip().replace('', '(거래처 미기재)')})
-        pivot = (gsrc.pivot_table(index=group_cols, columns='YM',
-                                   values='순액', aggfunc='sum', fill_value=0)
-                 .reindex(columns=ym_cols, fill_value=0)
-                 .reset_index())
+                                  .str.strip().replace('', '(거래처 미기재)'),
+                                  COL_DEBIT: filtered[COL_DEBIT].fillna(0),
+                                  COL_CREDIT: filtered[COL_CREDIT].fillna(0)})
+        pv = gsrc.pivot_table(index=group_cols, columns='YM',
+                              values=[COL_DEBIT, COL_CREDIT], aggfunc='sum', fill_value=0)
+        ym_side_cols = [(side_col, ym) for ym in ym_cols for side_col in (COL_DEBIT, COL_CREDIT)]
+        pv = pv.reindex(columns=pd.MultiIndex.from_tuples(ym_side_cols), fill_value=0)
+        pv.columns = [f"{ym}_{'차변' if side_col == COL_DEBIT else '대변'}" for side_col, ym in pv.columns]
+        pivot = pv.reset_index()
         totals = (gsrc.groupby(group_cols)
                   .agg(차변합계=(COL_DEBIT, 'sum'), 대변합계=(COL_CREDIT, 'sum'))
                   .reset_index())
