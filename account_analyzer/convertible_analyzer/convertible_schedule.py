@@ -141,6 +141,7 @@ def build_terms(path):
             '전환청구시작일': _date(r.get('전환청구시작일')) or issue,
             '전환청구종료일': _date(r.get('전환청구종료일')) or mat,
             '시장이자율': _pct(r.get('일반사채시장이자율(%)')),
+            '부채요소금액': _num(r.get('부채요소금액(원)')),
             '리픽싱': str(r.get('리픽싱(Y/N)') or '').strip().upper() == 'Y',
             '현금흐름': flows,
             '현금흐름_이자': [(d, a) for d, a in flows],  # 격자용(만기분 포함 전체)
@@ -183,11 +184,36 @@ def build_terms(path):
             continue
         f = _pct(r.get('행사가능비율(%)'), 0.0)
         holder = str(r.get('보유자') or '').strip()
-        t['calls'].append({'시작일': d0, '종료일': d1, '가격함수': fn, '행사가능비율': f, '보유자': holder})
+        method = str(r.get('평가방법') or '').strip()
+        method = '콜행사반영' if method == '콜행사반영' else '별도격자'
+        asset = str(r.get('자산인식(Y/N)') or '').strip().upper() == 'Y'
+        t['calls'].append({'시작일': d0, '종료일': d1, '가격함수': fn, '행사가능비율': f, '보유자': holder,
+                           '평가방법': method, '자산인식': asset})
         t['call_rows'].append({'행사시작일': d0, '행사종료일': d1, '행사가수익률': y, '행사가율': fixed,
-                               '행사가능비율': f, '보유자': holder})
+                               '행사가능비율': f, '보유자': holder, '평가방법': method,
+                               '자산인식': 'Y' if asset else 'N'})
     for t in out.values():
         t['puts'].sort()
+    return out
+
+
+TENOR_COLS = [('3M', 0.25), ('6M', 0.5), ('9M', 0.75), ('1Y', 1), ('1.5Y', 1.5), ('2Y', 2), ('2.5Y', 2.5),
+              ('3Y', 3), ('4Y', 4), ('5Y', 5), ('7Y', 7), ('10Y', 10)]
+
+
+def load_curves(path):
+    """'금리기간구조' 시트 → {(회차, 평가기준일): {'무위험': Curve, '위험': Curve}}."""
+    out = {}
+    for r in _read_sheet(path, '금리기간구조'):
+        d = _date(r.get('평가기준일'))
+        kind = str(r.get('구분') or '').strip()
+        kind = '무위험' if '무위험' in kind or '국고' in kind else ('위험' if kind else '')
+        if not d or not kind:
+            continue
+        pts = [(tn, _pct(r.get(col))) for col, tn in TENOR_COLS if _pct(r.get(col)) is not None]
+        if len(pts) < 2:
+            continue
+        out.setdefault((r['회차'], d), {})[kind] = E.Curve([p[0] for p in pts], [p[1] for p in pts])
     return out
 
 
@@ -208,18 +234,118 @@ def fy_bounds(fy: int, fiscal_month: int, interim_month=None):
 
 # ─── 회차별 계산 ─────────────────────────────────────────────────────────────
 
-def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, steps):
+def _shift(r, dx):
+    """금리(단일 또는 Curve)를 dx 만큼 평행이동."""
+    if isinstance(r, E.Curve):
+        if r.flat is not None:
+            return E.Curve(flat=r.flat + dx)
+        c = E.Curve.__new__(E.Curve)
+        c.__dict__.update(r.__dict__)
+        c.logdf = r.logdf - dx * r.t   # 연속복리 근사 평행이동
+        return c
+    return r + dx
+
+
+def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, steps, curves=None):
     k = t['회차']
     res = {'회차': k, 'terms': t, 'checks': []}
     chk = res['checks']
     flows = t['현금흐름']
+    curves = curves or {}
+    vals, sens, issue_val = [], [], None
 
-    # ① 발행시 분리
-    if t['시장이자율'] is None:
-        chk.append(('오류', '일반사채시장이자율 미입력 — 부채요소 측정 불가'))
+    def outstanding(dd):
+        o = t['액면']
+        for e in events_raw:
+            ed = _date(e.get('일자'))
+            if ed and ed <= dd and dd > t['발행일']:
+                o -= _num(e.get('액면금액(원)'), 0.0)
+        return max(o, 0.0)
+
+    # ① 공정가치 재계산 (부채요소 측정에 발행일 평가액을 쓰므로 회계처리보다 먼저)
+    for v in vals_raw:
+        vd = _date(v.get('평가기준일'))
+        if not vd or vd >= t['만기일']:
+            continue
+        cv = curves.get((k, vd), {})
+        mkt = {'주가': _num(v.get('주가(원)')), '변동성': _pct(v.get('변동성(%)')),
+               '무위험이자율': cv.get('무위험', _pct(v.get('무위험이자율(%)'), 0.0)),
+               '신용위험조정할인율': cv.get('위험', _pct(v.get('신용위험조정할인율(%)'), 0.0)),
+               '배당수익률': _pct(v.get('배당수익률(%)'), 0.0)}
+        rate_src = '기간구조' if cv else '단일금리'
+        if not mkt['주가'] or not mkt['변동성']:
+            chk.append(('확인', f'평가시점 {vd}: 주가·변동성 누락 — 공정가치 재계산 생략'))
+            continue
+        o = outstanding(vd)
+        c = E.value_components(t, mkt, vd, steps)
+        row = {'평가기준일': vd, '미상환액면': o, **{kk: vv * o for kk, vv in c.items()}, '시장변수': mkt,
+               '금리': rate_src}
+        ext = {}
+        for col, key in (('외부평가_전환사채총가치(원)', '총가치'), ('외부평가_주계약(원)', '일반사채'),
+                         ('외부평가_일반사채(원)', '일반사채'),
+                         ('외부평가_전환권(원)', '전환권'), ('외부평가_조기상환청구권(원)', '조기상환청구권'),
+                         ('외부평가_매도청구권(원)', '매도청구권')):
+            ev = _num(v.get(col))
+            if ev is not None:
+                ext[key] = abs(ev) if key == '매도청구권' else ev  # 보고서는 콜을 (−)로 표시하기도 함
+        row['외부'] = ext
+        vals.append(row)
+        for key, ev in ext.items():
+            ours = row[key]
+            if abs(ev - ours) > max(TOL_AMT, abs(ev) * 0.05):
+                chk.append(('확인', f'{vd} {key}: 외부평가 {ev:,.0f} vs 재계산 {ours:,.0f} '
+                                   f'(차이 {(ours - ev) / ev if ev else 0:+.1%}) — 가정·모형 차이 검토'))
+        if vd == t['발행일'] and t['발행가액']:
+            issue_val = row
+            gap = row['총가치'] - t['발행가액']
+            if abs(gap) > t['발행가액'] * 0.05:
+                chk.append(('확인', f'발행일 재계산 공정가치가 발행가액과 {gap / t["발행가액"]:+.1%} 차이 — '
+                                   '잔여법으로 자본요소에 흡수됨(K-IFRS 1032.31). 시장변수 적정성 검토'))
+            if '총가치' in ext and abs(ext['총가치'] - t['발행가액']) > t['발행가액'] * 0.05:
+                chk.append(('확인', f"평가보고서 CB 전체 공정가치 {ext['총가치']:,.0f}가 발행가액과 "
+                                   f"{(ext['총가치'] - t['발행가액']) / t['발행가액']:+.1%} 차이 — 발행조건 적정성·Day-1 차이 검토"))
+        # 민감도
+        base = row['총가치']
+        for label, mk in (('변동성 -5%p', dict(mkt, 변동성=max(mkt['변동성'] - 0.05, 0.01))),
+                          ('변동성 +5%p', dict(mkt, 변동성=mkt['변동성'] + 0.05)),
+                          ('신용할인율 -1%p', dict(mkt, 신용위험조정할인율=_shift(mkt['신용위험조정할인율'], -0.01))),
+                          ('신용할인율 +1%p', dict(mkt, 신용위험조정할인율=_shift(mkt['신용위험조정할인율'], 0.01))),
+                          ('주가 -10%', dict(mkt, 주가=mkt['주가'] * 0.9)),
+                          ('주가 +10%', dict(mkt, 주가=mkt['주가'] * 1.1))):
+            cc = E.value_components(t, mk, vd, steps)
+            sens.append({'평가기준일': vd, '시나리오': label, '총가치': cc['총가치'] * o,
+                         '전환권': cc['전환권'] * o, '총가치 변동': cc['총가치'] * o - base,
+                         '변동률': (cc['총가치'] * o - base) / base if base else 0.0})
+    res['valuation'] = vals
+    res['sensitivity'] = sens
+
+    # ② 발행시 분리 — 부채요소: 입력값 > 발행일 평가(주계약+조기상환권) > 시장이자율 할인
+    if t['부채요소금액']:
+        liab, liab_src = t['부채요소금액'], '입력값(부채요소금액)'
+    elif issue_val:
+        liab, liab_src = issue_val['일반사채_Put포함'], '발행일 재계산(주계약+조기상환권)'
+    elif t['시장이자율'] is not None:
+        liab = t['액면'] * E.pv(flows, t['발행일'], t['시장이자율'])
+        liab_src = f"시장이자율 {t['시장이자율']:.3%} 할인(조기상환권 미반영)"
+    else:
+        chk.append(('오류', '부채요소금액·발행일 평가시점·일반사채시장이자율 모두 없음 — 부채요소 측정 불가'))
         return res
-    split = E.initial_split(t['발행가액'], t['액면'], flows, t['발행일'], t['시장이자율'], t['거래비용'])
+    call_asset = 0.0
+    if any(c['자산인식'] for c in t['calls']):
+        if issue_val:
+            call_asset = issue_val['매도청구권']
+        else:
+            chk.append(('확인', '매도청구권 자산인식(Y)이나 발행일 평가시점 없음 — 콜 자산 0으로 처리'))
+    split = E.initial_split(t['발행가액'], t['액면'], flows, t['발행일'], liab, t['거래비용'], call_asset)
+    split['부채요소_출처'] = liab_src
     res['split'] = split
+    # 평가보고서 기준 분리(대사용): 부채 = 주계약 + 조기상환권, 콜 자산 = 매도청구권
+    if issue_val and {'일반사채', '조기상환청구권'} <= set(issue_val['외부']):
+        ex = issue_val['외부']
+        rl = ex['일반사채'] + ex['조기상환청구권']
+        rc = ex.get('매도청구권', 0.0) if any(c['자산인식'] for c in t['calls']) else 0.0
+        res['split_report'] = {'부채요소': rl, '매도청구권_자산': rc,
+                               '자본요소': t['발행가액'] - rl + rc}
     if split['전환권대가'] < 0:
         chk.append(('확인', f"전환권대가가 음수({split['전환권대가']:,.0f}) — 시장이자율이 YTM보다 낮음, 입력 확인"))
 
@@ -340,57 +466,6 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
             else:
                 chk.append(('정보', '결산일+1년 이내 조기상환청구일·만기 없음 → 비유동 분류 가능'))
 
-    # ④ 공정가치 재계산
-    vals = []
-    sens = []
-    for v in vals_raw:
-        vd = _date(v.get('평가기준일'))
-        if not vd or vd >= t['만기일']:
-            continue
-        mkt = {'주가': _num(v.get('주가(원)')), '변동성': _pct(v.get('변동성(%)')),
-               '무위험이자율': _pct(v.get('무위험이자율(%)'), 0.0),
-               '신용위험조정할인율': _pct(v.get('신용위험조정할인율(%)'), 0.0),
-               '배당수익률': _pct(v.get('배당수익률(%)'), 0.0)}
-        if not mkt['주가'] or not mkt['변동성']:
-            chk.append(('확인', f'평가시점 {vd}: 주가·변동성 누락 — 공정가치 재계산 생략'))
-            continue
-        o = state(vd)['미상환액면'] if vd > t['발행일'] else t['액면']
-        c = E.value_components(t, mkt, vd, steps)
-        row = {'평가기준일': vd, '미상환액면': o, **{kk: vv * o for kk, vv in c.items()}, '시장변수': mkt}
-        ext = {}
-        for col, key in (('외부평가_전환사채총가치(원)', '총가치'), ('외부평가_일반사채(원)', '일반사채_Put포함'),
-                         ('외부평가_전환권(원)', '전환권'), ('외부평가_조기상환청구권(원)', '조기상환청구권'),
-                         ('외부평가_매도청구권(원)', '매도청구권')):
-            ev = _num(v.get(col))
-            if ev is not None:
-                ext[key] = ev
-        row['외부'] = ext
-        vals.append(row)
-        for key, ev in ext.items():
-            ours = row[key]
-            if abs(ev - ours) > max(TOL_AMT, abs(ev) * 0.05):
-                chk.append(('확인', f'{vd} {key}: 외부평가 {ev:,.0f} vs 재계산 {ours:,.0f} '
-                                   f'(차이 {(ours - ev) / ev if ev else 0:+.1%}) — 가정·모형 차이 검토'))
-        if vd == t['발행일'] and t['발행가액']:
-            gap = row['총가치'] - t['발행가액']
-            if abs(gap) > t['발행가액'] * 0.05:
-                chk.append(('확인', f'발행일 재계산 공정가치가 발행가액과 {gap / t["발행가액"]:+.1%} 차이 — '
-                                   '시장변수(신용할인율·변동성) 적정성 검토'))
-        # 민감도
-        base = row['총가치']
-        for label, mk in (('변동성 -5%p', dict(mkt, 변동성=max(mkt['변동성'] - 0.05, 0.01))),
-                          ('변동성 +5%p', dict(mkt, 변동성=mkt['변동성'] + 0.05)),
-                          ('신용할인율 -1%p', dict(mkt, 신용위험조정할인율=mkt['신용위험조정할인율'] - 0.01)),
-                          ('신용할인율 +1%p', dict(mkt, 신용위험조정할인율=mkt['신용위험조정할인율'] + 0.01)),
-                          ('주가 -10%', dict(mkt, 주가=mkt['주가'] * 0.9)),
-                          ('주가 +10%', dict(mkt, 주가=mkt['주가'] * 1.1))):
-            cc = E.value_components(t, mk, vd, steps)
-            sens.append({'평가기준일': vd, '시나리오': label, '총가치': cc['총가치'] * o,
-                         '전환권': cc['전환권'] * o, '총가치 변동': cc['총가치'] * o - base,
-                         '변동률': (cc['총가치'] * o - base) / base if base else 0.0})
-    res['valuation'] = vals
-    res['sensitivity'] = sens
-
     # 분류·조건 검토
     if t['리픽싱']:
         chk.append(('오류', '리픽싱 조항 있음 — 전환권이 fixed-for-fixed 요건 불충족 가능, 파생상품부채 분류 검토 '
@@ -405,7 +480,8 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
         elif '회사' in c['보유자']:
             chk.append(('확인', '매도청구권 보유자 회사 — 발행회사 콜옵션(내재파생상품) 주계약 밀접관련 여부 검토'))
     s = split
-    gap = t['발행가액'] - (s['최초장부금액'] + s['전환권대가'] + s['거래비용_부채'] + s['거래비용_자본'])
+    # 검증: 발행가액 + 매도청구권 자산 = 부채 최초장부 + 전환권대가 + 거래비용
+    gap = t['발행가액'] + s['매도청구권_자산'] - (s['최초장부금액'] + s['전환권대가'] + s['거래비용_부채'] + s['거래비용_자본'])
     if abs(gap) > 1:
         chk.append(('오류', f'발행가액 분리 합계 불일치 {gap:,.0f}'))
     return res
@@ -520,7 +596,7 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
     vrows = []
     for r in results:
         for v in r.get('valuation', []):
-            for key in ('총가치', '일반사채_Put포함', '전환권', '조기상환청구권', '매도청구권'):
+            for key in ('총가치', '일반사채', '조기상환청구권', '전환권', '매도청구권'):
                 ext = v['외부'].get(key)
                 diff = (v[key] - ext) if ext is not None else None
                 rate = (diff / ext) if ext else None
@@ -552,12 +628,24 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
         if 'split' in r:
             s = r['split']
             w.blank()
-            w.kv([('부채요소 공정가치', s['부채요소_공정가치']), ('자본요소(전환권) 공정가치', s['자본요소_공정가치']),
+            w.kv([('부채요소 측정', s['부채요소_출처']),
+                  ('부채요소 공정가치', s['부채요소_공정가치']), ('매도청구권 자산', s['매도청구권_자산']),
+                  ('자본요소(전환권) 공정가치', s['자본요소_공정가치']),
                   ('거래비용 — 부채', s['거래비용_부채']), ('거래비용 — 자본', s['거래비용_자본']),
                   ('최초 장부금액(부채)', s['최초장부금액']), ('전환권대가(자본)', s['전환권대가']),
                   ('유효이자율', s['유효이자율'])], {'유효이자율': '0.0000%'})
-            w.note('부채요소 = 계약상 현금흐름(표면이자+만기상환액)을 일반사채 시장이자율로 할인. '
-                   'Put·Call은 주계약과 밀접관련으로 보아 부채요소에 포함(별도 분리 안 함).')
+            w.note('잔여법(K-IFRS 1032.31): 자본요소 = 발행가액 − 부채요소(주계약+조기상환청구권) + 매도청구권 자산(자산인식 Y인 경우). '
+                   '유효이자율은 부채 최초장부금액을 만기 계약현금흐름에 맞춰 산정.')
+            sr = r.get('split_report')
+            if sr:
+                w.blank()
+                w.title('최초인식 분리 — 재계산 vs 평가보고서')
+                w.table(['구분', '재계산', '평가보고서', '차이', '차이율'],
+                        [[nm, a, b, a - b, (a - b) / b if b else None] for nm, a, b in (
+                            ('부채요소(주계약+조기상환권)', s['부채요소_공정가치'], sr['부채요소']),
+                            ('매도청구권 자산', s['매도청구권_자산'], sr['매도청구권_자산']),
+                            ('자본요소(전환권대가, 거래비용 전)', s['자본요소_공정가치'], sr['자본요소']))],
+                        {'차이율': '0.0%'})
         if t['put_rows']:
             w.blank()
             w.title('조기상환청구권(Put)')
@@ -567,9 +655,9 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
         if t['call_rows']:
             w.blank()
             w.title('매도청구권(Call)')
-            w.table(['행사시작일', '행사종료일', '행사가수익률', '행사가율', '행사가능비율', '보유자'],
-                    [[c['행사시작일'], c['행사종료일'], c['행사가수익률'], c['행사가율'], c['행사가능비율'], c['보유자']]
-                     for c in t['call_rows']],
+            w.table(['행사시작일', '행사종료일', '행사가수익률', '행사가율', '행사가능비율', '보유자', '평가방법', '자산인식'],
+                    [[c['행사시작일'], c['행사종료일'], c['행사가수익률'], c['행사가율'], c['행사가능비율'], c['보유자'],
+                      c['평가방법'], c['자산인식']] for c in t['call_rows']],
                     {'행사가수익률': '0.000%', '행사가율': '0.0000%', '행사가능비율': '0%'})
         if r.get('schedule'):
             w.blank()
@@ -589,23 +677,26 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
     ws = wb.create_sheet('공정가치')
     w = Writer(ws)
     w.title('평가시점별 공정가치 재계산 (TF 이항격자)')
+    w.note('금리=기간구조이면 무위험·신용할인율 칸은 잔존만기 현물이자율(참고), 격자는 단계별 선도이자율로 할인.')
     w.note('총가치 = 전환사채(Put·전환 포함) − 매도청구권 가치.  전환권 = CB(콜 제외) − 일반사채(Put 포함).  '
            '조기상환청구권 = 일반사채(Put 포함) − 일반사채(Put 없음).  금액은 평가일 미상환액면 기준.')
-    hdr = ['회차', '평가기준일', '미상환액면', '주가', '변동성', '무위험이자율', '신용할인율', '배당수익률',
+    hdr = ['회차', '평가기준일', '미상환액면', '주가', '변동성', '무위험이자율', '신용할인율', '배당수익률', '금리',
            '총가치', '전환사채_콜제외', '일반사채_Put포함', '일반사채', '전환권', '조기상환청구권', '매도청구권']
     rows = []
     for r in results:
         for v in r.get('valuation', []):
             m = v['시장변수']
-            rows.append([r['회차'], v['평가기준일'], v['미상환액면'], m['주가'], m['변동성'], m['무위험이자율'],
-                         m['신용위험조정할인율'], m['배당수익률']] + [v[h] for h in hdr[8:]])
+            T = E.yf(v['평가기준일'], r['terms']['만기일'])
+            rr = [x.zero(T) if isinstance(x, E.Curve) else x for x in (m['무위험이자율'], m['신용위험조정할인율'])]
+            rows.append([r['회차'], v['평가기준일'], v['미상환액면'], m['주가'], m['변동성'], rr[0], rr[1],
+                         m['배당수익률'], v['금리']] + [v[h] for h in hdr[9:]])
     w.table(hdr, rows, {'변동성': '0.00%', '무위험이자율': '0.000%', '신용할인율': '0.000%', '배당수익률': '0.00%'})
     w.blank()
     w.title('민감도 (총가치)')
     srows = [[r['회차'], s['평가기준일'], s['시나리오'], s['총가치'], s['전환권'], s['총가치 변동'], s['변동률']]
              for r in results for s in r.get('sensitivity', [])]
     w.table(['회차', '평가기준일', '시나리오', '총가치', '전환권', '총가치 변동', '변동률'], srows, {'변동률': '0.0%'})
-    widths(ws, [12, 12, 16, 12, 10, 12, 12, 10, 16, 16, 16, 16, 16, 16, 16])
+    widths(ws, [12, 12, 16, 12, 10, 12, 12, 10, 10, 16, 16, 16, 16, 16, 16, 16])
 
     if run_stamp:
         run_stamp.stamp_workbook(wb, f'전환사채 검증 {company} {fy_label}')
@@ -637,13 +728,16 @@ def main():
     ev = group_by(_read_sheet(path, '변동내역'))
     vals = group_by(_read_sheet(path, '평가시점'))
     books = group_by(_read_sheet(path, '회사계상'))
+    curves = load_curves(path)
+    if curves:
+        print(f'  금리기간구조: {len(curves)}개 평가시점')
 
     results = []
     for k, t in terms.items():
         print(f'  - {k}: 액면 {t["액면"]:,.0f}, 만기상환율 {t["만기상환율"]:.4%}, '
               f'Put {len(t["puts"])}건, Call {len(t["calls"])}건')
         results.append(process(t, ev.get(k, []), vals.get(k, []), books.get(k, []),
-                               fy_start, fy_end, prior_end, a.steps_per_year))
+                               fy_start, fy_end, prior_end, a.steps_per_year, curves))
         for lv, msg in results[-1]['checks']:
             if lv != '정보':
                 print(f'      [{lv}] {msg}')
