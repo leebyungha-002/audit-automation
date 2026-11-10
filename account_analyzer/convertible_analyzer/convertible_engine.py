@@ -253,31 +253,46 @@ def tf_lattice(S0, sigma, r_f, r_c, q, val_date, maturity, conv_ratio, redemptio
                                       'disc_c': disc_c, 'dt': dt, 'N': N}
 
 
-def call_on_cb(lat, val_date, call_price_fn, tf_split=True):
+CALL_DISCOUNTS = ('위험이자율', 'TF분할', '무위험이자율')
+
+
+def call_on_cb(lat, val_date, call_price_fn, discount='TF분할', ex_steps=None):
     """매도청구권(콜옵션) 별도 격자 평가 — 액면 1 기준, 행사가능비율 반영 전.
 
-    콜 보유자(발행회사·지정인)는 행사기간 중 CB를 행사가에 매수(CB의 전환권·Put 포함 인수)하므로
-    행사가치 = CB노드가치(콜 없음) − 행사가, 미국형(행사기간 중 언제든).
+    콜 보유자(발행회사·지정인)는 CB를 행사가에 매수(CB의 전환권·Put 포함 인수)하므로
+    행사가치 = CB노드가치(콜 없음) − 행사가.
     사채권자는 행사기간 종료일까지 콜 대상 물량을 미전환 보유해야 하므로 콜 행사가 선점되지 않는다.
-    tf_split=True: 행사가치의 주식부분(V−B)은 무위험, 현금부분(B−행사가)은 위험이자율로 할인(TF 방식)
+    ex_steps : {단계: 행사가} — 지정 시 그 단계(매매대금 지급기일)에서만 행사(버뮤다형),
+               없으면 lat['w0']~lat['w1'] 모든 단계에서 행사(미국형, 행사가 = call_price_fn)
+    discount : '위험이자율'   — 콜가치 전체를 위험이자율로 할인 (6회차 평가보고서 방식과 일치)
+               'TF분할'      — 행사가치 중 주식부분(V−B)은 무위험, 현금부분(B−행사가)은 위험이자율
+               '무위험이자율' — 전체를 무위험이자율로 할인
     """
     hist, w0, w1 = lat['hist'], lat['w0'], lat['w1']
     p, disc_f, disc_c, dt = lat['p'], lat['disc_f'], lat['disc_c'], lat['dt']
+    if ex_steps:
+        w1 = max(ex_steps)
     C = np.zeros(w1 + 1)
-    CB = np.zeros(w1 + 1)   # 콜가치 중 현금(부채)성 부분
+    CB = np.zeros(w1 + 1)   # 콜가치 중 현금(부채)성 부분 — TF분할에서만 사용
     for i in range(w1, -1, -1):
         if i < w1:
             pi = p[i]
-            nb = disc_c[i] * (pi * CB[1:] + (1 - pi) * CB[:-1]) if tf_split else None
-            ne = disc_f[i] * (pi * (C[1:] - CB[1:]) + (1 - pi) * (C[:-1] - CB[:-1])) if tf_split else None
-            if tf_split:
+            if discount == 'TF분할':
+                nb = disc_c[i] * (pi * CB[1:] + (1 - pi) * CB[:-1])
+                ne = disc_f[i] * (pi * (C[1:] - CB[1:]) + (1 - pi) * (C[:-1] - CB[:-1]))
                 C, CB = nb + ne, nb
             else:
-                C = disc_f[i] * (pi * C[1:] + (1 - pi) * C[:-1])
+                dsc = disc_c[i] if discount == '위험이자율' else disc_f[i]
+                C = dsc * (pi * C[1:] + (1 - pi) * C[:-1])
                 CB = np.zeros_like(C)
-        if w0 <= i <= w1 and i > 0 and i in hist:
-            V, B = hist[i]
+        if ex_steps:
+            cp = ex_steps.get(i)
+        elif w0 <= i <= w1 and i > 0:
             cp = call_price_fn(val_date + timedelta(days=i * dt * 365))
+        else:
+            cp = None
+        if cp is not None and i > 0 and i in hist:
+            V, B = hist[i]
             ex = V - cp
             m = ex > C
             C = np.where(m, ex, C)
@@ -315,6 +330,7 @@ def value_components(terms: dict, mkt: dict, val_date: date, steps_per_year=252,
     straight, _ = tf_lattice(puts=(), allow_conversion=False, **common)
 
     call_val = 0.0
+    by_disc = {}
     sep = [c for c in calls if (c.get('평가방법') or call_method) != '콜행사반영']
     exe = [c for c in calls if (c.get('평가방법') or call_method) == '콜행사반영']
     if sep:
@@ -324,7 +340,16 @@ def value_components(terms: dict, mkt: dict, val_date: date, steps_per_year=252,
         for c in sep:
             sub = dict(lat, w0=max(lat['w0'], int(round(yf(val_date, c['시작일']) / lat['dt']))),
                        w1=min(lat['w1'], int(round(yf(val_date, c['종료일']) / lat['dt']))))
-            call_val += c['행사가능비율'] * call_on_cb(sub, val_date, c['가격함수'])
+            ex_steps = None
+            if c.get('행사일정'):
+                ex_steps = {int(round(yf(val_date, d) / lat['dt'])): pr
+                            for d, pr in c['행사일정'] if d > val_date}
+            chosen = c.get('할인방식') or 'TF분할'
+            for disc in CALL_DISCOUNTS:
+                v = c['행사가능비율'] * call_on_cb(sub, val_date, c['가격함수'], disc, ex_steps) if ex_steps != {} else 0.0
+                by_disc[disc] = by_disc.get(disc, 0.0) + v
+                if disc == chosen:
+                    call_val += v
     else:
         v_nocall, _ = tf_lattice(puts=puts, **common)
     for c in exe:
@@ -339,6 +364,7 @@ def value_components(terms: dict, mkt: dict, val_date: date, steps_per_year=252,
         '전환권': v_nocall - straight_put,
         '조기상환청구권': straight_put - straight,
         '매도청구권': call_val,
+        '매도청구권_할인방식별': by_disc,
     }
 
 

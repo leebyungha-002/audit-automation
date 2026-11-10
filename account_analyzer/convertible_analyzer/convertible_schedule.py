@@ -187,11 +187,27 @@ def build_terms(path):
         method = str(r.get('평가방법') or '').strip()
         method = '콜행사반영' if method == '콜행사반영' else '별도격자'
         asset = str(r.get('자산인식(Y/N)') or '').strip().upper() == 'Y'
+        disc = str(r.get('할인방식') or '').strip()
+        disc = disc if disc in E.CALL_DISCOUNTS else 'TF분할'
+        pay = _date(r.get('지급기일'))
+        row = {'행사시작일': d0, '행사종료일': d1, '지급기일': pay, '행사가수익률': y, '행사가율': fixed,
+               '행사가능비율': f, '보유자': holder, '평가방법': method, '할인방식': disc,
+               '자산인식': 'Y' if asset else 'N'}
+        t['call_rows'].append(row)
+        if pay:   # 차수별 청구기간·지급기일이 정해진 경우 → 한 회차의 행들을 묶어 버뮤다형 1건으로
+            row['_가격'] = fn(pay)
+            continue
         t['calls'].append({'시작일': d0, '종료일': d1, '가격함수': fn, '행사가능비율': f, '보유자': holder,
-                           '평가방법': method, '자산인식': asset})
-        t['call_rows'].append({'행사시작일': d0, '행사종료일': d1, '행사가수익률': y, '행사가율': fixed,
-                               '행사가능비율': f, '보유자': holder, '평가방법': method,
-                               '자산인식': 'Y' if asset else 'N'})
+                           '평가방법': method, '할인방식': disc, '자산인식': asset})
+    for t in out.values():
+        brs = [r for r in t['call_rows'] if r.get('지급기일')]
+        if brs:
+            b0 = brs[0]
+            sched = sorted((r['지급기일'], r['_가격']) for r in brs)
+            t['calls'].append({'시작일': min(r['행사시작일'] for r in brs), '종료일': sched[-1][0],
+                               '가격함수': (lambda sc: (lambda dd: next((pr for d, pr in sc if d >= dd), sc[-1][1])))(sched),
+                               '행사일정': sched, '행사가능비율': b0['행사가능비율'], '보유자': b0['보유자'],
+                               '평가방법': '별도격자', '할인방식': b0['할인방식'], '자산인식': b0['자산인식'] == 'Y'})
     for t in out.values():
         t['puts'].sort()
     return out
@@ -278,7 +294,9 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
             continue
         o = outstanding(vd)
         c = E.value_components(t, mkt, vd, steps)
-        row = {'평가기준일': vd, '미상환액면': o, **{kk: vv * o for kk, vv in c.items()}, '시장변수': mkt,
+        row = {'평가기준일': vd, '미상환액면': o,
+               **{kk: ({a: b * o for a, b in vv.items()} if isinstance(vv, dict) else vv * o) for kk, vv in c.items()},
+               '시장변수': mkt,
                '금리': rate_src}
         ext = {}
         for col, key in (('외부평가_전환사채총가치(원)', '총가치'), ('외부평가_주계약(원)', '일반사채'),
@@ -655,10 +673,13 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
         if t['call_rows']:
             w.blank()
             w.title('매도청구권(Call)')
-            w.table(['행사시작일', '행사종료일', '행사가수익률', '행사가율', '행사가능비율', '보유자', '평가방법', '자산인식'],
-                    [[c['행사시작일'], c['행사종료일'], c['행사가수익률'], c['행사가율'], c['행사가능비율'], c['보유자'],
-                      c['평가방법'], c['자산인식']] for c in t['call_rows']],
-                    {'행사가수익률': '0.000%', '행사가율': '0.0000%', '행사가능비율': '0%'})
+            w.table(['행사시작일', '행사종료일', '지급기일', '행사가수익률', '행사가율', '적용행사가', '행사가능비율', '보유자',
+                     '평가방법', '할인방식', '자산인식'],
+                    [[c['행사시작일'], c['행사종료일'], c['지급기일'], c['행사가수익률'], c['행사가율'], c.get('_가격'),
+                      c['행사가능비율'], c['보유자'], c['평가방법'], c['할인방식'], c['자산인식']] for c in t['call_rows']],
+                    {'행사가수익률': '0.000%', '행사가율': '0.0000%', '적용행사가': '0.0000%', '행사가능비율': '0%'})
+            if any(c.get('지급기일') for c in t['call_rows']):
+                w.note('지급기일이 있는 행은 묶어서 버뮤다형(지급기일에만 행사)으로 평가')
         if r.get('schedule'):
             w.blank()
             w.title('유효이자율 상각표')
@@ -691,6 +712,21 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
             rows.append([r['회차'], v['평가기준일'], v['미상환액면'], m['주가'], m['변동성'], rr[0], rr[1],
                          m['배당수익률'], v['금리']] + [v[h] for h in hdr[9:]])
     w.table(hdr, rows, {'변동성': '0.00%', '무위험이자율': '0.000%', '신용할인율': '0.000%', '배당수익률': '0.00%'})
+    crow = []
+    for r in results:
+        for v in r.get('valuation', []):
+            bd = v.get('매도청구권_할인방식별') or {}
+            if bd:
+                ext = v['외부'].get('매도청구권')
+                crow.append([r['회차'], v['평가기준일']] + [bd.get(d) for d in E.CALL_DISCOUNTS] +
+                            [ext, (bd.get('위험이자율', 0) - ext) / ext if ext else None])
+    if crow:
+        w.blank()
+        w.title('매도청구권 — 할인방식별 재계산')
+        w.table(['회차', '평가기준일'] + list(E.CALL_DISCOUNTS) + ['외부평가', '위험이자율 기준 차이율'], crow,
+                {'위험이자율 기준 차이율': '0.0%'})
+        w.note('위험이자율: 콜가치 전체를 신용위험 할인(평가기관 실무) / TF분할: 주식성분 무위험·채권성분 위험 할인 / '
+               '무위험이자율: 전체 무위험 할인. 선택한 할인방식(매도청구Call 시트)이 총가치·회계처리에 반영됨')
     w.blank()
     w.title('민감도 (총가치)')
     srows = [[r['회차'], s['평가기준일'], s['시나리오'], s['총가치'], s['전환권'], s['총가치 변동'], s['변동률']]
