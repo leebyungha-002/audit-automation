@@ -1,0 +1,153 @@
+"""표준 입력 템플릿(convertible_template.xlsx) 생성 스크립트.
+
+실행: python build_template.py
+input_data/convertible_template.xlsx 를 새로 만든다(이미 있으면 덮어씀).
+회사별 파일은 이 템플릿을 복사해 convertible_<company>_information_fy<year>.xlsx 로 저장해서 사용한다.
+
+시트 구성 (모든 표는 '회차' 열로 여러 회차 CB를 한 파일에서 관리):
+  발행조건   : 회차별 1행 — 발행일·만기·액면·이율·전환가격·일반사채 시장이자율 등
+  조기상환Put : 회차별 행사일마다 1행 — 조기상환수익률 또는 상환율
+  매도청구Call: 회차별 행사기간 1행 — 행사가 수익률(또는 행사가율)·행사가능비율·보유자
+  평가시점   : 평가기준일마다 1행 — 시장변수 + 외부평가보고서 금액(대사용)
+  변동내역   : 전환·조기상환·매입소각 이벤트
+  회사계상   : 결산일 기준 회사 장부금액(대사용)
+'예시)'로 시작하는 회차 행은 앱이 무시한다.
+금리·수익률·변동성은 % 숫자로 입력(예: 3.5 = 3.5%).
+"""
+import os
+from datetime import date
+import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT_PATH = os.path.join(HERE, "input_data", "convertible_template.xlsx")
+
+# 시트명: [(열이름, 너비, 설명)]
+SHEETS = {
+    "발행조건": [
+        ("회차", 10, "예: 3회차"),
+        ("발행일", 12, ""),
+        ("만기일", 12, ""),
+        ("액면총액(원)", 16, ""),
+        ("발행가액(원)", 16, "현금 수취액(할인발행 시 액면과 다름)"),
+        ("거래비용(원)", 14, "인수수수료 등 — 부채·자본 공정가치 비율로 안분"),
+        ("표면이자율(%)", 12, ""),
+        ("이자지급주기(개월)", 12, "3=분기, 0=이자 없음"),
+        ("만기보장수익률(%)", 12, "YTM, 연복리"),
+        ("만기상환율(%)", 12, "공란이면 YTM으로 자동계산(예: 106.1678)"),
+        ("전환가격(원)", 12, ""),
+        ("1주당액면(원)", 12, ""),
+        ("전환청구시작일", 14, ""),
+        ("전환청구종료일", 14, "통상 만기 1개월 전"),
+        ("일반사채시장이자율(%)", 14, "발행일 기준 동일 신용등급·만기 일반사채 수익률 — 부채요소 측정"),
+        ("리픽싱(Y/N)", 10, "시가하락 전환가 조정조항 — Y면 파생부채 분류 검토 경고"),
+        ("비고", 30, ""),
+    ],
+    "조기상환Put": [
+        ("회차", 10, ""),
+        ("행사일", 12, "조기상환지급일"),
+        ("조기상환수익률(%)", 14, "YTP, 연복리"),
+        ("상환율(%)", 12, "공란이면 YTP로 자동계산(표면이자 제외, 액면 대비)"),
+        ("비고", 30, ""),
+    ],
+    "매도청구Call": [
+        ("회차", 10, ""),
+        ("행사시작일", 12, ""),
+        ("행사종료일", 12, ""),
+        ("행사가수익률(%)", 14, "행사일까지 연복리 수익률로 행사가 계산"),
+        ("행사가율(%)", 12, "고정 행사가(액면 대비). 공란이면 수익률로 계산"),
+        ("행사가능비율(%)", 14, "발행액 중 콜 대상 비율(예: 30)"),
+        ("보유자", 12, "최대주주/회사/기타"),
+        ("비고", 30, ""),
+    ],
+    "평가시점": [
+        ("회차", 10, ""),
+        ("평가기준일", 12, "발행일·전기말·당기말 등"),
+        ("주가(원)", 12, ""),
+        ("변동성(%)", 10, "연환산"),
+        ("무위험이자율(%)", 12, "잔존만기 국고채"),
+        ("신용위험조정할인율(%)", 14, "회사 신용등급 회사채 수익률"),
+        ("배당수익률(%)", 10, ""),
+        ("외부평가_전환사채총가치(원)", 18, "평가보고서 금액(대사용, 선택)"),
+        ("외부평가_일반사채(원)", 16, ""),
+        ("외부평가_전환권(원)", 16, ""),
+        ("외부평가_조기상환청구권(원)", 18, ""),
+        ("외부평가_매도청구권(원)", 16, ""),
+        ("비고", 30, ""),
+    ],
+    "변동내역": [
+        ("회차", 10, ""),
+        ("일자", 12, ""),
+        ("구분", 12, "전환/조기상환/매입소각"),
+        ("액면금액(원)", 16, ""),
+        ("지급액(원)", 16, "조기상환·매입소각 시 지급 현금(표면이자 제외)"),
+        ("비고", 30, ""),
+    ],
+    "회사계상": [
+        ("회차", 10, ""),
+        ("기준일", 12, "결산일"),
+        ("사채액면(원)", 16, ""),
+        ("상환할증금(원)", 16, ""),
+        ("전환권조정(원)", 16, "차감계정 — 양수로 입력"),
+        ("장부금액(원)", 16, "액면+할증금−전환권조정"),
+        ("당기이자비용(원)", 16, "해당 회계연도 누계"),
+        ("전환권대가(원)", 16, "자본"),
+        ("비고", 30, ""),
+    ],
+}
+
+EXAMPLES = {
+    "발행조건": [["예시)3회차", date(2025, 3, 15), date(2028, 3, 15), 10_000_000_000, 10_000_000_000,
+                120_000_000, 0, 3, 3.0, None, 12_500, 500, date(2026, 3, 15), date(2028, 2, 15), 7.5, "N",
+                "예시 행 — '예시)'로 시작하면 앱이 무시"]],
+    "조기상환Put": [["예시)3회차", date(2026, 9, 15), 3.0, None, "발행 18개월 후부터 3개월마다"],
+                  ["예시)3회차", date(2026, 12, 15), 3.0, None, ""]],
+    "매도청구Call": [["예시)3회차", date(2025, 9, 15), date(2026, 3, 15), 3.0, None, 30, "최대주주", ""]],
+    "평가시점": [["예시)3회차", date(2025, 3, 15), 11_000, 45, 2.8, 7.5, 0, None, None, None, None, None, "발행일"],
+                ["예시)3회차", date(2025, 12, 31), 9_800, 42, 2.6, 7.2, 0, None, None, None, None, None, "전기말"]],
+    "변동내역": [["예시)3회차", date(2026, 4, 20), "전환", 1_000_000_000, None, ""]],
+    "회사계상": [["예시)3회차", date(2025, 12, 31), 10_000_000_000, 0, 0, 0, 0, 0, ""]],
+}
+
+THIN = Side(style="thin", color="BFBFBF")
+BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+HEAD_FILL = PatternFill("solid", fgColor="D9E1F2")
+NOTE_FONT = Font(size=8, color="7F7F7F")
+EX_FONT = Font(color="7F7F7F", italic=True)
+
+
+def build():
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    for name, cols in SHEETS.items():
+        ws = wb.create_sheet(name)
+        for c, (h, w, note) in enumerate(cols, 1):
+            cell = ws.cell(1, c, h)
+            cell.font = Font(bold=True)
+            cell.fill = HEAD_FILL
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = BORDER
+            n = ws.cell(2, c, note)
+            n.font = NOTE_FONT
+            n.alignment = Alignment(wrap_text=True, vertical="top")
+            ws.column_dimensions[get_column_letter(c)].width = w
+        ws.row_dimensions[1].height = 32
+        ws.row_dimensions[2].height = 40
+        for r, row in enumerate(EXAMPLES.get(name, []), 3):
+            for c, v in enumerate(row, 1):
+                cell = ws.cell(r, c, v)
+                cell.font = EX_FONT
+                cell.border = BORDER
+                if isinstance(v, date):
+                    cell.number_format = "yyyy-mm-dd"
+                elif isinstance(v, (int, float)) and abs(v) >= 1000:
+                    cell.number_format = "#,##0"
+        ws.freeze_panes = "B3"
+    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+    wb.save(OUT_PATH)
+    print(f"[완료] {OUT_PATH}")
+
+
+if __name__ == "__main__":
+    build()

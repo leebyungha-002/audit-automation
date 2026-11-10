@@ -194,6 +194,21 @@ def detect_ar_allowance_input_files() -> list[tuple[str, str]]:
     return files
 
 
+def detect_cb_input_files() -> list[tuple[str, str]]:
+    """convertible_analyzer/input_data/ 내 파일별 (표시명, 파일명) 목록 반환"""
+    in_dir = ROOT / "account_analyzer" / "convertible_analyzer" / 'input_data'
+    if not in_dir.exists():
+        return []
+    _pat = re.compile(r'^convertible_(.+)_information_(.+)\.xlsx$', re.IGNORECASE)
+    files = []
+    for f in sorted(in_dir.iterdir()):
+        if f.is_file() and f.suffix.lower() == '.xlsx' and not f.name.startswith('~$') and 'template' not in f.name.lower():
+            m = _pat.match(f.name)
+            if m:
+                files.append((f'{m.group(1)}  [{m.group(2)}]', f.name))
+    return files
+
+
 AFC_DIR = ROOT / "workpaper_tools" / "audit_findings_checklist"
 
 # 감리 지적사항 체크리스트 단계 — (표시명, main.py 인자, 회사 선택 방식)
@@ -342,6 +357,15 @@ TOOLS = [
         "extra": None,
     },
     {
+        "category": "전환사채 평가 검증",
+        "name": "전환사채 전환권평가·회계처리 검증 (convertible_schedule)",
+        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 유효이자율 상각표, 전환·조기상환 처리, 회사계상 대사. TF 이항격자로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
+        "cmd": ["python", str(ROOT / "account_analyzer" / "convertible_analyzer" / "convertible_schedule.py")],
+        "cwd": str(ROOT / "account_analyzer" / "convertible_analyzer"),
+        "company": "cb_file",
+        "extra": None,
+    },
+    {
         "category": "녹음 텍스트 변환",
         "name": "감사 녹음 텍스트 변환 (audio_transcriber)",
         "desc": "⚠ 실행 전 audio_transcriber/input/ 폴더에 녹음 파일(mp3/m4a/wav 등)을 넣으세요.\nfaster-whisper(large-v3-turbo)로 한국어 텍스트 변환 → output/ 폴더에 타임스탬프 대화록(.txt)과 자막(.srt) 생성. 이미 변환된 파일은 건너뜀. 최초 실행 시 모델(약 1.6GB) 다운로드.",
@@ -452,6 +476,7 @@ class Launcher(QMainWindow):
         self._sev_input_files: list[tuple[str, str]] = detect_sev_input_files()
         self._leave_input_files: list[tuple[str, str]] = detect_leave_input_files()
         self._ar_input_files: list[tuple[str, str]] = detect_ar_allowance_input_files()
+        self._cb_input_files: list[tuple[str, str]] = detect_cb_input_files()
         self._afc_account_files: list[tuple[str, Path]] = []
         self._stage_text = ""
 
@@ -778,6 +803,10 @@ class Launcher(QMainWindow):
             self._company_row.setVisible(True)
             self._ar_input_files = detect_ar_allowance_input_files()
             self._company_combo.addItems([d for d, _ in self._ar_input_files])
+        elif t["company"] == "cb_file":
+            self._company_row.setVisible(True)
+            self._cb_input_files = detect_cb_input_files()
+            self._company_combo.addItems([d for d, _ in self._cb_input_files])
         else:
             self._company_row.setVisible(False)
         self._company_combo.blockSignals(False)
@@ -811,11 +840,11 @@ class Launcher(QMainWindow):
             self._on_afc_step_changed(self._afc_combo.currentIndex())
 
         # 결산월 선택 (리스 스케줄·감가상각 검증·퇴충 검증·연월차 검증 전용)
-        self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file"))
+        self._fy_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file", "cb_file"))
 
         # 반기 등 중간결산 검토 (리스 스케줄·감가상각 검증·퇴충 검증·연월차 검증 전용)
-        self._interim_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file"))
-        if t["company"] not in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file"):
+        self._interim_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file", "cb_file"))
+        if t["company"] not in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file", "cb_file"):
             self._interim_check.setChecked(False)
 
     def _on_afc_step_changed(self, idx: int):
@@ -957,6 +986,22 @@ class Launcher(QMainWindow):
                 self._log_line("⚠  처리할 파일을 선택하세요.", "#FBBF24")
                 return
             _, fname = self._ar_input_files[file_idx]
+            cmd += ["--file", fname]
+            fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
+            if self._interim_check.isChecked():
+                # 반기(1~6월) 검토: 결산월은 12월 그대로, 당기말 결산기준일만 6월말로 앞당김
+                cmd += ["--fiscal-month", "12", "--interim-month", "6"]
+            elif fy_month in (6, 9):
+                # 결산월 콤보에서 "6월/9월 결산" 선택 — 모두 12월 결산 법인의 중간결산 검토용
+                cmd += ["--fiscal-month", "12", "--interim-month", str(fy_month)]
+            else:
+                cmd += ["--fiscal-month", str(fy_month)]
+        elif t["company"] == "cb_file":
+            file_idx = self._company_combo.currentIndex()
+            if file_idx < 0 or not self._cb_input_files:
+                self._log_line("⚠  처리할 파일을 선택하세요.", "#FBBF24")
+                return
+            _, fname = self._cb_input_files[file_idx]
             cmd += ["--file", fname]
             fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
             if self._interim_check.isChecked():

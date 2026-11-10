@@ -3372,3 +3372,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 2. graphy 분석·주입 재실행 후 실행정보 시트/주입이력.log 확인
 
 ---
+
+## 2026-11-10 (전환사채 전환권평가·회계처리 앱 v1)
+
+**완료 작업**: account_analyzer/convertible_analyzer 신규 — TF 이항격자 공정가치(전환권·조기상환청구권·매도청구권 분리, BS 해석해 대비 오차 0.006%), K-IFRS 1032 부채·전환권대가 분리·유효이자율 상각표·전환/조기상환 처리·회계연도 롤포워드(검증차이 0), 회사계상·외부평가 대사, 민감도, 유동성·리픽싱·최대주주 콜 검토사항. 런처 메뉴 추가
+**변경 파일**: account_analyzer/convertible_analyzer/(convertible_engine.py, convertible_schedule.py, build_template.py, input_data/convertible_template.xlsx), launcher.py
+**미해결 이슈**: 실데이터 미실행 — graphy 평가보고서·계약서 대기. 리픽싱(파생부채) 분류 미지원
+**다음 할 일**:
+1. graphy 샘플 받으면 convertible_graphy_information_fy2026.xlsx 작성 후 평가보고서 금액 대사
+2. 차이 시 평가보고서 가정(할인율 적용방식·콜 처리·격자 단계) 맞춰 조정
+3. 필요 시 RCPS·리픽싱(파생부채) 확장
+
+---
