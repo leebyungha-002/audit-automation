@@ -32,6 +32,12 @@ except ImportError:
     _PILLOW_OK = False
     print('[경고] Pillow 미설치 — ws._images 처리 불가. pip install Pillow')
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_modules'))
+try:
+    import run_stamp  # 실행 PC·시각 기록 (미니PC/노트북 구분)
+except ImportError:
+    run_stamp = None
+
 try:
     import xlwings as xw
     _XLWINGS_OK = True
@@ -1015,6 +1021,9 @@ def main():
         print(f'\n[오류] 매핑 파일 없음. 키워드: {company}_mapping_list  폴더: {audit_dir}')
         sys.exit(1)
     print(f'  매핑 파일     : {os.path.basename(mapping_path)}')
+    if run_stamp:
+        print(f'  실행 PC       : {run_stamp.pc_label()}  ({run_stamp.now_str()})')
+        print(f'  매핑 수정시각 : {run_stamp.mtime_str(mapping_path)}')
 
     # ── 2. 매핑 읽기 ─────────────────────────────────────────────────────────
     mapping_rows = load_mapping(mapping_path)
@@ -1030,6 +1039,7 @@ def main():
 
     errors  = []
     success = 0
+    used_sources = {}  # src_path → 실행정보(분석결과를 만든 PC·시각) — 실행이력 기록용
     images_injected = 0  # openpyxl 경로(ws.add_image)로 실제 삽입된 이미지 수 —
                           # xlwings 재저장(Named Range·Drawing 복구)이 필요한지 판단용
 
@@ -1057,6 +1067,8 @@ def main():
             continue
         print(f'    매칭 성공 (소스) : {src_kw}')
         print(f'                    → {os.path.relpath(src_path, company_dir)}')
+        if src_path not in used_sources and run_stamp:
+            used_sources[src_path] = run_stamp.read_stamp(src_path)
 
         # ── pandas 직접 처리 조기 분기 (PIVOT_AGING / ANALYSIS_INJECT / LEASE_INJECT / AI_INJECT) ─
         if remarks in ('PIVOT_AGING', 'ANALYSIS_INJECT', 'LEASE_INJECT', 'AI_INJECT'):
@@ -1215,6 +1227,8 @@ def main():
         tmp_path = None
         try:
             print(f'  ⏳ 저장 중: {os.path.relpath(out_path, company_dir)} (대용량 파일은 시간이 걸릴 수 있습니다)')
+            if run_stamp:
+                run_stamp.stamp_workbook(wb, f'주입 {os.path.basename(mapping_path)}')
             fd, tmp_path = tempfile.mkstemp(suffix='.xlsx', prefix='di_')
             os.close(fd)
             wb.save(tmp_path)
@@ -1287,6 +1301,25 @@ def main():
             print(f'    - {err}')
     else:
         print('  오류 없음')
+
+    # ── 8. 실행이력 (감사조서/주입이력.log) ─────────────────────────────────
+    # 미니PC/노트북을 번갈아 쓸 때 _updated가 언제·어느 PC에서·어떤 분석결과로
+    # 만들어졌는지 확인용(2026-11-10 blue sky 요청). 최신 실행이 파일 끝에 쌓인다.
+    if run_stamp:
+        lines = [f'=== {run_stamp.now_str()} | {run_stamp.pc_label()} ===',
+                 f'매핑 : {os.path.basename(mapping_path)} (수정 {run_stamp.mtime_str(mapping_path)})']
+        for p in saved_paths:
+            lines.append(f'결과 : {os.path.basename(p)}')
+        for p, st in used_sources.items():
+            made = f' / 생성 {st}' if st else ' / 생성정보 없음(이전 버전 분석기)'
+            lines.append(f'소스 : {os.path.relpath(p, company_dir)} (수정 {run_stamp.mtime_str(p)}{made})')
+        lines.append(f'성공 {success}/{len(mapping_rows)}건, 오류 {len(errors)}건')
+        log_path = os.path.join(audit_dir, '주입이력.log')
+        if run_stamp.append_history(log_path, lines):
+            print(f'\n  실행이력 기록 : {os.path.relpath(log_path, company_dir)}')
+            for ln in lines[1:]:
+                print(f'    {ln}')
+
     print('\n✅ 모든 작업이 종료되었습니다.')
 
 

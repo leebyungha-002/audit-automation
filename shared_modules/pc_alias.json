@@ -1,0 +1,4 @@
+{
+  "_설명": "Windows 컴퓨터 이름 → 표시용 별칭. 새 PC는 PowerShell에서 $env:COMPUTERNAME 으로 이름 확인 후 추가",
+  "DESKTOP-V1M97UH": "노트북"
+}

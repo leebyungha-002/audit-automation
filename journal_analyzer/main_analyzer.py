@@ -4532,6 +4532,38 @@ def save_results(results: dict, output_dir: str, company_name: str,
             used_titles.add(new_title)
             ws.title = new_title
 
+    # 실행정보 시트(맨 앞) + 문서속성 — 미니PC/노트북 중 어디서 언제 만든 결과인지
+    # 구분용(2026-11-10 blue sky 요청). 분석 시트 A1은 mapping 범위에 포함되는
+    # 경우가 많아 건드리지 않고 별도 시트로 둔다.
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared_modules'))
+        import run_stamp
+        stamp = run_stamp.stamp_workbook(wb, f'분석결과 {client_name}')
+        info = wb.create_sheet('실행정보', 0)
+        rows = [('항목', '내용'),
+                ('생성 일시', run_stamp.now_str()),
+                ('실행 PC', run_stamp.pc_label()),
+                ('회사명', client_name),
+                ('분석기간', f'{start_date} ~ {end_date}' if start_date else ''),
+                ('분석 시트 수', len(wb.worksheets) - 1)]
+        for r in rows:
+            info.append(r)
+        info.append(())
+        info.append(('시트 목록',))
+        for ws in wb.worksheets[1:]:
+            info.append(('', ws.title))
+        for c in info[1]:
+            c.font = bold
+        info.column_dimensions['A'].width = 14
+        info.column_dimensions['B'].width = 45
+        for ws in wb.worksheets:  # 여러 탭이 동시 선택(그룹)되지 않도록
+            ws.sheet_view.tabSelected = False
+        info.sheet_view.tabSelected = True
+        wb.active = 0
+        print(f'  [실행정보] {stamp}')
+    except Exception as e:
+        print(f'  [경고] 실행정보 기록 실패(저장은 계속): {e}')
+
     wb.save(out_path)
 
     # 암호해독표 → 별도 파일

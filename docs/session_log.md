@@ -3361,3 +3361,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 1. graphy 주입 재실행 후 오류 로그 확인
 
 ---
+
+## 2026-11-10 (실행 PC·시각 기록 — 미니PC/노트북 구분)
+
+**완료 작업**: graphy 25번(소스범위 A2:N20이 실제 A1:O27보다 작아 잘림)·08번 상대계정(_updated가 11:16 구버전, 현재 설정으로는 D·E열 정상) 원인 확인. 분석결과 파일 맨 앞에 '실행정보' 시트+문서속성(생성일시·PC), 주입기는 _updated 문서속성 기록 + 감사조서/주입이력.log에 실행PC·매핑/소스 수정시각·소스 생성PC 누적 기록
+**변경 파일**: shared_modules/run_stamp.py, shared_modules/pc_alias.json, journal_analyzer/main_analyzer.py, workpaper_tools/report/data_injector.py
+**미해결 이슈**: 미니PC 컴퓨터 이름을 pc_alias.json에 추가 필요(현재 노트북 DESKTOP-V1M97UH만 등록), graphy mapping 25번 범위 수정(사용자), 08번 분석기간 06-30 → 09-30 재실행 여부
+**다음 할 일**:
+1. 미니PC에서 $env:COMPUTERNAME 확인 → pc_alias.json 추가
+2. graphy 분석·주입 재실행 후 실행정보 시트/주입이력.log 확인
+
+---
