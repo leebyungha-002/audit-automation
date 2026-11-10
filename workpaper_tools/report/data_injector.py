@@ -105,8 +105,16 @@ def find_file_by_keyword(directories, keyword, exclude_suffixes=None):
 
 # ─── 시트 탐색 ────────────────────────────────────────────────────────────────
 
+def _norm_sheet(name):
+    """시트명 비교용 정규화: 모든 공백(일반·전각·NBSP 등) 제거 + 소문자."""
+    return re.sub(r'\s+', '', str(name).replace('　', ' ').replace('\xa0', ' ')).lower()
+
+
 def resolve_sheet(sheetnames, keyword):
-    """정확히 일치 → 대소문자 무시 일치 → keyword 포함 첫 번째 시트 순으로 탐색."""
+    """정확히 일치 → 대소문자 무시 일치 → keyword 포함 → 공백 무시 일치 → 공백 무시 포함 순으로 탐색.
+
+    mapping_list에 '상대계정분석'처럼 띄어쓰기가 빠지거나 더 들어가도 같은 시트로 인식한다.
+    """
     if keyword in sheetnames:
         return keyword
     kw_lower = keyword.lower()
@@ -114,7 +122,24 @@ def resolve_sheet(sheetnames, keyword):
         if s.lower() == kw_lower:
             return s
     matched = [s for s in sheetnames if kw_lower in s.lower()]
+    if matched:
+        return matched[0]
+    kw_norm = _norm_sheet(keyword)
+    if not kw_norm:
+        return None
+    for s in sheetnames:
+        if _norm_sheet(s) == kw_norm:
+            return s
+    matched = [s for s in sheetnames if kw_norm in _norm_sheet(s)]
     return matched[0] if matched else None
+
+
+def suggest_sheet(sheetnames, keyword):
+    """시트를 못 찾았을 때 오타 확인용으로 가장 비슷한 시트명을 돌려준다(자동 매칭은 하지 않음)."""
+    import difflib
+    norm_map = {_norm_sheet(s): s for s in sheetnames}
+    cand = difflib.get_close_matches(_norm_sheet(keyword), list(norm_map), n=1, cutoff=0.8)
+    return norm_map[cand[0]] if cand else None
 
 
 # ─── 셀 좌표 / 범위 파싱 ─────────────────────────────────────────────────────
@@ -1098,6 +1123,9 @@ def main():
         resolved_src = resolve_sheet(wb_src.sheetnames, src_sheet)
         if not resolved_src:
             msg = f'소스 시트 없음: {src_sheet}  (파일: {os.path.basename(src_path)})'
+            hint = suggest_sheet(wb_src.sheetnames, src_sheet)
+            if hint:
+                msg += f'  → 오타 확인: 비슷한 시트 [{hint}]'
             print(f'    [오류] {msg}')
             errors.append(f'[{label}] {msg}')
             wb_src.close()
