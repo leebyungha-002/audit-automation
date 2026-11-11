@@ -156,13 +156,17 @@ def test_report_shows_only_findings_with_verified_evidence(env, tmp_path):
     top = "\n".join(str(ws.cell(row=r, column=1).value) for r in range(1, 6))
     assert "최종 위험평가는 감사인의 판단" in top
 
-    body = {ws.cell(row=r, column=1).value: [c.value for c in ws[r]] for r in range(8, ws.max_row + 1)}
-    receivables = body["매출채권"]
-    assert receivables[1] == "외상매출금" and receivables[2] == 1
-    assert "[FSS-0001-01]" in receivables[3] and "FSS2106_03.pdf p.1" in receivables[6]
-    everything = "\n".join(str(v) for row in body.values() for v in row)
+    rows = [[c.value for c in ws[r]] for r in range(8, ws.max_row + 1)]
+    summary = {r[0]: r for r in rows if str(r[4]).startswith("지적 ")}   # 분류 요약 행 (E열 'No'에 '지적 N건')
+    receivables = summary["매출채권"]
+    assert receivables[1] == "외상매출금" and receivables[4] == "지적 1건"
+    detail = [r for r in rows if r[0] == "매출채권" and r[5]]           # 지적사항 행 (F열 finding_id)
+    assert [r[5] for r in detail] == ["FSS-0001-01"] and detail[0][16] == "FSS2106_03.pdf p.1"
+    assert ws.row_dimensions[9].outlineLevel == 1                       # 지적사항 행은 접을 수 있다
+    everything = "\n".join(str(v) for row in rows for v in row)
     assert all(fid not in everything for fid in ("FSS-0001-02", "FSS-0001-03", "FSS-0001-04"))
-    assert body["현금및예금"][2] == 0                                    # 지적사항 없는 분류도 행은 나온다
+    assert summary["현금및예금"][4] == "지적 0건"                         # 지적사항 없는 분류도 행은 나온다
+    assert "분류별 지적사항" not in wb.sheetnames                         # 한 시트로 합쳐졌다
 
     unmatched = [r[0].value for r in wb["매칭 없음 계정"].iter_rows(min_row=4)]
     assert unmatched == ["0", "본지점(자산비용)"]

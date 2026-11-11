@@ -31,6 +31,7 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 FILL_HEAD = PatternFill("solid", fgColor="DDEBF7")
 FILL_INPUT = PatternFill("solid", fgColor="FFF2CC")
 FILL_NONE = PatternFill("solid", fgColor="F2F2F2")
+FILL_CAT = PatternFill("solid", fgColor="E2EFDA")
 
 
 def _standard_label(s: dict) -> str:
@@ -42,7 +43,7 @@ def _mark(i: int) -> str:
 
 
 def _clip(text: str) -> str:
-    return text if len(text) <= CELL_LIMIT else text[:CELL_LIMIT] + "\n…(이하 생략, '분류별 지적사항' 시트 참조)"
+    return text if len(text) <= CELL_LIMIT else text[:CELL_LIMIT] + "\n…(이하 생략, '지적사항 원장' 시트 참조)"
 
 
 def _write_table(ws, start_row: int, headers: list[tuple[str, int]], rows: list[list], input_cols: set[int] = frozenset()):
@@ -123,18 +124,24 @@ def run_report(cfg: dict, store: Store, log, company: str | None = None) -> Path
 
     signals = load_signals(store, company)
     this_year = datetime.now().year
-    top_n = rcfg["max_findings_per_category"]
 
-    # ── 시트 1: 계정별 체크리스트 (표준 분류별 1행) ──
-    summary_rows, detail_rows = [], []
+    # ── 시트 1: 계정별 체크리스트 — 분류 요약 행 + 그 아래 지적사항 전체(1건 1행) ──
+    headers = [("계정과목(표준 분류)", 20), ("회사 계정", 30), ("우선순위 힌트", 22), ("분개 전표 수 (참고)", 10)]
+    if signals:
+        headers.append(("위험 발현 가능성 (분개장)", 28))
+    headers += [("No", 9), ("finding_id", 15), ("제목", 26), ("발행기관", 8), ("결정연도", 8), ("지적대상", 12),
+                ("지적유형", 12), ("주요 위험", 60), ("관련 기준서", 28), ("권장 확인사항 (AI 제안, 감사절차 힌트)", 60),
+                ("근거 (원문 발췌)", 60), ("발췌 검증", 9), ("출처 파일 / 페이지", 30), ("지적사항 검토상태", 10),
+                ("감사인 검토 상태", 12), ("감사인 의견", 40)]
+    n_cols = len(headers)
+    n_lead = 5 if signals else 4          # 분류 요약 행에만 값이 들어가는 앞쪽 열 수
+
+    blocks = []
     categories = [c for c in category_order if c in accounts_of or c in by_category]
     for cat in categories:
         items = by_category.get(cat, [])
         accs = accounts_of.get(cat, [])
         score, hint = _priority(items, this_year)
-        shown = items[:top_n]
-        more = f"\n\n외 {len(items) - top_n}건 — '분류별 지적사항' 시트 참조" if len(items) > top_n else ""
-        unreviewed = lambda f: " (미검토)" if f["review_status"] == "미검토" else ""  # noqa: E731
         standards = list(dict.fromkeys(
             _standard_label(s) for f in items for s in json.loads(f["standards"] or "[]")))
         vouchers = sum(a["n_vouchers"] or 0 for a in accs)
@@ -143,66 +150,53 @@ def run_report(cfg: dict, store: Store, log, company: str | None = None) -> Path
         acc_text = ", ".join(a["account_name"] for a in top_accs)
         if len(accs) > len(top_accs):
             acc_text += f"\n외 {len(accs) - len(top_accs)}개 — '계정 매칭' 시트 참조"
-        row = [
-            cat,
-            acc_text if accs else "(해당 계정 없음)",
-            len(items),
-            _clip("\n\n".join(f"{_mark(i)} [{f['finding_id']}]{unreviewed(f)} {f['risk_summary'] or ''}"
-                              for i, f in enumerate(shown)) + more),
-            "\n".join(standards),
-            _clip("\n\n".join(f"{_mark(i)} [{f['finding_id']}] {f['audit_hint'] or ''}"
-                              for i, f in enumerate(shown) if f["audit_hint"]) + more),
-            _clip("\n\n".join(f"{_mark(i)} [{f['finding_id']}] {f['source_file']} p.{f['source_page']}\n“{f['source_excerpt']}”"
-                              for i, f in enumerate(shown)) + more),
-            hint,
-            vouchers if accs else None,
-        ]
+        lead = [cat, acc_text if accs else "(해당 계정 없음)", hint, vouchers if accs else None]
         if signals:
-            row.append(signals.get(cat, ""))
-        row += ["미검토" if items else "해당없음", ""]
-        summary_rows.append((score, len(accs) > 0, row))
-
-        for f in items:
-            detail_rows.append([
-                cat, f["finding_id"], f["title"], f["issuer"], f["year"], f["finding_target"], f["finding_type"],
-                f["risk_summary"], "\n".join(_standard_label(s) for s in json.loads(f["standards"] or "[]")),
-                f["audit_hint"], f["source_excerpt"], f["excerpt_status"], f["source_file"], f["source_page"],
-                f["review_status"],
-            ])
-    summary_rows.sort(key=lambda t: (-t[0], not t[1]))
+            lead.append(signals.get(cat, ""))
+        summary = lead + [f"지적 {len(items)}건", None, None, None, None, None, None, None,
+                          _clip("\n".join(standards)), None, None, None, None, None,
+                          "미검토" if items else "해당없음", ""]
+        details = [[cat] + [None] * (n_lead - 1) + [
+            _mark(i), f["finding_id"], f["title"], f["issuer"], f["year"], f["finding_target"], f["finding_type"],
+            f["risk_summary"], "\n".join(_standard_label(s) for s in json.loads(f["standards"] or "[]")),
+            f["audit_hint"], _clip(f["source_excerpt"] or ""), f["excerpt_status"],
+            f"{f['source_file']} p.{f['source_page']}", f["review_status"], "미검토", "",
+        ] for i, f in enumerate(items)]
+        blocks.append((score, len(accs) > 0, summary, details))
+    blocks.sort(key=lambda t: (-t[0], not t[1]))
 
     wb = Workbook()
     ws = wb.active
     ws.title = "계정별 체크리스트"
     ws.cell(row=1, column=1, value=f"감리 지적사항 대사 체크리스트 — {company}").font = Font(bold=True, size=14)
     ws.cell(row=2, column=1, value=f"작성일 {datetime.now():%Y-%m-%d} · 반영된 지적사항 {len(usable)}건"
-                                     f"(미검토 {sum(1 for f in usable.values() if f['review_status'] == '미검토')}건 포함)")
+                                     f"(미검토 {sum(1 for f in usable.values() if f['review_status'] == '미검토')}건 포함)"
+                                     " · 굵은 행은 분류 요약, 그 아래 행은 해당 분류의 지적사항 전체(왼쪽 [-]로 접기)")
     for i, line in enumerate(NOTICE, start=3):
         ws.cell(row=i, column=1, value=line).font = Font(color="C00000", bold=(i == 4))
-    headers = [("계정과목(표준 분류)", 20), ("회사 계정", 34), ("관련 지적사항 수", 9), ("주요 위험", 72),
-               ("관련 기준서", 30), ("권장 확인사항 (AI 제안, 감사절차 힌트)", 72), ("근거 (파일 / 페이지 / 원문 발췌)", 72),
-               ("우선순위 힌트", 24), ("분개 전표 수 (참고)", 10)]
-    if signals:
-        headers.append(("위험 발현 가능성 (분개장)", 30))
-    headers += [("감사인 검토 상태", 12), ("감사인 의견", 40)]
-    n_cols = len(headers)
-    _write_table(ws, 7, headers, [r for _, _, r in summary_rows], input_cols={n_cols - 1, n_cols})
-    for r in range(8, 8 + len(summary_rows)):
-        if ws.cell(row=r, column=3).value == 0:
-            for c in range(1, n_cols + 1):
-                ws.cell(row=r, column=c).fill = FILL_NONE
-    if summary_rows:
+    rows, kinds = [], []
+    for _, _, summary, details in blocks:
+        rows.append(summary)
+        kinds.append("zero" if not details else "summary")
+        rows += details
+        kinds += ["detail"] * len(details)
+    _write_table(ws, 7, headers, rows, input_cols={n_cols - 1, n_cols})
+    ws.sheet_properties.outlinePr.summaryBelow = False   # 접기 버튼을 분류 요약 행 쪽에 둔다
+    for r, kind in enumerate(kinds, start=8):
+        if kind == "detail":
+            ws.row_dimensions[r].outlineLevel = 1
+            continue
+        fill = FILL_NONE if kind == "zero" else FILL_CAT
+        for c in range(1, n_cols + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill
+            cell.font = Font(bold=True)
+    if rows:
         dv = DataValidation(type="list", formula1='"' + ",".join(AUDITOR_STATUSES) + '"', allow_blank=True)
         ws.add_data_validation(dv)
         letter = get_column_letter(n_cols - 1)
-        dv.add(f"{letter}8:{letter}{7 + len(summary_rows)}")
-    ws.freeze_panes = "B8"
-
-    # ── 시트 2: 분류별 지적사항 (분류 × 지적사항 1행, 전체 근거) ──
-    _write_table(wb.create_sheet("분류별 지적사항"), 1, [
-        ("표준 분류", 18), ("finding_id", 15), ("제목", 28), ("발행기관", 9), ("결정연도", 9), ("지적대상", 12),
-        ("지적유형", 14), ("위험 요약", 60), ("관련 기준서", 30), ("권장 확인사항 (AI 제안)", 60),
-        ("원문 발췌", 60), ("발췌 검증", 11), ("출처 파일", 32), ("페이지", 7), ("검토상태", 9)], detail_rows)
+        dv.add(f"{letter}8:{letter}{7 + len(rows)}")
+    ws.freeze_panes = ws.cell(row=8, column=n_lead + 3)   # 분류·회사 계정·No·finding_id 고정
 
     # ── 시트 3: 지적사항 원장 (전체 구조화 레코드) ──
     categories_of: dict[str, list[str]] = {}
@@ -255,7 +249,7 @@ def run_report(cfg: dict, store: Store, log, company: str | None = None) -> Path
     except PermissionError:  # 같은 이름의 파일이 엑셀에서 열려 있는 경우
         path = path.with_name(f"{path.stem}_{datetime.now():%H%M%S}.xlsx")
         wb.save(path)
-    log.info("체크리스트 출력: %s | 분류 %d행, 지적사항 %d건 반영, %d건 제외, 매칭 없음 계정 %d개",
-             path, len(summary_rows), len(usable), len(excluded), sum(1 for a in accounts if not a["category"]))
+    log.info("체크리스트 출력: %s | 분류 %d개, 지적사항 %d건 반영, %d건 제외, 매칭 없음 계정 %d개",
+             path, len(blocks), len(usable), len(excluded), sum(1 for a in accounts if not a["category"]))
     store.log("report", "INFO", path.name, f"{company} 체크리스트 출력 (지적사항 {len(usable)}건 반영, {len(excluded)}건 제외)")
     return path

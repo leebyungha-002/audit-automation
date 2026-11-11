@@ -3540,3 +3540,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 계약서 25호·매도청구권 조항 검토해 리픽싱·콜 입력 확인
 
 ---
+
+## 2026-11-12 07:20 (감리 지적사항 체크리스트 — 시트 통합)
+
+**완료 작업**: '계정별 체크리스트'와 '분류별 지적사항' 시트를 하나로 통합. 분류 요약 행(굵게, 접기 가능) 아래에 그 분류 지적사항 전체를 1건 1행으로 펼치고 건별 감사인 검토 상태·의견 입력 가능. 상위 3건만 보이던 max_findings_per_category 설정 삭제. graphy 재생성 확인(35개 분류, 지적사항 행 413)
+**변경 파일**: workpaper_tools/audit_findings_checklist/afc/report.py, config/config.yaml, tests/test_review_mapping_report.py
+**미해결 이슈**: graphy 결과는 기존 파일이 엑셀에서 열려 있어 checklist_graphy_20261112_071810.xlsx로 저장됨. 이전 이월 이슈 동일
+**다음 할 일**:
+1. 통합 시트 사용성 blue sky 확인(열 너비·고정 범위)
+2. 6CB 인수계약서·매도청구권 협약서 원본으로 pdf_redactor 재실행
+3. 회사 Put 분리 근거 확인
+
+---
