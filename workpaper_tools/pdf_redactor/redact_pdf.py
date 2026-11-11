@@ -359,10 +359,14 @@ def write_replacement(page, rect, text, font, font_path, ocr=False):
     unit = font.text_length(text, fontsize=1) or 1
     if ocr:
         # OCR 단어 상자는 글자 윗선~밑선(대문자 높이 정도)이라 그 1.3배 ≈ 원문 글자 크기, 밑선에 맞춤
+        # rect는 화면(회전 반영) 좌표 — 회전된 스캔 페이지는 기준점을 원래 좌표로 되돌리고 글자도
+        # 페이지 회전만큼 돌려 써야 화면에서 가로로 제자리에 보인다 (2026-11-11 270° 스캔본에서
+        # 대체어가 엉뚱한 곳에 세로로 찍히던 오류)
         fs = max(min(rect.height * 1.3, rect.width * 1.5 / unit), 3)
-        baseline = pymupdf.Point(rect.x0, rect.y1 - rect.height * 0.05)
+        baseline = pymupdf.Point(rect.x0, rect.y1 - rect.height * 0.05) * page.derotation_matrix
         kw = {'fontfile': font_path} if font_path else {}
-        page.insert_text(baseline, text, fontname=FONT_NAME if font_path else 'korea', fontsize=fs, **kw)
+        page.insert_text(baseline, text, fontname=FONT_NAME if font_path else 'korea', fontsize=fs,
+                         rotate=page.rotation, **kw)
         return
     # 글자층 영역 높이는 줄 높이(글자 크기의 약 1.3~1.4배)라서 0.72배 ≈ 원문 글자 크기
     fs = max(min(rect.height * 0.72, rect.width * 0.98 / unit), 3)
@@ -450,9 +454,13 @@ def redact_pdf(src, dst, terms, patterns, namer, font, font_path, remove_images=
             continue
         for rects, repl, _, _ in targets:
             for rect in rects:
-                # OCR 좌표는 글자에 딱 붙어 있어 획 끝이 남지 않게 조금 넓힘
-                page.add_redact_annot(rect + (-1.5, -1.5, 1.5, 1.5) if scanned else rect,
-                                      fill=(1, 1, 1) if repl else (0, 0, 0))
+                # OCR 좌표는 글자에 딱 붙어 있어 획 끝이 남지 않게 조금 넓힘.
+                # OCR 좌표는 렌더링 이미지(화면, 회전 반영) 기준이고 가림 영역은 회전 전 페이지
+                # 좌표라 derotation_matrix로 변환 (글자층 get_text 좌표는 이미 회전 전 기준)
+                # 오른쪽은 더 넓힘: OCR 글자 좌표는 단어 폭을 글자 수로 균등분할한 근사라
+                # 마지막 글자 획(예: '피'의 'ㅣ')이 남는 경우가 있음
+                r = (rect + (-1.5, -1.5, 3.5, 1.5)) * page.derotation_matrix if scanned else rect
+                page.add_redact_annot(r, fill=(1, 1, 1) if repl else (0, 0, 0))
         # 일반 페이지: 이미지·표 테두리는 그대로 두고 텍스트만 삭제
         # 스캔 페이지: 해당 영역의 이미지 픽셀을 지움
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS if scanned else pymupdf.PDF_REDACT_IMAGE_NONE,
