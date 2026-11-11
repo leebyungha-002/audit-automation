@@ -114,6 +114,7 @@ def build_terms(path):
     """회차 → terms dict."""
     issues = _read_sheet(path, '발행조건')
     puts = _read_sheet(path, '조기상환Put')
+    basis = group_by(_read_sheet(path, '계약서근거'))
     calls = _read_sheet(path, '매도청구Call')
     out = {}
     for r in issues:
@@ -171,7 +172,12 @@ def build_terms(path):
             print(f"[경고] {t['회차']} Put {d}: 상환율·수익률 모두 없음 — 건너뜀")
             continue
         t['puts'].append((d, pr))
-        t['put_rows'].append({'행사일': d, '조기상환수익률': y, '상환율': pr})
+        t['put_rows'].append({'행사일': d, '조기상환수익률': y, '상환율': pr,
+                              '차수': r.get('차수') if not pd.isna(r.get('차수', None)) else None,
+                              '청구시작일': _date(r.get('청구시작일')), '청구종료일': _date(r.get('청구종료일')),
+                              '계약서상환율': _pct(r.get('계약서_조기상환율(%)')),
+                              '계약서근거': str(r.get('계약서근거') or '').strip()
+                              if not pd.isna(r.get('계약서근거', None)) else ''})
 
     for r in calls:
         t = out.get(r['회차'])
@@ -216,6 +222,9 @@ def build_terms(path):
                                '평가방법': '별도격자', '할인방식': b0['할인방식'], '자산인식': b0['자산인식'] == 'Y'})
     for t in out.values():
         t['puts'].sort()
+        t['put_rows'].sort(key=lambda x: x['행사일'])
+        t['계약서근거'] = [{kk: ('' if (vv is None or (isinstance(vv, float) and pd.isna(vv))) else vv)
+                       for kk, vv in row.items()} for row in basis.get(t['회차'], [])]
     return out
 
 
@@ -337,6 +346,19 @@ def put_close_test(t, split, issue_val, chk):
         host = issue_val['일반사채'] - (split.get('거래비용_부채') or 0.0)
         eir_b = E.solve_rate(flows, t['발행일'], host / face)
         host_src = '발행일 재계산 주계약(일반사채, Put 제외)'
+    contract = []
+    for pr in t['put_rows']:
+        cr = pr.get('계약서상환율')
+        if cr is None and not pr.get('청구시작일'):
+            continue
+        ok = cr is not None and abs(cr - pr['상환율']) < 1e-9
+        contract.append({'차수': pr.get('차수'), '청구시작일': pr.get('청구시작일'), '청구종료일': pr.get('청구종료일'),
+                         '조기상환기일': pr['행사일'], '계약서 조기상환율': cr,
+                         '행사가격(계약서)': face * cr if cr is not None else None,
+                         '앱 입력 상환율': pr['상환율'], '일치': 'O' if ok else ('X' if cr is not None else '미기재'),
+                         '근거': pr.get('계약서근거', '')})
+    if any(c['일치'] == 'X' for c in contract):
+        chk.append(('오류', '조기상환Put 입력 상환율이 계약서 조기상환율과 다른 행사일 있음 — Put밀접관련 시트 참고'))
     rows = []
     for pr in t['put_rows']:
         d = pr['행사일']
@@ -359,7 +381,8 @@ def put_close_test(t, split, issue_val, chk):
         chk.append(('확인', '조기상환권 밀접관련 검토(기준A)상 분리 불필요로 보이나 회사는 분리 처리 — Put밀접관련 시트 참고'))
     elif not all_close and not split.get('풋분리'):
         chk.append(('확인', '조기상환권 밀접관련 검토(기준A)상 분리 대상으로 보이나 분리하지 않음 — Put밀접관련 시트 참고'))
-    return {'rows': rows, '결론': concl, 'eir_a': eir_a, 'carry_a': carry_a,
+    return {'rows': rows, '결론': concl, 'eir_a': eir_a, 'carry_a': carry_a, 'contract': contract,
+            'basis': t.get('계약서근거', []),
             'host': host, 'eir_b': eir_b, 'host_src': host_src if host is not None else None}
 
 
@@ -912,6 +935,24 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
                '밀접하게 관련 → 분리하지 않음.')
         w.note('같은 문단: "콜옵션·풋옵션이 주계약과 밀접하게 관련되는지는 전환사채의 자본요소를 K-IFRS 1032에 따라 '
                '분리하기 전에 판단한다." → 기준A가 기준서 기준, 기준B는 참고.')
+        if pt['basis'] or pt['contract']:
+            w.blank()
+            w.title('1. 계약서상 조기상환청구권 조건')
+            if pt['basis']:
+                w.table(['항목', '조항', '페이지', '계약서 원문(요지)', '출처'],
+                        [[x.get('항목', ''), x.get('조항', ''), x.get('페이지', ''), x.get('원문(요지)', ''),
+                          x.get('출처', '')] for x in pt['basis']])
+                for rr in range(w.r - len(pt['basis']), w.r):
+                    ws.cell(rr, 4).alignment = Alignment(wrap_text=True, vertical='top')
+            if pt['contract']:
+                w.blank()
+                hdr_c = ['차수', '청구시작일', '청구종료일', '조기상환기일', '계약서 조기상환율', '행사가격(계약서)',
+                         '앱 입력 상환율', '일치', '근거']
+                w.table(hdr_c, [[x[h] for h in hdr_c] for x in pt['contract']],
+                        {'계약서 조기상환율': '0.0000%', '앱 입력 상환율': '0.0000%'})
+                w.note('행사가격(계약서) = 액면 × 계약서 조기상환율. 아래 밀접관련 검토는 앱 입력 상환율로 계산 — 일치 열이 모두 O여야 함.')
+            w.blank()
+            w.title('2. 행사가격 vs 상각후원가')
         w.blank()
         kv = [('기준A 상각후원가 산정', '자본요소 분리 전 — 발행가액 − 거래비용, 만기 계약현금흐름 기준 유효이자율'),
               ('기준A 최초금액', pt['carry_a']), ('기준A 유효이자율', pt['eir_a'])]
@@ -933,7 +974,7 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
         w.note('회사 처리: ' + ('조기상환권 분리(파생상품부채)' if r['split']['풋분리'] else '분리하지 않음(부채요소에 포함)'))
         w.note('※ 비율 = 행사가격 ÷ 상각후원가. 기준B는 자본요소를 떼어낸 뒤의 주계약이라 상각후원가가 낮게 나와 '
                '차이가 크게 보이는 것이 일반적 — 기준서는 기준A로 판단하도록 규정.')
-        widths(ws, [22, 14, 18, 18, 16, 10, 12, 18, 16, 10, 12])
+        widths(ws, [22, 14, 18, 60, 18, 18, 14, 18, 30, 10, 12])
 
     # 전환권조정 분기별 상각표
     for r in results:
