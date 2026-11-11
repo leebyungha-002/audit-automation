@@ -359,7 +359,7 @@ TOOLS = [
     {
         "category": "전환사채 평가 검증",
         "name": "전환사채 전환권평가·회계처리 검증 (convertible_schedule)",
-        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 유효이자율 상각표, 전환·조기상환 처리, 회사계상 대사. TF 이항격자로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
+        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 발행일 분개, 유효이자율 상각표, 분기별 전환권조정 상각표(1분기·반기·3분기·결산, 연도 소계·검증), 전환·조기상환 처리, 회사계상 대사.\n조기상환권 분리 선택(입력파일 기준/분리/비분리): 분리 시 Put을 파생상품부채로 인식하고 주계약만 상각, 파생상품(Put·매도청구권) 평가시점별 공정가치·평가손익 표. 내재 Put 밀접관련 검토 시트(K-IFRS 1109 B4.3.5(e), 행사일별 행사가격 vs 상각후원가).\nTF 이항격자(주별 52 / 일별 252단계 선택)로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
         "cmd": ["python", str(ROOT / "account_analyzer" / "convertible_analyzer" / "convertible_schedule.py")],
         "cwd": str(ROOT / "account_analyzer" / "convertible_analyzer"),
         "company": "cb_file",
@@ -663,6 +663,24 @@ class Launcher(QMainWindow):
         interim_layout.addStretch()
         right_layout.addWidget(self._interim_row)
 
+        # 전환사채 검증 전용 옵션 — 격자 단계 수·조기상환권 분리 (2026-11-11 blue sky 요청)
+        self._cb_row = QWidget()
+        cb_layout = QHBoxLayout(self._cb_row)
+        cb_layout.setContentsMargins(0, 0, 0, 0)
+        cb_layout.addWidget(QLabel("격자:"))
+        self._cb_steps_combo = QComboBox()
+        self._cb_steps_combo.setFont(QFont("맑은 고딕", 10))
+        self._cb_steps_combo.addItems(["주별 52단계/년 (빠름)", "일별 252단계/년 (정밀, 느림)"])
+        cb_layout.addWidget(self._cb_steps_combo)
+        cb_layout.addSpacing(16)
+        cb_layout.addWidget(QLabel("조기상환권:"))
+        self._cb_put_combo = QComboBox()
+        self._cb_put_combo.setFont(QFont("맑은 고딕", 10))
+        self._cb_put_combo.addItems(["입력파일 기준", "분리 (파생상품부채)", "비분리 (부채요소 포함)"])
+        cb_layout.addWidget(self._cb_put_combo)
+        cb_layout.addStretch()
+        right_layout.addWidget(self._cb_row)
+
         right_layout.addStretch()
 
         # 실행 / 중지 버튼
@@ -846,6 +864,7 @@ class Launcher(QMainWindow):
         self._interim_row.setVisible(t["company"] in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file", "cb_file"))
         if t["company"] not in ("lease_file", "dep_file", "sev_file", "leave_file", "ar_file", "cb_file"):
             self._interim_check.setChecked(False)
+        self._cb_row.setVisible(t["company"] == "cb_file")
 
     def _on_afc_step_changed(self, idx: int):
         """체크리스트 단계에 맞춰 회사 콤보를 다시 채운다 (map=분석결과 파일 보유 회사, report=DB 매칭 회사)"""
@@ -1003,6 +1022,10 @@ class Launcher(QMainWindow):
                 return
             _, fname = self._cb_input_files[file_idx]
             cmd += ["--file", fname]
+            cmd += ["--steps-per-year", "52" if self._cb_steps_combo.currentIndex() == 0 else "252"]
+            put_opt = {1: "Y", 2: "N"}.get(self._cb_put_combo.currentIndex())
+            if put_opt:
+                cmd += ["--put-split", put_opt]
             fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
             if self._interim_check.isChecked():
                 # 반기(1~6월) 검토: 결산월은 12월 그대로, 당기말 결산기준일만 6월말로 앞당김

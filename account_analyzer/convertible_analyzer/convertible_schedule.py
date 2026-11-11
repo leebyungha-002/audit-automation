@@ -489,6 +489,10 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
             chk.append(('오류', '조기상환권분리=Y인데 조기상환권금액·발행일 평가시점 모두 없음'))
             return res
         liab, liab_src = host + put_liab, f'주계약 {host_src} + 조기상환권 {put_src}'
+    elif t['부채요소금액'] and t['조기상환권금액'] is not None:
+        # 조기상환권금액이 입력돼 있으면 부채요소금액은 주계약 — 비분리 시 둘을 합쳐 부채요소로
+        liab = t['부채요소금액'] + t['조기상환권금액']
+        liab_src = '입력값(부채요소금액=주계약 + 조기상환권금액)'
     elif t['부채요소금액']:
         liab, liab_src = t['부채요소금액'], '입력값(부채요소금액)'
     elif issue_val:
@@ -1037,6 +1041,8 @@ def main():
     ap.add_argument('--fiscal-year', type=int, default=None, help='생략 시 파일명 fy 뒤 숫자')
     ap.add_argument('--interim-month', type=int, default=None, help='중간결산월(예: 9 → 9월말 기준)')
     ap.add_argument('--steps-per-year', type=int, default=252, help='격자 연간 단계 수(기본 252)')
+    ap.add_argument('--put-split', choices=['Y', 'N'], default=None,
+                    help='조기상환권 분리 강제(Y=파생상품부채 분리, N=부채요소 포함). 생략 시 입력파일 기준')
     a = ap.parse_args()
 
     path = find_input(a.company, a.file)
@@ -1058,6 +1064,10 @@ def main():
         print(f'  금리기간구조: {len(curves)}개 평가시점')
 
     results = []
+    if a.put_split:
+        for t in terms.values():
+            t['풋분리'] = a.put_split == 'Y'
+        print(f"  조기상환권: {'분리' if a.put_split == 'Y' else '비분리'} (실행 옵션 — 입력파일 값 무시)")
     for k, t in terms.items():
         print(f'  - {k}: 액면 {t["액면"]:,.0f}, 만기상환율 {t["만기상환율"]:.4%}, '
               f'Put {len(t["puts"])}건, Call {len(t["calls"])}건')
@@ -1068,6 +1078,8 @@ def main():
                 print(f'      [{lv}] {msg}')
 
     suffix = f'_{a.interim_month:02d}월' if a.interim_month else ''
+    if a.put_split:   # 분리/비분리 결과를 나란히 비교할 수 있게 파일명 구분
+        suffix += '_풋분리' if a.put_split == 'Y' else '_풋비분리'
     out = os.path.join(OUTPUT_DIR, f'convertible_schedule_{company}_{fy}{suffix}.xlsx')
     save(results, out, company, f'FY{fy}{suffix}', fy_start, fy_end, path)
     print(f'[완료] {out}')
