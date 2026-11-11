@@ -143,6 +143,11 @@ def build_terms(path):
             '시장이자율': _pct(r.get('일반사채시장이자율(%)')),
             '부채요소금액': _num(r.get('부채요소금액(원)')),
             '리픽싱': str(r.get('리픽싱(Y/N)') or '').strip().upper() == 'Y',
+            # 조기상환권 분리(2026-11-11 blue sky 요청): Y면 Put을 파생상품부채(FVTPL)로 분리하고
+            # 주계약만 유효이자율 상각 — 회사가 분리 처리한 경우의 장부 재현용
+            '풋분리': str(r.get('조기상환권분리(Y/N)') or '').strip().upper() == 'Y',
+            '조기상환권금액': _num(r.get('조기상환권금액(원)')),
+            '매도청구권금액': _num(r.get('매도청구권금액(원)')),
             '현금흐름': flows,
             '현금흐름_이자': [(d, a) for d, a in flows],  # 격자용(만기분 포함 전체)
             'puts': [], 'calls': [], 'put_rows': [], 'call_rows': [],
@@ -310,6 +315,37 @@ def adj_schedule(t, state, flows, eir, ev_res, comp, fiscal_month, fy_start, fy_
     return rows
 
 
+def derivative_roll(t, split, vals, fy_end, chk):
+    """분리 파생상품(조기상환권 부채·매도청구권 자산) 평가시점별 공정가치·평가손익.
+
+    평가손익 부호: 이익(+)/손실(−). 부채는 공정가치 증가가 손실, 자산은 증가가 이익.
+    재계산 기준과 외부평가 기준을 나란히 — 회사 장부는 보통 평가보고서 금액.
+    """
+    items = []
+    if split.get('풋분리'):
+        items.append(('조기상환권(파생상품부채)', '조기상환청구권', -1, split['조기상환권_부채']))
+    if split.get('매도청구권_자산'):
+        items.append(('매도청구권(파생상품자산)', '매도청구권', 1, split['매도청구권_자산']))
+    if not items:
+        return []
+    rows = []
+    pts = sorted((v for v in vals if v['평가기준일'] >= t['발행일']), key=lambda v: v['평가기준일'])
+    for name, key, sign, init in items:
+        prev_c = prev_x = None
+        for v in pts:
+            c, x = v[key], v['외부'].get(key)
+            if v['평가기준일'] == t['발행일']:
+                c = init                      # 최초인식 금액(입력값 우선)과 일치시킴
+            rows.append({'구분': name, '평가기준일': v['평가기준일'], '미상환액면': v['미상환액면'],
+                         '공정가치(재계산)': c, '평가손익(재계산)': None if prev_c is None else sign * (c - prev_c),
+                         '공정가치(외부평가)': x,
+                         '평가손익(외부평가)': None if (prev_x is None or x is None) else sign * (x - prev_x)})
+            prev_c, prev_x = c, (x if x is not None else prev_x)
+    if t['발행일'] < fy_end < t['만기일'] and not any(v['평가기준일'] == fy_end for v in pts):
+        chk.append(('확인', f'{fy_end} 평가시점 없음 — 분리 파생상품 기말 공정가치·평가손익 미산정(평가시점 시트에 추가)'))
+    return rows
+
+
 def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, steps, curves=None):
     k = t['회차']
     res = {'회차': k, 'terms': t, 'checks': []}
@@ -386,7 +422,26 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
     res['sensitivity'] = sens
 
     # ② 발행시 분리 — 부채요소: 입력값 > 발행일 평가(주계약+조기상환권) > 시장이자율 할인
-    if t['부채요소금액']:
+    put_sep = t['풋분리']
+    put_liab = 0.0
+    if put_sep:
+        # 분리: 부채요소금액 = 주계약(입력 1순위), 조기상환권 = 파생상품부채(입력 1순위)
+        if t['부채요소금액']:
+            host, host_src = t['부채요소금액'], '입력값(부채요소금액=주계약)'
+        elif issue_val:
+            host, host_src = issue_val['일반사채'], '발행일 재계산(주계약, Put 제외)'
+        else:
+            chk.append(('오류', '조기상환권분리=Y인데 부채요소금액·발행일 평가시점 모두 없음 — 주계약 측정 불가'))
+            return res
+        if t['조기상환권금액'] is not None:
+            put_liab, put_src = t['조기상환권금액'], '입력값(조기상환권금액)'
+        elif issue_val:
+            put_liab, put_src = issue_val['조기상환청구권'], '발행일 재계산'
+        else:
+            chk.append(('오류', '조기상환권분리=Y인데 조기상환권금액·발행일 평가시점 모두 없음'))
+            return res
+        liab, liab_src = host + put_liab, f'주계약 {host_src} + 조기상환권 {put_src}'
+    elif t['부채요소금액']:
         liab, liab_src = t['부채요소금액'], '입력값(부채요소금액)'
     elif issue_val:
         liab, liab_src = issue_val['일반사채_Put포함'], '발행일 재계산(주계약+조기상환권)'
@@ -398,12 +453,27 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
         return res
     call_asset = 0.0
     if any(c['자산인식'] for c in t['calls']):
-        if issue_val:
+        if t['매도청구권금액'] is not None:
+            call_asset = t['매도청구권금액']
+        elif issue_val:
             call_asset = issue_val['매도청구권']
         else:
             chk.append(('확인', '매도청구권 자산인식(Y)이나 발행일 평가시점 없음 — 콜 자산 0으로 처리'))
     split = E.initial_split(t['발행가액'], t['액면'], flows, t['발행일'], liab, t['거래비용'], call_asset)
     split['부채요소_출처'] = liab_src
+    split['풋분리'] = put_sep
+    split['조기상환권_부채'] = put_liab
+    split['거래비용_파생'] = 0.0
+    if put_sep:
+        # 부채 배분 거래비용 중 파생상품부채 몫은 당기비용(FVTPL), 주계약 몫만 장부금액 차감
+        cost_l = split['거래비용_부채']
+        cost_put = cost_l * put_liab / liab if liab else 0.0
+        carrying0 = host - (cost_l - cost_put)
+        split.update({'주계약_공정가치': host, '거래비용_부채': cost_l - cost_put, '거래비용_파생': cost_put,
+                      '최초장부금액': carrying0,
+                      '유효이자율': E.solve_rate(flows, t['발행일'], carrying0 / t['액면'])})
+        chk.append(('확인', f"조기상환권 분리(파생상품부채 {put_liab:,.0f}) — 내재 Put 행사가격이 각 행사일 "
+                           '상각후원가와 거의 같으면 밀접관련으로 분리하지 않음(K-IFRS 1109 B4.3.5(e)). 분리 근거 확인'))
     res['split'] = split
     # 평가보고서 기준 분리(대사용): 부채 = 주계약 + 조기상환권, 콜 자산 = 매도청구권
     if issue_val and {'일반사채', '조기상환청구권'} <= set(issue_val['외부']):
@@ -471,6 +541,7 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
                       '전환권조정': 0.0 if b == t['만기일'] else comp(b)['전환권조정']})
     res['schedule'] = sched
     res['adj_schedule'] = adj_schedule(t, state, flows, eir, ev_res, comp, prior_end.month, fy_start, fy_end)
+    res['derivatives'] = derivative_roll(t, split, vals, fy_end, chk)
 
     # ③ 회계연도 집계
     if fy_end > t['발행일']:
@@ -548,7 +619,8 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
             chk.append(('확인', '매도청구권 보유자 회사 — 발행회사 콜옵션(내재파생상품) 주계약 밀접관련 여부 검토'))
     s = split
     # 검증: 발행가액 + 매도청구권 자산 = 부채 최초장부 + 전환권대가 + 거래비용
-    gap = t['발행가액'] + s['매도청구권_자산'] - (s['최초장부금액'] + s['전환권대가'] + s['거래비용_부채'] + s['거래비용_자본'])
+    gap = t['발행가액'] + s['매도청구권_자산'] - (s['최초장부금액'] + s['조기상환권_부채'] + s['전환권대가']
+                                                + s['거래비용_부채'] + s['거래비용_파생'] + s['거래비용_자본'])
     if abs(gap) > 1:
         chk.append(('오류', f'발행가액 분리 합계 불일치 {gap:,.0f}'))
     return res
@@ -695,7 +767,11 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
         if 'split' in r:
             s = r['split']
             w.blank()
-            w.kv([('부채요소 측정', s['부채요소_출처']),
+            sep_rows = ([('조기상환권 회계처리', '분리 — 파생상품부채(FVTPL), 주계약만 유효이자율 상각'),
+                         ('주계약 공정가치', s['주계약_공정가치']), ('조기상환권(파생상품부채)', s['조기상환권_부채']),
+                         ('거래비용 — 파생(당기비용)', s['거래비용_파생'])]
+                        if s['풋분리'] else [('조기상환권 회계처리', '비분리 — 부채요소(주계약+조기상환권)에 포함')])
+            w.kv(sep_rows + [('부채요소 측정', s['부채요소_출처']),
                   ('부채요소 공정가치', s['부채요소_공정가치']), ('매도청구권 자산', s['매도청구권_자산']),
                   ('자본요소(전환권) 공정가치', s['자본요소_공정가치']),
                   ('거래비용 — 부채', s['거래비용_부채']), ('거래비용 — 자본', s['거래비용_자본']),
@@ -703,6 +779,25 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
                   ('유효이자율', s['유효이자율'])], {'유효이자율': '0.0000%'})
             w.note('잔여법(K-IFRS 1032.31): 자본요소 = 발행가액 − 부채요소(주계약+조기상환청구권) + 매도청구권 자산(자산인식 Y인 경우). '
                    '유효이자율은 부채 최초장부금액을 만기 계약현금흐름에 맞춰 산정.')
+            # 발행일 분개 (회사 분개와 대사용)
+            prem0 = t['액면'] * max(t['만기상환율'] - 1.0, 0.0)
+            adj0 = t['액면'] + prem0 - s['최초장부금액']
+            je = [('차', '현금(발행가액 − 거래비용)', t['발행가액'] - t['거래비용']),
+                  ('차', '파생상품자산(매도청구권)', s['매도청구권_자산']),
+                  ('차', '전환권조정', adj0),
+                  ('차', '파생상품평가손실(거래비용)', s['거래비용_파생']),
+                  ('대', '전환사채(액면)', t['액면']),
+                  ('대', '상환할증금', prem0),
+                  ('대', '파생상품부채(조기상환권)', s['조기상환권_부채']),
+                  ('대', '전환권대가(거래비용 차감)', s['전환권대가'])]
+            je = [x for x in je if abs(x[2]) > 0.5]
+            dr = sum(x[2] for x in je if x[0] == '차')
+            cr = sum(x[2] for x in je if x[0] == '대')
+            w.blank()
+            w.title('발행일 분개 (재계산)')
+            w.table(['차/대', '계정', '금액'], [list(x) for x in je] + [['차변합계', '', dr], ['대변합계', '', cr]])
+            if abs(dr - cr) > 1:
+                w.note(f'차대 불일치 {dr - cr:,.0f}')
             sr = r.get('split_report')
             if sr:
                 w.blank()
@@ -735,6 +830,14 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
             hdr = ['일자', '구분', '기초장부금액', '유효이자', '표면이자', '상각액', '전환·상환 제거', '만기상환',
                    '기말장부금액', '미상환액면', '상환할증금', '전환권조정']
             w.table(hdr, [[x[h] for h in hdr] for x in r['schedule']])
+        if r.get('derivatives'):
+            w.blank()
+            w.title('분리 파생상품 후속측정 (공정가치 변동 → 당기손익)')
+            hdr = ['구분', '평가기준일', '미상환액면', '공정가치(재계산)', '평가손익(재계산)',
+                   '공정가치(외부평가)', '평가손익(외부평가)']
+            w.table(hdr, [[x[h] for h in hdr] for x in r['derivatives']])
+            w.note('평가손익: 이익(+)/손실(−), 직전 평가시점 대비. 부채는 공정가치 증가가 손실. '
+                   '전환·조기상환 시 파생상품 제거분은 별도 확인(평가시점 금액은 해당일 미상환액면 기준).')
         if r.get('events'):
             w.blank()
             w.title('전환·상환 처리')
@@ -753,6 +856,8 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
         w.title(f"{r['회차']} 전환권조정 상각표 (분기별, 유효이자율 {r['split']['유효이자율']:.4%})")
         w.note('전환권조정 = 사채액면 + 상환할증금 − 장부금액.  상각액 = 유효이자 − 표면이자 (이자비용 중 전환권조정 상각분).  '
                '상각기간: 만기 기준.  음영 = 당기 검증기간.')
+        w.note('조기상환권: ' + ('분리(파생상품부채) — 주계약 장부금액 기준 상각, Put 공정가치 변동은 별도 당기손익'
+                               if r['split']['풋분리'] else '비분리 — 부채요소(주계약+조기상환권) 기준 상각'))
         hdr = ['회계연도', '구분', '기간시작', '기간종료', '기초 전환권조정', '상각액', '전환·상환 감소', '기말 전환권조정',
                '유효이자', '표면이자', '사채액면', '상환할증금', '장부금액', '비고']
         num = ['기초 전환권조정', '상각액', '전환·상환 감소', '기말 전환권조정', '유효이자', '표면이자',
