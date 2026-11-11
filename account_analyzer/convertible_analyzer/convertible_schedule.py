@@ -262,6 +262,54 @@ def _shift(r, dx):
     return r + dx
 
 
+def _quarter_ends(d0: date, d1: date, fiscal_month: int) -> list:
+    """(d0, d1) 사이 분기말 [(일자, 회계연도, 구분)]. 구분 = 1분기/반기/3분기/결산."""
+    out, y, m = [], d0.year, d0.month
+    while True:
+        e = date(y, m, calendar.monthrange(y, m)[1])
+        if e >= d1:
+            break
+        q = (m - fiscal_month) % 12
+        if e > d0 and q % 3 == 0:
+            fy = y if m <= fiscal_month else y + 1
+            out.append((e, fy, {3: '1분기', 6: '반기', 9: '3분기', 0: '결산'}[q]))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def adj_schedule(t, state, flows, eir, ev_res, comp, fiscal_month, fy_start, fy_end):
+    """전환권조정 분기별 상각표 (발행일 ~ 만기, 2026-11-11 blue sky 요청).
+
+    전환권조정 = 미상환액면 + 상환할증금 − 장부금액. 상각액 = 유효이자 − 표면이자.
+    전환·상환 감소 = 기초 − 상각 − 기말 (이벤트로 액면·할증금과 함께 제거된 조정액).
+    원 단위: 잔액을 반올림하고 상각액을 끝수 조정 값으로 맞춰 만기 잔액이 정확히 0이 되게 한다.
+    """
+    def fy_of(d):
+        return d.year if d.month <= fiscal_month else d.year + 1
+
+    pts = [(t['발행일'], fy_of(t['발행일']), '발행')] + _quarter_ends(t['발행일'], t['만기일'], fiscal_month)
+    pts.append((t['만기일'], fy_of(t['만기일']), '만기'))
+    rows = []
+    for (a, _, _), (b, fyb, tag) in zip(pts[:-1], pts[1:]):
+        if state(a)['미상환액면'] <= 0:
+            break
+        ca = comp(a)
+        cb = ({kk: 0.0 for kk in ca} if b == t['만기일'] else comp(b))
+        intr = E.interest_between(state, flows, eir, a, b, ev_res)
+        paid = E.coupons_paid_between(state, flows, a, b, t['만기상환율'], t['만기일'])
+        evs = [e for e in ev_res if a < e['일자'] <= b]
+        adj_a, adj_b = round(ca['전환권조정']), round(cb['전환권조정'])
+        dec = round(ca['전환권조정'] - (intr - paid) - cb['전환권조정'])
+        amort = adj_a - dec - adj_b                        # 끝수 조정 포함 상각액
+        rows.append({'회계연도': fyb, '구분': tag, '기간시작': a, '기간종료': b,
+                     '기초 전환권조정': adj_a, '상각액': amort, '전환·상환 감소': dec, '기말 전환권조정': adj_b,
+                     '유효이자': paid + amort, '표면이자': paid,
+                     '사채액면': cb['미상환액면'], '상환할증금': cb['상환할증금'], '장부금액': cb['장부금액'],
+                     '비고': ', '.join(f"{e['일자']} {e['구분']}" for e in evs),
+                     '당기': fy_start <= b <= fy_end})
+    return rows
+
+
 def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, steps, curves=None):
     k = t['회차']
     res = {'회차': k, 'terms': t, 'checks': []}
@@ -422,6 +470,7 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
                       '상환할증금': 0.0 if b == t['만기일'] else comp(b)['상환할증금'],
                       '전환권조정': 0.0 if b == t['만기일'] else comp(b)['전환권조정']})
     res['schedule'] = sched
+    res['adj_schedule'] = adj_schedule(t, state, flows, eir, ev_res, comp, prior_end.month, fy_start, fy_end)
 
     # ③ 회계연도 집계
     if fy_end > t['발행일']:
@@ -693,6 +742,56 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
                    '지급액', '상환손익']
             w.table(hdr, [[e.get(h) for h in hdr] for e in r['events']], {'발행주식수': '#,##0'})
         widths(ws, [24, 18, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16])
+
+    # 전환권조정 분기별 상각표
+    for r in results:
+        rows = r.get('adj_schedule')
+        if not rows:
+            continue
+        ws = wb.create_sheet(f"전환권조정상각_{r['회차']}"[:31])
+        w = Writer(ws)
+        w.title(f"{r['회차']} 전환권조정 상각표 (분기별, 유효이자율 {r['split']['유효이자율']:.4%})")
+        w.note('전환권조정 = 사채액면 + 상환할증금 − 장부금액.  상각액 = 유효이자 − 표면이자 (이자비용 중 전환권조정 상각분).  '
+               '상각기간: 만기 기준.  음영 = 당기 검증기간.')
+        hdr = ['회계연도', '구분', '기간시작', '기간종료', '기초 전환권조정', '상각액', '전환·상환 감소', '기말 전환권조정',
+               '유효이자', '표면이자', '사채액면', '상환할증금', '장부금액', '비고']
+        num = ['기초 전환권조정', '상각액', '전환·상환 감소', '기말 전환권조정', '유효이자', '표면이자',
+               '사채액면', '상환할증금', '장부금액']
+        fmts = {h: '#,##0' for h in num}
+        out, cur_rows = [], []
+        for fy in sorted({x['회계연도'] for x in rows}):
+            grp = [x for x in rows if x['회계연도'] == fy]
+            for x in grp:
+                out.append([x[h] for h in hdr])
+                if x['당기']:
+                    cur_rows.append(len(out))
+            sub = [f'FY{fy} 소계', '', grp[0]['기간시작'], grp[-1]['기간종료'], grp[0]['기초 전환권조정'],
+                   sum(x['상각액'] for x in grp), sum(x['전환·상환 감소'] for x in grp), grp[-1]['기말 전환권조정'],
+                   sum(x['유효이자'] for x in grp), sum(x['표면이자'] for x in grp),
+                   grp[-1]['사채액면'], grp[-1]['상환할증금'], grp[-1]['장부금액'], '']
+            out.append(sub)
+        tot_am = sum(x['상각액'] for x in rows)
+        tot_dec = sum(x['전환·상환 감소'] for x in rows)
+        out.append(['합계', '', rows[0]['기간시작'], rows[-1]['기간종료'], rows[0]['기초 전환권조정'], tot_am, tot_dec,
+                    rows[-1]['기말 전환권조정'], sum(x['유효이자'] for x in rows), sum(x['표면이자'] for x in rows),
+                    '', '', '', ''])
+        top = w.r + 1
+        w.table(hdr, out, fmts)
+        cur_fill = PatternFill('solid', fgColor='FFF2CC')
+        for i, row in enumerate(out):
+            rr = top + i
+            if str(row[0]).endswith('소계') or row[0] == '합계':
+                for c in range(1, len(hdr) + 1):
+                    ws.cell(rr, c).font = BOLD
+            elif i + 1 in cur_rows:
+                for c in range(1, len(hdr) + 1):
+                    ws.cell(rr, c).fill = cur_fill
+        w.blank()
+        gap = rows[0]['기초 전환권조정'] - tot_am - tot_dec - rows[-1]['기말 전환권조정']
+        w.kv([('최초 전환권조정', rows[0]['기초 전환권조정']), ('상각액 합계', tot_am),
+              ('전환·상환 감소 합계', tot_dec), ('최종 잔액', rows[-1]['기말 전환권조정']),
+              ('검증차이 (최초 − 상각 − 감소 − 최종)', gap)])
+        widths(ws, [14, 8, 12, 12, 18, 16, 16, 18, 16, 14, 18, 16, 18, 24])
 
     # 공정가치·민감도
     ws = wb.create_sheet('공정가치')
