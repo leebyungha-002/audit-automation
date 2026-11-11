@@ -2078,7 +2078,35 @@ def _sampling_mus_size(book_value, conf, tm, em):
     n = int(np.ceil(book_value * rf / denom))
     basis = (f'통계표: 모집단금액 {book_value:,.0f} × 신뢰계수 {rf} ÷ (허용왜곡표시 {tm:,.0f} − '
              f'예상왜곡표시 {em:,.0f} × 확장계수 {ef}) = {n}건 (신뢰수준 {level:.0%})')
-    return n, basis
+    return n, basis, {'level': level, 'rf': rf, 'ef': ef, 'bv': book_value, 'tm': tm, 'em': em,
+                      'input_conf': conf}
+
+
+def _sampling_stat_table(acct_label: str, key_n: int, key_amt, mus: dict, n: int) -> pd.DataFrame:
+    """통계표사용=Y 계정의 샘플크기 산정표 + MUS 통계표(샘플 시트 오른쪽에 붙임, 2026-11-11 blue sky 요청)."""
+    lv = mus['level']
+    rows = [
+        ('[샘플크기 산정]', '', ''),
+        ('대상', acct_label, ''),
+        ('모집단금액(개별유의 전수 제외)', mus['bv'],
+         f'개별유의금액 {key_amt:,.0f}원 이상 {key_n}건 제외' if key_amt else '개별유의금액 미지정'),
+        ('신뢰수준', f'{lv:.0%}',
+         '' if abs(mus['input_conf'] - lv) < 1e-9 else f"입력 {mus['input_conf']:.0%} → 가장 가까운 통계표 수준 적용"),
+        ('신뢰계수(RF)', mus['rf'], '통계표(오류 0건 기대)'),
+        ('허용왜곡표시(TM)', mus['tm'], ''),
+        ('예상왜곡표시(EM)', mus['em'], ''),
+        ('확장계수(EF)', mus['ef'], '통계표'),
+        ('산식', 'n = 모집단금액 × RF ÷ (TM − EM × EF)', ''),
+        ('계산', f"{mus['bv']:,.0f} × {mus['rf']} ÷ ({mus['tm']:,.0f} − {mus['em']:,.0f} × {mus['ef']})",
+         f"= {mus['bv'] * mus['rf'] / (mus['tm'] - mus['em'] * mus['ef']):,.2f} → 올림"),
+        ('샘플크기', n, '건 (개별유의 전수 건수는 별도)'),
+        ('', '', ''),
+        ('[MUS 통계표 — 오류 0건 기대]', '', ''),
+        ('신뢰수준', '신뢰계수(RF)', '확장계수(EF)'),
+    ]
+    for level, (rf, ef) in sorted(_MUS_FACTORS.items()):
+        rows.append((f'{level:.0%}' + (' ◀ 적용' if level == lv else ''), rf, ef))
+    return pd.DataFrame(rows, columns=['항목', '값', '비고'])
 
 
 def _sampling_select(pop: pd.DataFrame, n: int, method: str, rng) -> tuple:
@@ -2146,6 +2174,7 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
     has_cost_col = COST_COL in df.columns
     _cost_order = {'판관': 0, '제조': 1}
     grouped = {}      # 비용구분 통합 시트명 -> [계정별 샘플표]
+    side_tables = {}  # 시트명 -> [통계표사용 계정의 샘플크기 산정표]
 
     for p in rows:
         acct = _nv(p.get('계정과목', ''))
@@ -2235,6 +2264,7 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
 
             # ② 샘플크기 (통계표 사용 시 MUS 공식, 아니면 입력값)
             size_basis = ''
+            mus_info = None
             n = int(_ai_param_num(p.get('샘플크기'), _SAMPLING_DEFAULT_SIZE))
             use_table = _nv(str(p.get('통계표사용', ''))).upper() in ('Y', 'O', 'TRUE')
             if use_table:
@@ -2249,7 +2279,7 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
                     print(f'    [감사샘플링] {acct}: {msg}', flush=True)
                     continue
                 try:
-                    n, size_basis = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
+                    n, size_basis, mus_info = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
                 except ValueError as e:
                     cond_rows.append({**cond, '비고': str(e)})
                     continue
@@ -2329,6 +2359,10 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
                         sname = _safe_sheet(f'{sname}{len(out)}')
                 out[sname] = tbl
             fmt[sname] = {'차변': '#,##0', '대변': '#,##0', '샘플금액': '#,##0'}
+            if mus_info:
+                label = f'{acct}({cost_val})' if cost_val else acct
+                side_tables.setdefault(sname, []).append(
+                    _sampling_stat_table(f'{label} / {side} / {method}', key_n, key_amt, mus_info, n))
 
             sample_total = float(sample['_amt'].sum())
             cond.update({
@@ -2366,6 +2400,8 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
     fmt['샘플링조건'] = {c: '#,##0' for c in ('모집단건수', '모집단금액', '대사(원장합계)', '대사차이',
                                               '개별유의 전수', '이상거래', '방법추출', '샘플합계건수', '샘플금액')}
     result['_number_format_cols'] = fmt
+    if side_tables:
+        result['_side_tables'] = side_tables
     return result
 
 
@@ -4384,6 +4420,7 @@ def save_results(results: dict, output_dir: str, company_name: str,
     column_notes   = results.pop('_column_notes', None)  # {시트명: {컬럼명: 메모text}}
     legend_rows    = results.pop('_legend_rows', None)   # {시트명: [(항목, 설명), ...]}
     number_formats = results.pop('_number_format_cols', None)  # {시트명: {컬럼명: 서식}}
+    side_tables    = results.pop('_side_tables', None)   # {시트명: [DataFrame, ...]} 본표 오른쪽 부가표
 
     # startrow=2: 1~2행을 비워두고 3행부터 컬럼헤더+데이터 기록
     with pd.ExcelWriter(out_path, engine='openpyxl') as writer:
@@ -4478,6 +4515,34 @@ def save_results(results: dict, output_dir: str, company_name: str,
                                              min_col=col_idx, max_col=col_idx):
                         for cell in row:
                             cell.number_format = fmt
+
+    if side_tables:
+        # 본표 오른쪽(마지막 열 + 1칸 띄움)에 부가표를 세로로 쌓는다. 행 삽입을 하지 않아
+        # 본표 위치(mapping_list 범위)는 그대로 유지된다. 15번 통계표 산정표 등.
+        from openpyxl.styles import PatternFill
+        hdr_fill = PatternFill('solid', fgColor='DDEBF7')
+        for sheet, tables in side_tables.items():
+            sname = _safe_sheet(sheet)
+            if sname not in wb.sheetnames:
+                continue
+            ws = wb[sname]
+            col0 = ws.max_column + 2
+            r = 3 + len((legend_rows or {}).get(sheet) or [])
+            for t in tables:
+                for j, c in enumerate(t.columns):
+                    cell = ws.cell(row=r, column=col0 + j, value=c)
+                    cell.font, cell.fill = bold, hdr_fill
+                for vals in t.itertuples(index=False):
+                    r += 1
+                    for j, v in enumerate(vals):
+                        cell = ws.cell(row=r, column=col0 + j, value=v)
+                        if isinstance(v, (int, float)) and not isinstance(v, bool):
+                            cell.number_format = '#,##0' if abs(v) >= 100 else 'General'
+                        if j == 0 and isinstance(v, str) and v.startswith('['):
+                            cell.font = bold
+                r += 2
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col0)].width = 30
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col0 + 1)].width = 40
 
     if benford_images:
         # 이 시점의 시트 탭 이름은 아직 main()에서 넣어준 내부 키("03_계정명_방향",
