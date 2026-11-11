@@ -41,6 +41,7 @@ INPUT_DIR = os.path.join(HERE, 'input_data')
 OUTPUT_DIR = os.path.join(HERE, 'output')
 TOL_RATE = 0.01      # 대사 차이 유의 기준(1%)
 TOL_AMT = 1_000      # 원단위 반올림 허용
+PUT_CLOSE_BAND = 0.05   # Put 밀접관련 '거의 같음' 참고 기준(±5%) — 기준서에 수치 기준 없음, 감사 판단 보조용
 
 
 # ─── 입력 ────────────────────────────────────────────────────────────────────
@@ -315,6 +316,53 @@ def adj_schedule(t, state, flows, eir, ev_res, comp, fiscal_month, fy_start, fy_
     return rows
 
 
+def put_close_test(t, split, issue_val, chk):
+    """내재 Put 밀접관련 검토(K-IFRS 1109 B4.3.5(e)) — 행사일별 행사가격 vs 상각후원가.
+
+    기준A(기준서 기준): B4.3.5(e) 마지막 문장 — 전환사채는 자본요소를 분리하기 '전'에 판단.
+        상각후원가 = 발행가액 − 거래비용을 만기 계약현금흐름에 맞춘 유효이자율로 상각.
+    기준B(참고): 자본요소·Put 분리 후 주계약(일반사채) 장부금액을 주계약 유효이자율로 상각.
+    행사가격 = 액면 × 상환율(표면이자 별도). 상각후원가도 행사일 당일 지급 표면이자 제외.
+    """
+    if not t['put_rows']:
+        return None
+    face, flows = t['액면'], t['현금흐름']
+    carry_a = t['발행가액'] - t['거래비용']
+    eir_a = E.solve_rate(flows, t['발행일'], carry_a / face)
+    eir_a = 0.0 if abs(eir_a) < 1e-9 else eir_a   # 솔버 잔차(-0.0000%) 정리
+    host = eir_b = None
+    if split.get('풋분리'):
+        host, eir_b, host_src = split['최초장부금액'], split['유효이자율'], '분리 주계약 최초장부금액'
+    elif issue_val:
+        host = issue_val['일반사채'] - (split.get('거래비용_부채') or 0.0)
+        eir_b = E.solve_rate(flows, t['발행일'], host / face)
+        host_src = '발행일 재계산 주계약(일반사채, Put 제외)'
+    rows = []
+    for pr in t['put_rows']:
+        d = pr['행사일']
+        ex = face * pr['상환율']
+        ac_a = face * E.carrying_unit(flows, d, eir_a)
+        ra = ex / ac_a if ac_a else None
+        row = {'행사일': d, '상환율': pr['상환율'], '행사가격': ex,
+               '상각후원가A': ac_a, '차이A': round(ex - ac_a), '비율A': ra,
+               '판정A': ('거의 같음' if ra is not None and abs(ra - 1) <= PUT_CLOSE_BAND else '차이 큼')}
+        if host is not None:
+            ac_b = face * E.carrying_unit(flows, d, eir_b)
+            rb = ex / ac_b if ac_b else None
+            row.update({'상각후원가B': ac_b, '차이B': round(ex - ac_b), '비율B': rb,
+                        '판정B': ('거의 같음' if rb is not None and abs(rb - 1) <= PUT_CLOSE_BAND else '차이 큼')})
+        rows.append(row)
+    all_close = all(r['판정A'] == '거의 같음' for r in rows)
+    concl = ('모든 행사일에 행사가격이 상각후원가와 거의 같음 → 밀접관련, 조기상환권 분리하지 않음(기준A)'
+             if all_close else '행사가격이 상각후원가와 차이 나는 행사일 있음 → 밀접관련 아님, 분리 검토(기준A)')
+    if all_close and split.get('풋분리'):
+        chk.append(('확인', '조기상환권 밀접관련 검토(기준A)상 분리 불필요로 보이나 회사는 분리 처리 — Put밀접관련 시트 참고'))
+    elif not all_close and not split.get('풋분리'):
+        chk.append(('확인', '조기상환권 밀접관련 검토(기준A)상 분리 대상으로 보이나 분리하지 않음 — Put밀접관련 시트 참고'))
+    return {'rows': rows, '결론': concl, 'eir_a': eir_a, 'carry_a': carry_a,
+            'host': host, 'eir_b': eir_b, 'host_src': host_src if host is not None else None}
+
+
 def derivative_roll(t, split, vals, fy_end, chk):
     """분리 파생상품(조기상환권 부채·매도청구권 자산) 평가시점별 공정가치·평가손익.
 
@@ -542,6 +590,7 @@ def process(t, events_raw, vals_raw, books_raw, fy_start, fy_end, prior_end, ste
     res['schedule'] = sched
     res['adj_schedule'] = adj_schedule(t, state, flows, eir, ev_res, comp, prior_end.month, fy_start, fy_end)
     res['derivatives'] = derivative_roll(t, split, vals, fy_end, chk)
+    res['put_test'] = put_close_test(t, split, issue_val, chk)
 
     # ③ 회계연도 집계
     if fy_end > t['발행일']:
@@ -845,6 +894,42 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
                    '지급액', '상환손익']
             w.table(hdr, [[e.get(h) for h in hdr] for e in r['events']], {'발행주식수': '#,##0'})
         widths(ws, [24, 18, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16])
+
+    # 내재 Put 밀접관련 검토
+    for r in results:
+        pt = r.get('put_test')
+        if not pt:
+            continue
+        t = r['terms']
+        ws = wb.create_sheet(f"Put밀접관련_{r['회차']}"[:31])
+        w = Writer(ws)
+        w.title(f"{r['회차']} 내재 조기상환권(Put) 밀접관련 검토 — K-IFRS 1109 B4.3.5(e)")
+        w.note('B4.3.5(e): 조기상환권 행사가격이 각 행사일의 채무상품 상각후원가와 거의 같다면 내재파생상품은 주계약과 '
+               '밀접하게 관련 → 분리하지 않음.')
+        w.note('같은 문단: "콜옵션·풋옵션이 주계약과 밀접하게 관련되는지는 전환사채의 자본요소를 K-IFRS 1032에 따라 '
+               '분리하기 전에 판단한다." → 기준A가 기준서 기준, 기준B는 참고.')
+        w.blank()
+        kv = [('기준A 상각후원가 산정', '자본요소 분리 전 — 발행가액 − 거래비용, 만기 계약현금흐름 기준 유효이자율'),
+              ('기준A 최초금액', pt['carry_a']), ('기준A 유효이자율', pt['eir_a'])]
+        if pt['host'] is not None:
+            kv += [('기준B 상각후원가 산정', f"자본요소·Put 분리 후 주계약 — {pt['host_src']}"),
+                   ('기준B 최초금액', pt['host']), ('기준B 유효이자율', pt['eir_b'])]
+        kv += [('행사가격', '액면 × 상환율 (표면이자 별도, 상각후원가도 행사일 지급 표면이자 제외)'),
+               ('"거의 같음" 참고 기준', f'±{PUT_CLOSE_BAND:.0%} (기준서에 수치 기준 없음 — 감사 판단 보조)')]
+        w.kv(kv, {'기준A 유효이자율': '0.0000%', '기준B 유효이자율': '0.0000%'})
+        w.blank()
+        hdr = ['행사일', '상환율', '행사가격', '상각후원가A', '차이A', '비율A', '판정A']
+        if pt['host'] is not None:
+            hdr += ['상각후원가B', '차이B', '비율B', '판정B']
+        w.table(hdr, [[x.get(h) for h in hdr] for x in pt['rows']],
+                {'상환율': '0.0000%', '비율A': '0.0%', '비율B': '0.0%'})
+        w.blank()
+        w.title('결론(기준A)')
+        w.note(pt['결론'])
+        w.note('회사 처리: ' + ('조기상환권 분리(파생상품부채)' if r['split']['풋분리'] else '분리하지 않음(부채요소에 포함)'))
+        w.note('※ 비율 = 행사가격 ÷ 상각후원가. 기준B는 자본요소를 떼어낸 뒤의 주계약이라 상각후원가가 낮게 나와 '
+               '차이가 크게 보이는 것이 일반적 — 기준서는 기준A로 판단하도록 규정.')
+        widths(ws, [22, 14, 18, 18, 16, 10, 12, 18, 16, 10, 12])
 
     # 전환권조정 분기별 상각표
     for r in results:
