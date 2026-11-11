@@ -359,7 +359,7 @@ TOOLS = [
     {
         "category": "전환사채 평가 검증",
         "name": "전환사채 전환권평가·회계처리 검증 (convertible_schedule)",
-        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 발행일 분개, 유효이자율 상각표, 분기별 전환권조정 상각표(1분기·반기·3분기·결산, 연도 소계·검증), 전환·조기상환 처리, 회사계상 대사.\n조기상환권 분리 선택(입력파일 기준/분리/비분리): 분리 시 Put을 파생상품부채로 인식하고 주계약만 상각, 파생상품(Put·매도청구권) 평가시점별 공정가치·평가손익 표. 내재 Put 밀접관련 검토 시트(K-IFRS 1109 B4.3.5(e), 행사일별 행사가격 vs 상각후원가).\nTF 이항격자(주별 52 / 일별 252단계 선택)로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
+        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 발행일 분개, 유효이자율 상각표, 분기별 전환권조정 상각표(1분기·반기·3분기·결산, 연도 소계·검증), 전환·조기상환 처리, 회사계상 대사.\n조기상환권 분리 선택(입력파일 기준/분리/비분리): 분리 시 Put을 파생상품부채로 인식하고 주계약만 상각, 파생상품(Put·매도청구권) 평가시점별 공정가치·평가손익 표. 내재 Put 밀접관련 검토 시트(K-IFRS 1109 B4.3.5(5), 행사일별 행사가격 vs 상각후원가).\nTF 이항격자(주별 52 / 일별 252단계 선택)로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
         "cmd": ["python", str(ROOT / "account_analyzer" / "convertible_analyzer" / "convertible_schedule.py")],
         "cwd": str(ROOT / "account_analyzer" / "convertible_analyzer"),
         "company": "cb_file",
