@@ -2235,7 +2235,15 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
                 lines['_amt'] = cr.abs()
             else:
                 lines['_amt'] = dr.abs() + cr.abs()
-            pop = lines[lines['_amt'] > 0].copy()
+            # (-)금액 줄(역분개·취소 등)은 증빙 대조 샘플로 채택하지 않음 → 모집단에서 제외
+            # (2026-11-13 blue sky 요청). 대사는 원장합계 = 모집단 + (-)제외로 맞춤.
+            if side == '차변':
+                neg = dr < 0
+            elif side == '대변':
+                neg = cr < 0
+            else:
+                neg = (dr < 0) | (cr < 0)
+            pop = lines[(lines['_amt'] > 0) & ~neg].copy()
             pop['_date'] = dates[pop.index]
             sort_cols = ['_date'] + ([COL_JOURNAL_ID] if COL_JOURNAL_ID in pop.columns else [])
             pop = pop.sort_values(sort_cols, kind='stable')
@@ -2246,8 +2254,11 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             cond = dict(cond0)
             if cost_val is not None:
                 cond['비용구분'] = cost_val
+            neg_n, neg_total = int(neg.sum()), float(lines.loc[neg, '_amt'].sum())
             cond.update({'모집단건수': len(pop), '모집단금액': pop_total,
-                         '대사(원장합계)': ledger_total, '대사차이': round(ledger_total - pop_total, 2)})
+                         '(-)제외건수': neg_n, '(-)제외금액': -neg_total,
+                         '대사(원장합계)': ledger_total,
+                         '대사차이': round(ledger_total - pop_total - neg_total, 2)})
             if pop.empty:
                 cond_rows.append({**cond, '비고': '모집단 없음 (계정명·기간·금액타입 확인)'})
                 continue
@@ -2398,7 +2409,8 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
 
     result = {'샘플링조건': pd.DataFrame(cond_rows)}
     result.update(out)
-    fmt['샘플링조건'] = {c: '#,##0' for c in ('모집단건수', '모집단금액', '대사(원장합계)', '대사차이',
+    fmt['샘플링조건'] = {c: '#,##0' for c in ('모집단건수', '모집단금액', '(-)제외건수', '(-)제외금액',
+                                              '대사(원장합계)', '대사차이',
                                               '개별유의 전수', '이상거래', '방법추출', '샘플합계건수', '샘플금액')}
     result['_number_format_cols'] = fmt
     if side_tables:
