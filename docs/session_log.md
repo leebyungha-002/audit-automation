@@ -3552,3 +3552,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 회사 Put 분리 근거 확인
 
 ---
+
+## 2026-11-12 10:40 (감리 체크리스트 — 본지점 계정 분류 지정)
+
+**완료 작업**: account_taxonomy.yaml overrides에 본지점(자산비용)→대여금및기타채권, 본지점(부채수익)→미지급금및미지급비용 지정. samdong map·report 재실행(새 통합 형식), 매칭 없음 계정은 가수금 1개만 남음. 테스트의 매칭 없음 예시 계정명을 '미결산계정'으로 교체하고 override 검증 추가
+**변경 파일**: workpaper_tools/audit_findings_checklist/config/account_taxonomy.yaml, tests/test_review_mapping_report.py
+**미해결 이슈**: samdong 가수금(전표 12건) 미분류. 이전 이월 이슈 동일
+**다음 할 일**:
+1. 가수금 분류 여부 결정
+2. 통합 시트 사용성 blue sky 확인
+3. 6CB 원본으로 pdf_redactor 재실행
+
+---

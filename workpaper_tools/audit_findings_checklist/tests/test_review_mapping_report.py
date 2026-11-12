@@ -87,7 +87,8 @@ def test_dictionary_matching(env, name, category):
 
 def test_dictionary_returns_none_and_low_confidence_cases(env):
     tax = Taxonomy(env[0]["taxonomy"])
-    assert tax.match("본지점(자산비용)") is None
+    assert tax.match("미결산계정") is None
+    assert tax.match("본지점(자산비용)") == ("대여금및기타채권", 1.0, "override")   # overrides로 분류 확정
     assert tax.match("보통예금")[1] == 1.0
     assert tax.match("건강보험_예수금")[1] < env[0]["mapping"]["llm_threshold"]  # 괄호·밑줄 뒤에서만 발견
 
@@ -98,7 +99,7 @@ def make_account_file(path):
             ["계정명", "차변합계", "차변건수", "대변합계", "대변건수", "전표개수"],
             ["보통예금", 123456789, 10, 987654321, 12, 20],
             ["[10800]외상매출금", 555, 3, 444, 2, 5],
-            ["본지점(자산비용)", 1, 1, 1, 1, 1],
+            ["미결산계정", 1, 1, 1, 1, 1],
             ["0", 1, 1, 1, 1, 1]]
     with pd.ExcelWriter(path) as writer:
         pd.DataFrame(rows).to_excel(writer, sheet_name="05_계정명 리스트_통계", header=False, index=False)
@@ -110,7 +111,7 @@ def test_account_list_loading_reads_names_and_counts_but_not_amounts(tmp_path):
     company, df = load_account_list(path)
 
     assert company == "테스트상사"
-    assert list(df["account_name"]) == ["보통예금", "외상매출금", "본지점(자산비용)", "0"]
+    assert list(df["account_name"]) == ["보통예금", "외상매출금", "미결산계정", "0"]
     assert df.loc[1, "account_code"] == "10800" and df.loc[0, "n_vouchers"] == 20
     assert not any("합계" in c for c in df.columns)
 
@@ -119,12 +120,12 @@ def test_only_account_names_are_sent_to_llm(env, tmp_path):
     cfg, store, log = env
     tax = Taxonomy(cfg["taxonomy"])
     fake = FakeLLM([{"results": [{"no": 1, "category": None, "confidence": "low"}]}])
-    result = _classify(["보통예금", "본지점(자산비용)", "0"], tax, fake, cfg["mapping"]["llm_threshold"], log)
+    result = _classify(["보통예금", "미결산계정", "0"], tax, fake, cfg["mapping"]["llm_threshold"], log)
 
     sent = json.dumps(fake.calls[0]["content"], ensure_ascii=False)
-    assert "본지점(자산비용)" in sent and "보통예금" not in sent   # 사전으로 확정된 계정은 보내지 않는다
+    assert "미결산계정" in sent and "보통예금" not in sent   # 사전으로 확정된 계정은 보내지 않는다
     assert "1. " in sent and "0" not in sent.replace("1. ", "")    # 글자 없는 계정명도 보내지 않는다
-    assert result["보통예금"]["method"] == "사전" and result["본지점(자산비용)"]["category"] is None
+    assert result["보통예금"]["method"] == "사전" and result["미결산계정"]["category"] is None
 
 
 def test_map_stores_mappings_and_links_findings(reviewed_env, tmp_path):
@@ -135,7 +136,7 @@ def test_map_stores_mappings_and_links_findings(reviewed_env, tmp_path):
 
     rows = {r["account_name"]: r for r in store.query("SELECT * FROM account_mappings")}
     assert rows["외상매출금"]["category"] == "매출채권" and rows["외상매출금"]["match_method"] == "사전"
-    assert rows["본지점(자산비용)"]["match_method"] == "매칭 없음"
+    assert rows["미결산계정"]["match_method"] == "매칭 없음"
     assert {r["category"] for r in store.query("SELECT category FROM finding_categories")} == {"매출", "매출채권"}
 
 
@@ -169,7 +170,7 @@ def test_report_shows_only_findings_with_verified_evidence(env, tmp_path):
     assert "분류별 지적사항" not in wb.sheetnames                         # 한 시트로 합쳐졌다
 
     unmatched = [r[0].value for r in wb["매칭 없음 계정"].iter_rows(min_row=4)]
-    assert unmatched == ["0", "본지점(자산비용)"]
+    assert unmatched == ["0", "미결산계정"]
     excluded = [r[3].value for r in wb["처리 로그"].iter_rows(min_row=2) if r[0].value == "체크리스트 제외"]
     assert len(excluded) == 3
     assert len(list(wb["지적사항 원장"].iter_rows(min_row=2))) == 4      # 원장에는 전체가 남는다
