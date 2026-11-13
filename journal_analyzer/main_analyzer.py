@@ -1818,6 +1818,11 @@ def analyze_round_numbers(df: pd.DataFrame, params_list: list) -> pd.DataFrame:
 
 
 # ── 11. 특수관계자 분석 ───────────────────────────────────────────────────────
+def _nonzero_count(s: pd.Series) -> int:
+    """금액이 0이 아닌 줄 수 — 차변만 있는 줄이 대변건수에 잡히지 않게 (2026-11-13 blue sky 요청)."""
+    return int((s.fillna(0) != 0).sum())
+
+
 def analyze_related_party(df: pd.DataFrame, params_list: list) -> dict:
     parties = [_nv(p.get('거래처명','')) for p in params_list if _nv(p.get('거래처명',''))]
     if not parties:
@@ -1838,10 +1843,12 @@ def analyze_related_party(df: pd.DataFrame, params_list: list) -> dict:
                                             aggfunc='sum', fill_value=0, observed=False).reset_index()
                         for v in (COL_DEBIT, COL_CREDIT))
         g = related.groupby([COL_CLIENT, COL_ACCOUNT, '구분'], observed=False)[[COL_DEBIT, COL_CREDIT]]\
-                   .agg(['sum', 'count'])
+                   .agg(['sum', _nonzero_count])
         g.columns = ['차변합계', '차변건수', '대변합계', '대변건수']
-        g = g.unstack('구분', fill_value=0)
+        g = g.fillna(0).unstack('구분', fill_value=0)
         g = g[g.sum(axis=1) != 0]
+        g[[c for c in g.columns if c[0].endswith('건수')]] = \
+            g[[c for c in g.columns if c[0].endswith('건수')]].astype(int)
         g.columns = [f'{per}_{m}' for m, per in g.columns]
         order = [f'{per}_{m}' for per in periods for m in ('차변합계', '차변건수', '대변합계', '대변건수')]
         summary = g[order].reset_index().rename(columns={COL_CLIENT: '거래처명', COL_ACCOUNT: '계정명'})
@@ -1853,7 +1860,7 @@ def analyze_related_party(df: pd.DataFrame, params_list: list) -> dict:
     piv_c = related.pivot_table(index=COL_ACCOUNT, columns=COL_CLIENT, values=COL_CREDIT,
                                  aggfunc='sum', fill_value=0).reset_index()
     summary = related.groupby([COL_CLIENT, COL_ACCOUNT])[[COL_DEBIT, COL_CREDIT]]\
-                     .agg(['sum','count']).reset_index()
+                     .agg(['sum', _nonzero_count]).reset_index()
     summary.columns = ['거래처명','계정명','차변합계','차변건수','대변합계','대변건수']
     return {'차변피벗':   piv_d,
             '대변피벗':   piv_c,
