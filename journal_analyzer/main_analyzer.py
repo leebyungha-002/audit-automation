@@ -2107,6 +2107,8 @@ def _sampling_stat_table(acct_label: str, key_n: int, key_amt, mus: dict, n: int
     ]
     for level, (rf, ef) in sorted(_MUS_FACTORS.items()):
         rows.append((f'{level:.0%}' + (' ◀ 적용' if level == lv else ''), rf, ef))
+    rows.append(('표의 근거', 'AICPA 감사샘플링 가이드(Audit Guide: Audit Sampling)',
+                 'MUS 샘플크기 산식 및 신뢰계수(왜곡표시 0건)·확장계수 표'))
     return pd.DataFrame(rows, columns=['항목', '값', '비고'])
 
 
