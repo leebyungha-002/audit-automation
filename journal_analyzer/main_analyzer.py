@@ -2092,7 +2092,7 @@ def _sampling_stat_table(acct_label: str, key_n: int, key_amt, mus: dict, n: int
          f'개별유의금액 {key_amt:,.0f}원 이상 {key_n}건 제외' if key_amt else '개별유의금액 미지정'),
         ('신뢰수준', f'{lv:.0%}',
          '' if abs(mus['input_conf'] - lv) < 1e-9 else f"입력 {mus['input_conf']:.0%} → 가장 가까운 통계표 수준 적용"),
-        ('신뢰계수(RF)', mus['rf'], '통계표(오류 0건 기대)'),
+        ('신뢰계수(RF)', mus['rf'], '통계표(왜곡표시 0건 기준 — 예상왜곡표시는 EM×EF로 별도 반영)'),
         ('허용왜곡표시(TM)', mus['tm'], '수행중요성금액으로 설정함'),
         ('예상왜곡표시(EM)', mus['em'],
          '전기 수정사항 없음, 통제 테스트 결과 효과적, 당기 변화 없음 → 위험평가에 근거해 TM의 1%로 설정함'),
@@ -2102,7 +2102,7 @@ def _sampling_stat_table(acct_label: str, key_n: int, key_amt, mus: dict, n: int
          f"= {mus['bv'] * mus['rf'] / (mus['tm'] - mus['em'] * mus['ef']):,.2f} → 올림"),
         ('샘플크기', n, '건 (개별유의 전수 건수는 별도)'),
         ('', '', ''),
-        ('[MUS 통계표 — 오류 0건 기대]', '', ''),
+        ('[MUS 통계표 — 신뢰계수는 왜곡표시 0건 기준, 예상왜곡표시는 EM×EF로 반영]', '', ''),
         ('신뢰수준', '신뢰계수(RF)', '확장계수(EF)'),
     ]
     for level, (rf, ef) in sorted(_MUS_FACTORS.items()):
