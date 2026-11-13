@@ -4068,6 +4068,8 @@ def analyze_lease_completeness(df, params_list):
 
 # ── 25. 손익항목 월별 추이 ────────────────────────────────────────────────────
 _PL_CATEGORIES = ['매출', '매출원가', '판관비', '제조원가', '영업외수익', '영업외비용']
+_PL_NATURAL_SIDE = {'매출': '대변', '영업외수익': '대변',
+                    '매출원가': '차변', '판관비': '차변', '제조원가': '차변', '영업외비용': '차변'}
 
 def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
     """25. 손익항목 월별 추이 (손익구분별 시트, 계정마다 당기/전기/증감 행 — 분석대상 따라)
@@ -4143,6 +4145,10 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
                 sub['_amt'] = sub[COL_CREDIT].fillna(0)
             else:
                 sub['_amt'] = sub[COL_DEBIT].fillna(0) + sub[COL_CREDIT].fillna(0)
+            # 손익구분의 본래 방향(수익=대변, 비용=차변)과 반대로 지정한 계정은 차감 성격이라
+            # (-)로 표시 — 예: 매출할인 차변·손익구분 매출 (2026-11-13 blue sky 요청)
+            if direction in ('차변', '대변') and direction != _PL_NATURAL_SIDE[cat]:
+                sub['_amt'] = -sub['_amt']
             sub['_month'] = pd.to_datetime(sub[COL_DATE], errors='coerce').dt.month
 
             extra_cols = []
