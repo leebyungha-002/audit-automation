@@ -2176,6 +2176,7 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
     _cost_order = {'판관': 0, '제조': 1}
     grouped = {}      # 비용구분 통합 시트명 -> [계정별 샘플표]
     side_tables = {}  # 시트명 -> [통계표사용 계정의 샘플크기 산정표]
+    sample_seq = {}   # 계정과목 -> 마지막 샘플 일련번호 (고유샘플번호용)
 
     for p in rows:
         acct = _nv(p.get('계정과목', ''))
@@ -2332,8 +2333,13 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             else:
                 sample['상대계정'] = ''
 
+            # 고유샘플번호 = 계정과목-일련번호(예: 해외제품매출액-01) (2026-11-13 blue sky 요청).
+            # 같은 계정을 비용구분·방향·방법별로 여러 번 뽑아도 겹치지 않게 번호를 이어서 매김.
+            seq0 = sample_seq.get(acct, 0)
+            sample_seq[acct] = seq0 + len(sample)
             tbl = pd.DataFrame({
                 'No': range(1, len(sample) + 1),
+                '샘플번호': [f'{acct}-{k:02d}' for k in range(seq0 + 1, seq0 + len(sample) + 1)],
                 '전표일자': sample['_date'].dt.strftime('%Y-%m-%d').values,
                 '전표번호': sample[COL_JOURNAL_ID].values if COL_JOURNAL_ID in sample.columns else '',
                 '계정명': sample[COL_ACCOUNT].values,
@@ -2350,9 +2356,9 @@ def analyze_audit_sampling(df: pd.DataFrame, params_list: list) -> dict:
             if has_cost_col:
                 cvals = sample[COST_COL].fillna('').astype(str).str.strip()
                 if cost_val is not None or (cvals != '').any():
-                    tbl.insert(4, '비용구분', cvals.values)
+                    tbl.insert(5, '비용구분', cvals.values)
             elif cost_val is not None:
-                tbl.insert(4, '비용구분', cost_val)
+                tbl.insert(5, '비용구분', cost_val)
             for c in _EVIDENCE_COLS:
                 tbl[c] = ''
 
