@@ -78,7 +78,8 @@ def _sheet_title(idx: str, name: str, code: str) -> str:
 
 def _convert(src: str, names: dict, parsed: list) -> str:
     out_path = os.path.splitext(src)[0] + '_변환.xlsx'
-    if os.path.isfile(out_path) and os.path.getmtime(out_path) >= os.path.getmtime(src):
+    if os.path.isfile(out_path) and os.path.getmtime(out_path) >= max(os.path.getmtime(src),
+                                                                     os.path.getmtime(__file__)):
         return out_path
     book = xlrd.open_workbook(src)
     wb = openpyxl.Workbook()
@@ -127,6 +128,28 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     codes = pd.to_numeric(df[CODE_COL], errors='coerce')
     # 전기(2025) 분개장은 감가상각누계액 코드가 5자리(20300), 당기는 3자리(203) → 3자리로 통일
     codes = codes.where(codes.isna() | (codes < 10000), codes // 100)
+    acct = df[ACCT_COL].astype(str).str.strip()
+
+    # 세목 계정 통합 (2026-11-13 blue sky 요청): 분개장은 같은 코드를 세목 이름으로 나눠 쓰는데
+    # (254 예수금/예수금/퇴직소득세…, 275 주주임원종업원차입금/대표이사 차입금) 원장은 코드당 한 계정이라
+    # TB_TO_GL 대사가 안 맞음 → 이름이 2개 이상인 코드는 원장(당기) 계정명으로 통일, 원래 이름은 '세목' 열에 보존.
+    ledger_by_code = {}
+    for src in _ledger_sources():
+        if os.path.basename(os.path.dirname(src)) != 'current':
+            continue
+        for _, _, name, code in _parse_sheets(xlrd.open_workbook(src, on_demand=True).sheet_names()):
+            ledger_by_code.setdefault(int(code) // 100, name)
+    df['세목'] = ''
+    valid = codes.notna() & ~acct.isin(_CONTRA_NAMES)
+    multi = acct[valid].groupby(codes[valid].astype(int)).nunique()
+    for c in multi[multi > 1].index:
+        rows = valid & (codes == c)
+        target = ledger_by_code.get(c) or acct[rows].mode().iat[0]
+        diff = rows & (acct != target)
+        df.loc[diff, '세목'] = acct[diff]
+        df.loc[diff, ACCT_COL] = target
+        print(f'  [Dai-il-nanang/preprocess] 세목 통합 코드 {c}: '
+              f'{sorted(set(acct[diff]))} → {target} ({int(diff.sum()):,}행)')
     acct = df[ACCT_COL].astype(str).str.strip()
     # 분개장의 코드 → 계정명 (당기 우선; 대체 대상 계정은 제외)
     journal_names = {}
