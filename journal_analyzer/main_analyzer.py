@@ -1828,6 +1828,26 @@ def analyze_related_party(df: pd.DataFrame, params_list: list) -> dict:
     related = df[df[COL_CLIENT].str.contains(pattern, na=False, regex=True)].copy()
     if related.empty:
         return {'특수관계자': pd.DataFrame({'결과':['해당 특수관계자 거래 없음']})}
+    # 분석대상 '전체'면 당기·전기가 합산되던 문제 → 기간별로 나눠 표시 (2026-11-13 blue sky 요청).
+    # 한 기간만 있으면 기존 형식 그대로.
+    periods = ([p for p in ('당기', '전기') if p in set(related['구분'].astype(str))]
+               if '구분' in related.columns else [])
+    if len(periods) == 2:
+        related['구분'] = pd.Categorical(related['구분'].astype(str), categories=periods)
+        piv_d, piv_c = (related.pivot_table(index=[COL_ACCOUNT, '구분'], columns=COL_CLIENT, values=v,
+                                            aggfunc='sum', fill_value=0, observed=False).reset_index()
+                        for v in (COL_DEBIT, COL_CREDIT))
+        g = related.groupby([COL_CLIENT, COL_ACCOUNT, '구분'], observed=False)[[COL_DEBIT, COL_CREDIT]]\
+                   .agg(['sum', 'count'])
+        g.columns = ['차변합계', '차변건수', '대변합계', '대변건수']
+        g = g.unstack('구분', fill_value=0)
+        g = g[g.sum(axis=1) != 0]
+        g.columns = [f'{per}_{m}' for m, per in g.columns]
+        order = [f'{per}_{m}' for per in periods for m in ('차변합계', '차변건수', '대변합계', '대변건수')]
+        summary = g[order].reset_index().rename(columns={COL_CLIENT: '거래처명', COL_ACCOUNT: '계정명'})
+        related = related.sort_values('구분', kind='stable')
+        related['구분'] = related['구분'].astype(str)
+        return {'차변피벗': piv_d, '대변피벗': piv_c, '거래처별요약': summary, '상세': related}
     piv_d = related.pivot_table(index=COL_ACCOUNT, columns=COL_CLIENT, values=COL_DEBIT,
                                  aggfunc='sum', fill_value=0).reset_index()
     piv_c = related.pivot_table(index=COL_ACCOUNT, columns=COL_CLIENT, values=COL_CREDIT,
