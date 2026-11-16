@@ -23,7 +23,8 @@ jymts 전용 분개장 변환 (더존 인쇄양식 분개장 → 엔진용 1줄 
 data/raw/{current|previous}/로 옮기고 변환본만 '{원본명}_변환.xlsx'로 남긴다.
 원본이 바뀌지 않았으면 다시 만들지 않는다.
 
-사용법: python journal_analyzer/jymts/convert_journal.py   (분석 실행 전에 1회)
+사용법: main_analyzer.py jymts 실행 시 분개장 로드 전에 자동 실행됨(_run_company_converter).
+        단독 실행도 가능: python journal_analyzer/jymts/convert_journal.py
 """
 import datetime
 import os

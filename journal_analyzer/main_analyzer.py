@@ -497,6 +497,32 @@ def _apply_company_preprocess(df: pd.DataFrame, company_name: str) -> pd.DataFra
     return fn(df)
 
 
+def _run_company_converter(company_name: str) -> None:
+    """
+    journal_analyzer/{company}/convert_journal.py 가 있으면 분개장 로드 전에 main()을 실행한다
+    (2026-11-16, jymts: 인쇄양식 분개장·원장을 엔진용 표로 바꾸는 변환을 깜빡하면 당기 금액이
+    빠진 결과가 조용히 나오던 문제). 파일 없는 회사는 아무것도 하지 않음 → 타사 결과 불변.
+    변환이 실패(합계 불일치 등)하거나 0이 아닌 값을 돌려주면 잘못된 데이터로 분석하지 않도록 중단.
+    """
+    import importlib.util
+
+    module_path = os.path.join(BASE_DIR, company_name, 'convert_journal.py')
+    if not os.path.isfile(module_path):
+        return
+    print(f'\n[원본 변환] {company_name}/convert_journal.py 실행')
+    spec   = importlib.util.spec_from_file_location(f'{company_name}.convert_journal', module_path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        rc = module.main()
+    except Exception as e:
+        print(f'[오류] 원본 변환 실패 — 분석을 중단합니다: {e}')
+        sys.exit(1)
+    if rc:
+        print(f'[오류] 원본 변환 실패(반환값 {rc}) — 분석을 중단합니다.')
+        sys.exit(1)
+
+
 # =============================================================================
 # 3. 데이터 로드 (data/current → 당기, data/previous → 전기)
 # =============================================================================
@@ -4723,7 +4749,8 @@ def main():
     if not active_tasks:
         print('실행할 분석이 없습니다 (Y/O 항목 없음).'); sys.exit(0)
 
-    # 2) 분개장 로드
+    # 2) 분개장 로드 (회사 폴더에 convert_journal.py가 있으면 원본 변환 먼저)
+    _run_company_converter(company_name)
     print('\n[분개장 로드]')
     df = load_data(paths['company_dir'])
     if df is None:

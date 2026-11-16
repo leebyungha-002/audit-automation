@@ -3767,3 +3767,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 11번 특수관계자 명단 입력
 
 ---
+
+## 2026-11-16 (회사별 원본 변환 자동 실행)
+
+**완료 작업**: main_analyzer.py에 _run_company_converter 추가 — 분개장 로드 직전, {회사}/convert_journal.py가 있으면 main() 실행, 변환 실패(합계 불일치 등) 시 분석 중단. 현재 jymts만 해당. kindus(2·4·15·25·27번) 수정 전후 결과 27개 시트·로그 완전 동일 확인, jymts 자동 변환 동작 확인
+**변경 파일**: journal_analyzer/main_analyzer.py, journal_analyzer/jymts/convert_journal.py(사용법 주석)
+**미해결 이슈**: 원장 현금(0101) 시트 없음. 11번 특수관계자 명단 필요
+**다음 할 일**:
+1. jymts 원장 현금 포함 재다운로드
+2. 11번 특수관계자 명단 입력
+3. live_pure 15번 비용구분 열 추가 여부 확인
+
+---
