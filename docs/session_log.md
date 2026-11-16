@@ -3719,3 +3719,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 평가인 회신 반영(CB 리뷰 조서)
 
 ---
+
+## 2026-11-16 (jymts 인쇄양식 분개장 변환)
+
+**완료 작업**: jymts 전기 분개장(더존 인쇄양식: 페이지마다 제목·2단 머리글 반복, 전표가 여러 줄·적요/거래처는 마지막 줄)을 엔진용 1줄 1분개 표로 바꾸는 jymts/convert_journal.py 신규. 원본은 data/raw/previous/로 옮기고 data/previous/에 _변환.xlsx 생성. 전표 7,878건→21,069줄, 차대 합계 158,067,170,254 = 원본 합계행, 차대 불일치 전표 0. 엔진 load_data로 정상 로드 확인. 엔진 수정 없음
+**변경 파일**: journal_analyzer/jymts/convert_journal.py (data 파일은 git 미추적)
+**미해결 이슈**: jymts 당기 분개장 없음(data/current엔 계정별원장만 — 엔진이 분개장으로 안 읽음). 분개장에 계정코드가 없어 감가상각누계액이 자산별로 안 나뉨. jymts task_list 아직 없음
+**다음 할 일**:
+1. jymts 당기 분개장 확보 후 convert_journal.py 실행(같은 양식이면 그대로 처리)
+2. jymts task_list 작성·감가상각누계액 구분 방법 결정
+3. live_pure 15번 비용구분 열 추가 여부 확인
+
+---
