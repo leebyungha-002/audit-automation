@@ -11,6 +11,14 @@ jymts 전용 분개장 변환 (더존 인쇄양식 분개장 → 엔진용 1줄 
   - 계정명 글자 사이 공백('복   리   후  생  비(판)') → 공백 제거
   - 맨 끝 '합 계' 행(차변 E, 대변 G) → 변환 결과 합계와 대사
 
+계정별원장 (당기_jymts_계정별원장_26년.xlsx, 2026-11-16 확인):
+  - 시트 1개 = 계정 1개, 시트명 '(0511)복리후생비', 9열(빈A/일자/적요/코드/빈E/거래처/차변/대변/잔액)
+  - 엔진의 더존 원장 판독(_extract_duzon_style_records)은 8열·7열 양식만 알아서 거래처 열을
+    차변으로 읽다 실패함(27번 오류) → 엔진이 아는 7열 양식(날짜/적요란/코드/거래처/차변/대변/잔액)
+    으로 옮기고, 시트명을 '{순번}_{계정명}({코드})'로 바꾼다.
+  - 계정명은 분개장과 맞춘다: 공백 제거, 코드 5xx → '(제)', 8xx → '(판)' 부여
+    (분개장은 '복리후생비(제)'·'복리후생비(판)', 원장은 둘 다 '복리후생비')
+
 엔진(main_analyzer.load_data)은 data/current·previous의 xlsx를 그대로 읽으므로, 원본은
 data/raw/{current|previous}/로 옮기고 변환본만 '{원본명}_변환.xlsx'로 남긴다.
 원본이 바뀌지 않았으면 다시 만들지 않는다.
@@ -118,6 +126,69 @@ def parse_journal(path: str) -> pd.DataFrame:
     return df
 
 
+_LEDGER_RAW_HEADER = [None, '일자', '적요', '코드', None, '거래처', '차변', '대변', '잔액']
+_LEDGER_OUT_HEADER = ['날짜', '적요란', '코드', '거래처', '차변', '대변', '잔액']
+_LEDGER_SHEET_RE = re.compile(r'^\((\d+)\)(.+)$')
+
+
+def _is_raw_ledger(path: str) -> bool:
+    """첫 시트 1행이 9열 원장 머리글이면 원본 계정별원장."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        hdr = next(wb.worksheets[0].iter_rows(min_row=1, max_row=1, values_only=True), ())
+    finally:
+        wb.close()
+    hdr = [None if _blank(v) else str(v).strip() for v in (tuple(hdr) + (None,) * 9)[:9]]
+    return hdr == _LEDGER_RAW_HEADER
+
+
+def _ledger_account_name(name: str, code: str) -> str:
+    name = _nospace(name)
+    c = int(code)
+    if 500 <= c < 600:
+        return f'{name}(제)'
+    if 800 <= c < 900:
+        return f'{name}(판)'
+    return name
+
+
+def convert_ledger(src: str, out: str) -> None:
+    wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    new = openpyxl.Workbook()
+    new.remove(new.active)
+    n_sheet, n_row = 0, 0
+    for idx, ws in enumerate(wb.worksheets):
+        m = _LEDGER_SHEET_RE.match(ws.title.strip())
+        if not m:
+            print(f'  [경고] 시트명 형식 다름 — 건너뜀: {ws.title}')
+            continue
+        code, name = m.group(1), _ledger_account_name(m.group(2), m.group(1))
+        suffix = f'({code})'
+        safe = re.sub(r'[\\/*?:\[\]]', ' ', name)[:31 - len(str(idx)) - 1 - len(suffix)]
+        title = f'{idx}_{safe}{suffix}'
+        out_ws = new.create_sheet(title)
+        out_ws.append(_LEDGER_OUT_HEADER)
+        for i, r in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+            r = (tuple(r) + (None,) * 9)[:9]
+            row = [r[1], r[2], r[3], r[5], r[6], r[7], r[8]]
+            if all(_blank(v) for v in row):
+                continue
+            # 페이지마다 반복되는 머리말 4줄(제목 '계 정 별 원 장' / 기간 / 회사명 / 머리글) 제거
+            b = '' if _blank(r[1]) else _nospace(r[1])
+            if (b in ('계정별원장', '일자') or b.startswith('회사명')
+                    or re.fullmatch(r'\d{4}\.\d{2}\.\d{2}~\d{4}\.\d{2}\.\d{2}', b)):
+                continue
+            for v in row[4:]:
+                if not _blank(v) and not isinstance(v, (int, float)):
+                    raise ValueError(f'{ws.title} {i}행: 금액 칸에 숫자 아닌 값 {v!r} — 변환 중단')
+            out_ws.append(row)
+            n_row += 1
+        n_sheet += 1
+    wb.close()
+    new.save(out)
+    print(f'  원장 {n_sheet}개 계정, {n_row:,}행 → 7열 양식(날짜/적요란/코드/거래처/차변/대변/잔액)')
+
+
 def main() -> int:
     n = 0
     for period in _PERIODS:
@@ -125,11 +196,12 @@ def main() -> int:
         raw_dir = os.path.join(_DIR, 'data', 'raw', period)
         if not os.path.isdir(data_dir):
             continue
-        # 1) data/{period}에 있는 인쇄양식 원본 → data/raw/{period}로 이동
+        # 1) data/{period}에 있는 원본(인쇄양식 분개장·9열 계정별원장) → data/raw/{period}로 이동
         for f in sorted(os.listdir(data_dir)):
             p = os.path.join(data_dir, f)
-            if (f.endswith('.xlsx') and '분개장' in f and not f.startswith('~$')
-                    and not f.endswith('_변환.xlsx') and _is_raw_journal(p)):
+            if not f.endswith('.xlsx') or f.startswith('~$') or f.endswith('_변환.xlsx'):
+                continue
+            if ('분개장' in f and _is_raw_journal(p)) or ('계정별원장' in f and _is_raw_ledger(p)):
                 os.makedirs(raw_dir, exist_ok=True)
                 shutil.move(p, os.path.join(raw_dir, f))
                 print(f'[{period}] 원본 이동: {f} → data/raw/{period}/')
@@ -145,7 +217,10 @@ def main() -> int:
                 print(f'[{period}] 최신 변환본 있음 — 건너뜀: {os.path.basename(out)}')
                 continue
             print(f'[{period}] 변환: {f}')
-            parse_journal(src).to_excel(out, index=False)
+            if '계정별원장' in f:
+                convert_ledger(src, out)
+            else:
+                parse_journal(src).to_excel(out, index=False)
             print(f'  저장: data/{period}/{os.path.basename(out)}')
             n += 1
     print(f'완료 — 새로 변환 {n}개')
