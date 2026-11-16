@@ -25,6 +25,7 @@ data/raw/{current|previous}/로 옮기고 변환본만 '{원본명}_변환.xlsx'
 
 사용법: python journal_analyzer/jymts/convert_journal.py   (분석 실행 전에 1회)
 """
+import datetime
 import os
 import re
 import shutil
@@ -199,12 +200,22 @@ def main() -> int:
         # 1) data/{period}에 있는 원본(인쇄양식 분개장·9열 계정별원장) → data/raw/{period}로 이동
         for f in sorted(os.listdir(data_dir)):
             p = os.path.join(data_dir, f)
-            if not f.endswith('.xlsx') or f.startswith('~$') or f.endswith('_변환.xlsx'):
+            if not f.endswith('.xlsx') or f.startswith('~$'):
                 continue
+            # 이름이 '_변환'이어도 내용이 원본 양식이면 원본으로 처리 (2026-11-16: 새 원장을
+            # 변환본 이름으로 덮어써 저장 → 변환 안 된 채 엔진이 읽어 4번 오류)
             if ('분개장' in f and _is_raw_journal(p)) or ('계정별원장' in f and _is_raw_ledger(p)):
+                raw_name = f[:-len('_변환.xlsx')] + '.xlsx' if f.endswith('_변환.xlsx') else f
+                dest = os.path.join(raw_dir, raw_name)
+                if os.path.exists(dest):   # 기존 원본은 덮어쓰지 않고 data/raw/old/로 보관
+                    old_dir = os.path.join(_DIR, 'data', 'raw', 'old')
+                    os.makedirs(old_dir, exist_ok=True)
+                    stamp = datetime.datetime.fromtimestamp(os.path.getmtime(dest)).strftime('%Y%m%d_%H%M')
+                    shutil.move(dest, os.path.join(old_dir, f'{os.path.splitext(raw_name)[0]}_{stamp}.xlsx'))
+                    print(f'[{period}] 기존 원본 보관: {raw_name} → data/raw/old/')
                 os.makedirs(raw_dir, exist_ok=True)
-                shutil.move(p, os.path.join(raw_dir, f))
-                print(f'[{period}] 원본 이동: {f} → data/raw/{period}/')
+                shutil.move(p, dest)
+                print(f'[{period}] 원본 이동: {f} → data/raw/{period}/{raw_name}')
         # 2) data/raw/{period} 원본 → data/{period}/{원본명}_변환.xlsx
         if not os.path.isdir(raw_dir):
             continue
