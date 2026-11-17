@@ -4,7 +4,7 @@
 예시: python interest_expense_analysis.py dae_il
 입력: interest_analyzer/<회사>/input/차입금현황.xlsx  — 차입금별 시트 + '이자비용' 시트
       interest_analyzer/<회사>/input/이자율설정.xlsx    — 회사별 이자율·기간 (아래)
-출력: interest_analyzer/<회사>/output/이자비용분석결과.xlsx
+출력: interest_analyzer/<회사>/output/이자비용분석결과_<회사>.xlsx
 
 이자율설정.xlsx (2026-11-16, 이자율·기간을 코드에서 회사별 파일로 이동 — 예전엔 dae_il 값이
 코드에 박혀 있어 다른 회사를 돌리려면 코드를 고쳐야 했음)
@@ -108,7 +108,7 @@ def main():
     input_path    = company_dir / 'input'  / '차입금현황.xlsx'
     settings_path = company_dir / 'input'  / SETTINGS_FILE
     output_dir    = company_dir / 'output'
-    output_path   = output_dir  / '이자비용분석결과.xlsx'
+    output_path   = output_dir  / f'이자비용분석결과_{company}.xlsx'
 
     for p in (input_path, settings_path):
         if not p.exists():
