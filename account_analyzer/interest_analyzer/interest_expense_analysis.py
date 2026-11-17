@@ -2,14 +2,14 @@
 이자비용 적정성 분석 (Reasonableness Test)
 실행: python interest_expense_analysis.py <회사명>
 예시: python interest_expense_analysis.py dae_il
-입력: interest_analyzer/<회사>/input/이자비용적정성.xlsx  — 차입금별 시트 + '이자비용' 시트
+입력: interest_analyzer/<회사>/input/차입금현황.xlsx  — 차입금별 시트 + '이자비용' 시트
       interest_analyzer/<회사>/input/이자율설정.xlsx    — 회사별 이자율·기간 (아래)
 출력: interest_analyzer/<회사>/output/이자비용분석결과.xlsx
 
 이자율설정.xlsx (2026-11-16, 이자율·기간을 코드에서 회사별 파일로 이동 — 예전엔 dae_il 값이
 코드에 박혀 있어 다른 회사를 돌리려면 코드를 고쳐야 했음)
   '이자율' 시트: 차입금명 / 연이자율 / 기초잔액 / 비고
-    - 차입금명: 이자비용적정성.xlsx의 차입금 시트명과 정확히 같아야 함
+    - 차입금명: 차입금현황.xlsx의 차입금 시트명과 정확히 같아야 함
     - 연이자율: 0.0362 또는 3.62 둘 다 가능(1보다 크면 %로 보고 100으로 나눔). 빈칸이면 그 차입금 건너뜀
     - 기초잔액(선택): 차입금 시트에 '전기이월' 행이 없을 때(계정 단위 원장이라 차입금별 기초가
       없는 회사, 예: jymts) 입력. 시트의 전기이월 금액에 더해짐
@@ -105,7 +105,7 @@ def main():
 
     company = sys.argv[1]
     company_dir = root / company
-    input_path    = company_dir / 'input'  / '이자비용적정성.xlsx'
+    input_path    = company_dir / 'input'  / '차입금현황.xlsx'
     settings_path = company_dir / 'input'  / SETTINGS_FILE
     output_dir    = company_dir / 'output'
     output_path   = output_dir  / '이자비용분석결과.xlsx'
@@ -129,6 +129,10 @@ def main():
     if INTEREST_SHEET not in all_sheets:
         print(f'[오류] "{INTEREST_SHEET}" 시트를 찾을 수 없습니다.')
         sys.exit(1)
+
+    # 설정의 차입금명이 시트명과 다르면 그 이자율·기초잔액은 쓰이지 않음 → 경고
+    for name in sorted((set(rates) | set(openings)) - set(loan_sheets)):
+        print(f'[경고] 이자율설정 "{name}" — 차입금현황.xlsx에 같은 이름의 시트가 없어 반영 안 됨 (차입금명 확인)')
 
     # ── 차입금별 처리 ─────────────────────────────────────────────────────────
     summary_rows = []

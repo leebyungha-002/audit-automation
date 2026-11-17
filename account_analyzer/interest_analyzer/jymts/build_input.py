@@ -20,7 +20,7 @@ jymts 원장은 계정 단위(단기차입금/장기차입금/유동성장기부
   '설정' 시트의 원장기초잔액합계(세 계정 전기이월 합계)로 입력값 합계를 분석 시 대사.
 
 출력 (interest_analyzer/jymts/input/):
-  이자비용적정성.xlsx — 매번 다시 만듦(원장에서 파생)
+  차입금현황.xlsx — 매번 다시 만듦(원장에서 파생)
   이자율설정.xlsx     — 없을 때만 만듦(감사인 입력값 보존). 새 차입금이 생기면 행 추가 안내만 출력
 """
 import os
@@ -42,7 +42,7 @@ _COLS = ['계정과목', '날짜', '적요란', '코드', '거래처', '차변',
 
 def _find(must: tuple) -> str:
     for f in sorted(os.listdir(_JOURNAL_DATA)):
-        if f.endswith('_변환.xlsx') and all(m in f for m in must):
+        if not f.startswith('~$') and f.endswith('_변환.xlsx') and all(m in f for m in must):
             return os.path.join(_JOURNAL_DATA, f)
     raise FileNotFoundError(f'{_JOURNAL_DATA}에 {must} 변환본 없음 — journal_analyzer로 jymts를 먼저 실행(자동 변환)')
 
@@ -98,7 +98,15 @@ def main() -> int:
             elif not client:
                 print(f'  [경고] {acct} {date} 거래처 없는 차입금 거래 — 차입금 배정 불가: {desc} {dr} {cr}')
                 continue
-            loan = loans.setdefault(_loan_key(client), {'name': client, 'rows': [], 'accounts': set(), 'interest': 0})
+            # 이자 전표는 적요의 대출번호가 우선 — 거래처를 잘못 고른 전표가 있음
+            # (예: 01-05 적요 '이자-32-00063'인데 거래처 '기업대출(32-00066)')
+            m = _LOAN_NO_RE.search(str(desc or '')) if acct == _INTEREST_ACCOUNT else None
+            key = m.group(0) if m else _loan_key(client)
+            if m and _loan_key(client) != key:
+                print(f'  [알림] 이자비용 {date} 적요 {key} ≠ 거래처 {client} — 적요 기준으로 배정: {dr - cr:,.0f}')
+            loan = loans.setdefault(key, {'name': client, 'rows': [], 'accounts': set(), 'interest': 0})
+            if _loan_key(loan['name']) != key and _loan_key(client) == key:
+                loan['name'] = client   # 이름은 대출번호가 맞는 거래처로
             if acct == _INTEREST_ACCOUNT:
                 loan['interest'] += dr - cr
             else:
@@ -111,7 +119,7 @@ def main() -> int:
     for key, ln in sorted(loans.items(), key=lambda kv: kv[1]['name']):
         ln['sheet'] = _sheet_name(ln['name'], used)
         sheets[ln['sheet']] = pd.DataFrame(ln['rows'], columns=_COLS)
-    out = os.path.join(_INPUT_DIR, '이자비용적정성.xlsx')
+    out = os.path.join(_INPUT_DIR, '차입금현황.xlsx')
     with pd.ExcelWriter(out, engine='openpyxl') as w:
         for name, df in sheets.items():
             df.to_excel(w, sheet_name=name, index=False)
