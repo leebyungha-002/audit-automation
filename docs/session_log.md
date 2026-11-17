@@ -3815,3 +3815,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 11번 특수관계자 명단 입력
 
 ---
+
+## 2026-11-17 (결과파일 회사명 잘림 수정)
+
+**완료 작업**: leave·severance·depreciation 앱이 입력 파일명에서 회사명을 split("_")[1]로 잘라 dae_il_contry → dae로 저장되던 문제 수정(접두어 뒤 ~ _information_ 앞 전체 사용). leave dae_il_contry 재실행 → leave_schedule_dae_il_contry_2025.xlsx, 잘린 옛 결과 삭제. 다른 회사(graphy·kyungnam·대선제분·대일개발)는 회사명에 _가 없어 결과 무영향
+**변경 파일**: account_analyzer/accrued_leave_liability_analyzer/leave_schedule.py, severance_analyzer/severance_schedule.py, depreciation_analyzer/depreciation_schedule.py
+**미해결 이슈**: jymts 이자율설정 32-00062·58-00033·중진공 연이자율 미입력
+**다음 할 일**:
+1. jymts 이자율 3건 입력 후 재실행
+2. jymts 원장 현금 포함 재다운로드
+3. 11번 특수관계자 명단 입력
+
+---

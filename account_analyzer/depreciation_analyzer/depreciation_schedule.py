@@ -945,7 +945,7 @@ def main():
     args = parser.parse_args()
 
     input_path = _find_input_file(args.company, args.file)
-    company = args.company or os.path.basename(input_path).split("_")[1]
+    company = args.company or os.path.basename(input_path).split("_", 1)[1].rsplit("_information_", 1)[0]  # 회사명에 _가 있어도 전체 유지(dae_il_contry)
 
     target_fy = args.fiscal_year
     if not target_fy:
