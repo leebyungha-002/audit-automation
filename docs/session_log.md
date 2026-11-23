@@ -3851,3 +3851,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 26번 AI 실행 여부 결정
 
 ---
+
+## 2026-11-23 14:30
+
+**완료 작업**: file_classifier 하위폴더 재귀 분류·미분류 재분류 시 이름변경 버그 수정·런처 안내 추가. kyungnam 계정별원장(단일시트·'계정:' 머리행) → 더존 7열 변환 추가해 4번 TB_TO_GL_TEST 생성 확인(400계정, 차이 9건).
+**변경 파일**: launcher.py, workpaper_tools/file_classifier/main.py, journal_analyzer/kyungnam/preprocess.py, journal_analyzer/main_analyzer.py(_변환본 있으면 원본 원장 제외)
+**미해결 이슈**: kyungnam TB 차이 — ①분개장 '매도가능증권' 계정명 vs 원장 '당기손익-공정가치측정금융자산'(3쌍 상쇄, 명칭변경 매핑 필요) ②전환사채할인발행차금(유동) 이월액이 대변 음수로 표시돼 부채차감 식에서 -47,025,762 허위차이(엔진 기초잔액 부호 처리) ③여비교통비/차량유지비 ±500 실제 분개장·원장 불일치
+**다음 할 일**:
+1. 사용자 결정 후 ①매핑 ②부호 처리 수정
+2. data/current의 kyungnam 계정별원장 CSV(분개장 형식) 정리 여부 확인
+3. file_classifier 미분류 파일명 _125949 접미어 제거 여부 확인
+
+---
