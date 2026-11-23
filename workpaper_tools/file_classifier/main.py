@@ -59,7 +59,12 @@ class ClassifierWorker(QThread):
         dest = os.path.join(dest_folder, filename)
         if os.path.exists(dest):
             name, ext = os.path.splitext(filename)
-            dest = os.path.join(dest_folder, f"{name}_{datetime.now().strftime('%H%M%S')}{ext}")
+            stamp = datetime.now().strftime('%H%M%S')
+            dest = os.path.join(dest_folder, f"{name}_{stamp}{ext}")
+            n = 2
+            while os.path.exists(dest):   # 같은 초에 동일 파일명이 또 나오면 번호 추가
+                dest = os.path.join(dest_folder, f"{name}_{stamp}_{n}{ext}")
+                n += 1
             self.log_signal.emit(f"    ※ 중복 파일명 자동 변경: {filename} → {os.path.basename(dest)}")
         return dest
 
@@ -73,34 +78,38 @@ class ClassifierWorker(QThread):
 
     def run(self):
         try:
-            all_files = [
-                f for f in os.listdir(self.source_folder)
-                if os.path.isfile(os.path.join(self.source_folder, f))
-            ]
+            # 하위 폴더까지 모두 탐색 (대상 폴더가 원본 안에 있으면 그 폴더는 제외)
+            target_abs = os.path.normcase(os.path.abspath(self.target_folder))
+            all_files = []   # (전체경로, 파일명, 원본 기준 상대경로)
+            for root, dirs, files in os.walk(self.source_folder):
+                dirs[:] = [d for d in dirs
+                           if os.path.normcase(os.path.abspath(os.path.join(root, d))) != target_abs]
+                for f in files:
+                    full = os.path.join(root, f)
+                    all_files.append((full, f, os.path.relpath(full, self.source_folder)))
             total = len(all_files)
             if total == 0:
-                self.log_signal.emit("⚠ 원본 폴더에 처리할 파일이 없습니다.")
+                self.log_signal.emit("⚠ 원본 폴더(하위 폴더 포함)에 처리할 파일이 없습니다.")
                 self.finished_signal.emit({'total': 0, 'matched': 0, 'unmatched': 0})
                 return
 
-            self.log_signal.emit(f"총 {total}개 파일 처리를 시작합니다...\n")
+            self.log_signal.emit(f"총 {total}개 파일 처리를 시작합니다... (하위 폴더 포함)\n")
             matched = unmatched = 0
 
-            for idx, filename in enumerate(all_files):
-                src = os.path.join(self.source_folder, filename)
+            for idx, (src, filename, rel) in enumerate(all_files):
                 cat = self._find_category(filename)
 
                 if cat:
                     dest_dir = os.path.join(self.target_folder, cat)
                     os.makedirs(dest_dir, exist_ok=True)
                     shutil.move(src, self._safe_dest(dest_dir, filename))
-                    self.log_signal.emit(f"  [분류됨]  {filename}  →  [{cat}]")
+                    self.log_signal.emit(f"  [분류됨]  {rel}  →  [{cat}]")
                     matched += 1
                 else:
                     dest_dir = os.path.join(self.target_folder, '00_미분류(확인필요)')
                     os.makedirs(dest_dir, exist_ok=True)
                     shutil.move(src, self._safe_dest(dest_dir, filename))
-                    self.log_signal.emit(f"  [미분류]  {filename}  →  [00_미분류(확인필요)]")
+                    self.log_signal.emit(f"  [미분류]  {rel}  →  [00_미분류(확인필요)]")
                     unmatched += 1
 
                 self.progress_signal.emit(int((idx + 1) / total * 100))
