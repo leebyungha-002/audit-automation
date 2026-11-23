@@ -108,7 +108,8 @@ def _fiscal_year(ym: str, fiscal_month: int) -> str:
 def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
     """
     단일 계약의 월별 상각 스케줄 생성.
-    Returns (schedule_df, initial_liability, initial_rou, deposit, deposit_pv, deposit_discount)
+    Returns (schedule_df, initial_liability, initial_rou, deposit, deposit_pv, deposit_discount, derecog)
+    derecog: 리스감소(만기종료/중도해지) 정보 dict
     """
     start    = pd.Timestamp(c['리스개시일']).date()
     n_months = int(_safe_float(_col(c, '최종 산정리스기간(월수)'), 1))
@@ -128,6 +129,19 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
     direct_cost = _safe_float(_col(c, '리스개설직접원가', '직접원가'))
     restoration = _safe_float(_col(c, '복구충당부채', '복구충당부채(현재가치)', '복구충당'))
     deposit     = _safe_float(_col(c, '지급보증금(명목가액)', '지급보증금', '보증금'))
+
+    # ── 리스감소(중도해지) 입력
+    # 감소구분이 '중도해지'이고 감소일이 있으면 감소일이 속한 월까지만 사용·상각·이자를 인식한 뒤
+    # 그 월말 리스부채·사용권자산 장부금액을 전액 제거한다. (만기종료는 스케줄이 자연 종료되므로 계산 불변)
+    dec_type  = str(_col(c, '감소구분(만기종료/중도해지)', '감소구분') or '').strip()
+    dec_date  = _col(c, '감소일(해지일)', '감소일', '해지일')
+    term_pay  = _safe_float(_col(c, '해지시 지급액(위약금등)', '해지시 지급액', '위약금'))
+    term_ym   = None
+    if '해지' in dec_type and dec_date is not None and not (isinstance(dec_date, float) and dec_date != dec_date):
+        try:
+            term_ym = pd.Timestamp(dec_date).strftime('%Y-%m')
+        except (ValueError, TypeError):
+            term_ym = None
 
     mpp    = _months_per_period(freq)      # 지급주기(개월)
     n_prd  = n_months // mpp              # 총 지급 횟수
@@ -213,6 +227,17 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
             dep_int = None
             dep_cl  = None
 
+        # 중도해지월: 당월분 이자·상각까지 인식 후 월말 장부금액 전액 제거
+        is_term = term_ym is not None and ym >= term_ym and not is_last
+        derec_liab = derec_rou = None
+        if is_term:
+            derec_liab, derec_rou = cl_liab, cl_rou
+            cl_liab, cl_rou = 0.0, 0.0
+            if deposit > 0:
+                # 보증금은 해지 시 명목가액으로 반환 → 미상각 현가할인차금은 당월 이자수익으로 정리
+                dep_int = deposit - dep_op
+                dep_cl  = deposit
+
         rows.append({
             '연월':               ym,
             '기초부채잔액':        op_liab,
@@ -228,13 +253,37 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
             '보증금_기초PV':       dep_op  if deposit > 0 else None,
             '보증금_이자수익':      dep_int if deposit > 0 else None,
             '보증금_기말PV':       dep_cl  if deposit > 0 else None,
+            '해지감소_리스부채':    derec_liab,
+            '해지감소_사용권자산':  derec_rou,
         })
 
         liab    = cl_liab
         rou     = cl_rou
         dep_bal = dep_cl if deposit > 0 else 0.0
+        if is_term:
+            break
 
     df = pd.DataFrame(rows)
+
+    # ── 리스감소 정보 (만기종료는 스케줄 마지막 월, 중도해지는 해지월)
+    last = df.iloc[-1]
+    terminated = pd.notna(last['해지감소_리스부채'])
+    if terminated:
+        d_liab, d_rou = float(last['해지감소_리스부채']), float(last['해지감소_사용권자산'])
+        derecog = {
+            '구분': '중도해지', '연월': last['연월'], '일자': pd.Timestamp(dec_date).date(),
+            '원가': initial_rou, '상각누계': initial_rou - d_rou, '장부금액': d_rou,
+            '리스부채': d_liab, '해지시지급액': term_pay,
+            '해지손익': d_liab - d_rou - term_pay,   # +이익 / -손실
+        }
+    else:
+        derecog = {
+            '구분': '만기종료', '연월': last['연월'],
+            '일자': pd.Timestamp(_col(c, '리스종료일')).date() if _col(c, '리스종료일') is not None else None,
+            '원가': initial_rou, '상각누계': initial_rou - float(last['기말자산잔액']),
+            '장부금액': float(last['기말자산잔액']), '리스부채': float(last['기말부채잔액']),
+            '해지시지급액': 0.0, '해지손익': 0.0,
+        }
 
     # ── 결산월 말 유동성 대체 계산
     # 당기말 잔액 - 차기말 잔액 = 차기 원금상환 예정액(유동성 대체액)
@@ -246,7 +295,7 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
         df.loc[idx, '유동성대체대상액']    = cur_bal - next_bal
         df.loc[idx, '비유동성리스부채잔액'] = next_bal
 
-    return df, initial_liability, initial_rou, deposit, deposit_pv, deposit_discount
+    return df, initial_liability, initial_rou, deposit, deposit_pv, deposit_discount, derecog
 
 
 # ── 연간 집계 ─────────────────────────────────────────────────────────────────
@@ -271,11 +320,13 @@ def _annual_summary(sched: pd.DataFrame, fiscal_month: int = 12) -> pd.DataFrame
             '이자비용':         float(grp['이자비용'].sum()),
             '현금지급액':       float(grp['현금지급액'].sum()),
             '원금상환액':       float(grp['원금상환액'].sum()),
+            '해지감소_리스부채': float(grp['해지감소_리스부채'].sum()),
             '기말리스부채잔액':  float(grp.iloc[-1]['기말부채잔액']),
             '유동성리스부채':   _dec('유동성대체대상액'),
             '비유동성리스부채': _dec('비유동성리스부채잔액'),
             '기초사용권자산':   float(grp.iloc[0]['기초자산잔액']),
             '감가상각비':       float(grp['감가상각비'].sum()),
+            '해지감소_사용권자산': float(grp['해지감소_사용권자산'].sum()),
             '기말사용권자산':   float(grp.iloc[-1]['기말자산잔액']),
         })
     return pd.DataFrame(rows)
@@ -311,6 +362,7 @@ def _deposit_annual_summary(sched: pd.DataFrame, deposit: float, fiscal_month: i
 SUMMARY_METRIC_COLS = [
     '계약수', '최초리스부채', '최초사용권자산', '당기이자비용', '당기감가상각비',
     '당기리스료지급', '기말리스부채', '유동성리스부채', '비유동성리스부채', '기말사용권자산',
+    '당기감소 사용권자산(원가)', '당기감소 상각누계액', '당기감소 리스부채', '리스해지손익',
 ]
 
 
@@ -345,6 +397,10 @@ def build_lease_class_summary(summary_df: pd.DataFrame) -> dict:
             '유동성리스부채':  sub['유동성대체대상액'].sum(),
             '비유동성리스부채': sub['비유동성리스부채잔액'].sum(),
             '기말사용권자산':  sub[endrou_col].sum() if endrou_col else 0.0,
+            '당기감소 사용권자산(원가)': sub['당기감소 사용권자산(원가)'].sum() if '당기감소 사용권자산(원가)' in sub else 0.0,
+            '당기감소 상각누계액': sub['당기감소 상각누계액'].sum() if '당기감소 상각누계액' in sub else 0.0,
+            '당기감소 리스부채':   sub['당기감소 리스부채'].sum() if '당기감소 리스부채' in sub else 0.0,
+            '리스해지손익':       sub['리스해지손익'].sum() if '리스해지손익' in sub else 0.0,
         }
 
     total = _agg(d)
@@ -372,7 +428,7 @@ def write_lease_summary_sheet(ws, summary: dict, company: str, year: str, fiscal
     bold = Font(bold=True)
     center = Alignment(horizontal='center', vertical='center')
 
-    for col in 'ABCDEFGHIJK':
+    for col in 'ABCDEFGHIJKLMNO':
         ws.column_dimensions[col].width = 16
 
     period_note = f', 반기검토(1~{fiscal_month}월)' if interim else ''
@@ -559,6 +615,10 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
     if has_deposit:
         info_labels += ['지급보증금', '보증금PV', '현가할인차금']
         info_values += [deposit, deposit_pv, deposit_discount]
+    derec_info = info.get('derecog') or {}
+    if derec_info.get('구분') == '중도해지':
+        info_labels += ['감소구분', '감소일', '해지시지급액', '리스해지손익']
+        info_values += ['중도해지', derec_info.get('일자'), derec_info.get('해지시지급액'), derec_info.get('해지손익')]
 
     for i, (lbl, val) in enumerate(zip(info_labels, info_values), 1):
         lc = ws.cell(row=cur, column=i)
@@ -568,17 +628,17 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
         vc.value = val; vc.alignment = CTR; vc.border = _BORDER
         if lbl == '할인율(연)':
             vc.number_format = RATE_FMT
-        elif lbl in ('정기리스료', '지급보증금', '보증금PV', '현가할인차금'):
+        elif lbl in ('정기리스료', '지급보증금', '보증금PV', '현가할인차금', '해지시지급액', '리스해지손익'):
             vc.number_format = MONEY_FMT
-        elif lbl in ('개시일', '종료일'):
+        elif lbl in ('개시일', '종료일', '감소일'):
             vc.number_format = 'YYYY-MM-DD'
     cur += 3   # label + value + blank
 
     # ── 2. 리스부채 연간 요약 ─────────────────────────────────────────────────
-    L_HDRS = ['연도', '기초리스부채잔액', '이자비용', '현금지급액', '원금상환액',
+    L_HDRS = ['연도', '기초리스부채잔액', '이자비용', '현금지급액', '원금상환액', '해지감소_리스부채',
               '기말리스부채잔액', '유동성리스부채', '비유동성리스부채']
     L_DATA = L_HDRS[1:]
-    L_SUM  = {'이자비용', '현금지급액', '원금상환액'}
+    L_SUM  = {'이자비용', '현금지급액', '원금상환액', '해지감소_리스부채'}
 
     _title(cur, '■  리스부채 상각 연간 요약', len(L_HDRS))
     cur += 1
@@ -606,9 +666,18 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
     ar_rou   = annual.copy()
     ar_rou['취득원가']  = rou_init
     ar_rou['상각누계액'] = rou_init - ar_rou['기말사용권자산']
+    derecog  = info.get('derecog') or {}
+    derec_fy = _fiscal_year(derecog['연월'], fiscal_month) if derecog.get('연월') else None
+    ar_rou['감소_취득원가'] = 0.0
+    ar_rou['감소_상각누계액'] = 0.0
+    if derec_fy is not None:
+        hit = ar_rou['연도'] == derec_fy
+        ar_rou.loc[hit, '감소_취득원가']   = derecog['원가']
+        ar_rou.loc[hit, '감소_상각누계액'] = derecog['상각누계']
+        ar_rou.loc[ar_rou['연도'] >= derec_fy, ['취득원가', '상각누계액']] = 0.0
 
-    R_HDRS = ['연도', '취득원가', '감가상각비(해당연도)', '상각누계액', '기말잔액']
-    R_DATA = ['취득원가', '감가상각비', '상각누계액', '기말사용권자산']
+    R_HDRS = ['연도', '취득원가', '감가상각비(해당연도)', '감소_취득원가', '감소_상각누계액', '상각누계액', '기말잔액']
+    R_DATA = ['취득원가', '감가상각비', '감소_취득원가', '감소_상각누계액', '상각누계액', '기말사용권자산']
 
     _title(cur, '■  사용권자산 감가상각 연간 요약', len(L_HDRS))
     cur += 1
@@ -627,8 +696,8 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
     c0.fill = _SUM_FILL; c0.alignment = CTR
     for ci, col in enumerate(R_DATA, 2):
         cell = _bc(cur, ci); cell.fill = _SUM_FILL; cell.alignment = RGT
-        if col == '감가상각비':
-            cell.value = round(ar_rou['감가상각비'].sum()); cell.number_format = MONEY_FMT
+        if col in ('감가상각비', '감소_취득원가', '감소_상각누계액'):
+            cell.value = round(ar_rou[col].sum()); cell.number_format = MONEY_FMT
         elif col in ('상각누계액', '기말사용권자산'):
             cell.value = round(ar_rou.iloc[-1][col]); cell.number_format = MONEY_FMT
     cur += 2
@@ -678,6 +747,8 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
               '유동성대체대상액', '비유동성리스부채잔액']
     DEP_COLS = ['보증금_기초PV', '보증금_이자수익', '보증금_기말PV']
 
+    if derec_info.get('구분') == '중도해지':
+        M_COLS = M_COLS + ['해지감소_리스부채', '해지감소_사용권자산']
     all_cols    = M_COLS + (DEP_COLS if has_deposit else [])
     n_title_col = len(all_cols)
 
@@ -727,7 +798,7 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
         cur += 1
 
     # ── 열 너비 ───────────────────────────────────────────────────────────────
-    base_widths = [10, 16, 14, 14, 14, 16, 14, 14, 16, 18, 20]
+    base_widths = [10, 16, 14, 14, 14, 16, 14, 14, 16, 18, 20] + [16] * (len(M_COLS) - 11)
     dep_widths  = [16, 16, 16]
     col_widths  = base_widths + (dep_widths if has_deposit else [])
     for ci, w in enumerate(col_widths, 1):
@@ -748,7 +819,7 @@ def _write_subtotal_rows(ws, summary_df: pd.DataFrame, data_end_row: int):
 
     # 숫자 합산 대상 컬럼 (텍스트·날짜·비율 제외)
     SKIP_COLS = {'리스계약번호', '기초자산분류', '원가구분', '리스개시일', '리스종료일',
-                 '리스기간(월)', '지급주기', '지급시점', '할인율(연)'}
+                 '리스기간(월)', '지급주기', '지급시점', '할인율(연)', '감소구분', '감소일'}
     sum_cols = [c for c in cols if c not in SKIP_COLS]
 
     cost_types = ['판관비', '제조원가']
@@ -830,7 +901,7 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fi
         ws1 = writer.sheets['계약별 요약']
         _set_header(ws1)
         _money_cols(ws1, summary_df, exclude=('리스계약번호', '기초자산분류', '원가구분', '리스개시일', '리스종료일',
-                                               '리스기간(월)', '지급주기', '지급시점', '할인율(연)'))
+                                               '리스기간(월)', '지급주기', '지급시점', '할인율(연)', '감소구분', '감소일'))
         rate_ci = summary_df.columns.get_loc('할인율(연)') + 1 if '할인율(연)' in summary_df.columns else None
         if rate_ci:
             for cell in ws1.iter_rows(min_row=2, max_row=ws1.max_row,
@@ -933,7 +1004,7 @@ def main():
             row_d = row.to_dict()
             print(f'  ▷ {cid}', end='  ')
             try:
-                sched, init_liab, init_rou, deposit, deposit_pv, deposit_discount = build_schedule(row_d, fiscal_month)
+                sched, init_liab, init_rou, deposit, deposit_pv, deposit_discount, derecog = build_schedule(row_d, fiscal_month)
             except Exception as e:
                 print(f'[오류] {e}')
                 continue
@@ -968,6 +1039,15 @@ def main():
             if annual_r > 1:
                 annual_r /= 100
 
+            # 리스감소(만기종료/중도해지): 감소월이 당기 집계기간 안이면 당기감소로 표시
+            period_end_ym = f'{year}-{fiscal_month:02d}'
+            d_ym = derecog['연월']
+            if interim:
+                derec_in_period = f'{year}-01' <= d_ym <= period_end_ym
+            else:
+                derec_in_period = _fiscal_year(d_ym, fiscal_month) == year
+            derec_done = d_ym <= period_end_ym   # 당기말 이전에 제거 완료 → 기말 상각누계도 0
+
             cost_type = str(_col(row_d, '원가구분') or '판관비').strip()
             asset_class = str(_col(row_d, '기초자산분류(건물등)', '기초자산분류', '자산분류') or '(미분류)').strip()
 
@@ -985,6 +1065,7 @@ def main():
                 'deposit':           deposit,
                 'deposit_pv':        deposit_pv,
                 'deposit_discount':  deposit_discount,
+                'derecog':           derecog,
             }
             contracts.append({'cid': cid, 'info': info, 'sched': sched, 'annual': annual})
 
@@ -1012,7 +1093,14 @@ def main():
                 '유동성대체대상액':      round(cur_p)    if cur_p    is not None else 0,
                 '비유동성리스부채잔액':  round(nc_p)     if nc_p     is not None else 0,
                 f'{year}년말 사용권자산': round(yr_end_rou) if yr_end_rou is not None else 0,
-                '사용권자산 상각누계':   round(init_rou - (yr_end_rou if yr_end_rou is not None else 0)),
+                '사용권자산 상각누계':   0 if derec_done else round(init_rou - (yr_end_rou if yr_end_rou is not None else 0)),
+                '감소구분':             derecog['구분'] if derec_in_period else '',
+                '감소일':               derecog['일자'] if derec_in_period else None,
+                '당기감소 사용권자산(원가)': round(derecog['원가']) if derec_in_period else 0,
+                '당기감소 상각누계액':    round(derecog['상각누계']) if derec_in_period else 0,
+                '당기감소 리스부채':      round(derecog['리스부채']) if derec_in_period else 0,
+                '해지시 지급액':          round(derecog['해지시지급액']) if derec_in_period else 0,
+                '리스해지손익':           round(derecog['해지손익']) if derec_in_period else 0,
             }
             if deposit > 0:
                 summary_row['지급보증금']    = round(deposit)
