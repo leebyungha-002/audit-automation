@@ -366,6 +366,67 @@ SUMMARY_METRIC_COLS = [
 ]
 
 
+def _period_start_ym(year: str, fiscal_month: int, interim: bool) -> str:
+    """당기 집계 시작월. 반기 등 중간결산은 파일명 연도 1월, 그 외는 회계연도 시작월."""
+    if interim or fiscal_month == 12:
+        return f'{year}-01'
+    return f'{int(year) - 1}-{fiscal_month + 1:02d}'
+
+
+def compute_rollforward(sched: pd.DataFrame, init_liab: float, init_rou: float, deposit: float,
+                        deposit_discount: float, derecog: dict, pstart: str, pend: str) -> dict:
+    """계약 1건의 당기 계정별 증감(기초·신규·상각/이자·지급·만기해지감소·기말).
+    스케줄 연월 라벨 기준: 첫 월이 당기 이전이면 기초 보유, 당기 중이면 신규, 감소월이 당기 중이면 당기감소."""
+    first_ym = str(sched.iloc[0]['연월'])
+    d_ym     = derecog['연월']
+    existed  = first_ym < pstart and d_ym >= pstart
+    is_new   = pstart <= first_ym <= pend
+    is_dec   = pstart <= d_ym <= pend
+    in_rows  = sched[(sched['연월'] >= pstart) & (sched['연월'] <= pend)]
+    start_row = sched[sched['연월'] == pstart]
+    has_start = existed and not start_row.empty
+    has_dep  = deposit > 0 and '보증금_기초PV' in sched.columns
+
+    beg_book = float(start_row.iloc[0]['기초자산잔액']) if has_start else 0.0
+    beg_liab = float(start_row.iloc[0]['기초부채잔액']) if has_start else 0.0
+    beg_dpv  = float(start_row.iloc[0]['보증금_기초PV']) if has_start and has_dep else 0.0
+
+    rf = {
+        '계약_기초': int(existed), '계약_신규': int(is_new), '계약_감소': int(is_dec),
+        # 사용권자산(취득원가)
+        '원가_기초': init_rou if existed else 0.0,
+        '원가_신규': init_rou if is_new else 0.0,
+        '원가_감소': derecog['원가'] if is_dec else 0.0,
+        # 감가상각누계액
+        '누계_기초': (init_rou - beg_book) if existed else 0.0,
+        '누계_상각': float(in_rows['감가상각비'].sum()),
+        '누계_감소': derecog['상각누계'] if is_dec else 0.0,
+        # 리스부채
+        '부채_기초': beg_liab,
+        '부채_신규': init_liab if is_new else 0.0,
+        '부채_이자': float(in_rows['이자비용'].sum()),
+        '부채_지급': float(in_rows['현금지급액'].sum()),
+        '부채_감소': derecog['리스부채'] if is_dec else 0.0,
+        '해지손익':  derecog['해지손익'] if is_dec else 0.0,
+        '해지지급':  derecog['해지시지급액'] if is_dec else 0.0,
+        # 보증금(명목) / 현재가치할인차금
+        '보증금_기초': deposit if existed and has_dep else 0.0,
+        '보증금_신규': deposit if is_new and has_dep else 0.0,
+        '보증금_감소': deposit if is_dec and has_dep else 0.0,
+        '할인차금_기초': (deposit - beg_dpv) if existed and has_dep else 0.0,
+        '할인차금_신규': deposit_discount if is_new and has_dep else 0.0,
+        '할인차금_상각': float(in_rows['보증금_이자수익'].fillna(0).sum()) if has_dep else 0.0,
+        # 만기·해지 시점엔 할인차금이 전액 상각(해지월 잔액은 이자수익으로 정리)돼 있으므로 감소분 0
+        '할인차금_감소': 0.0,
+    }
+    rf['원가_기말'] = rf['원가_기초'] + rf['원가_신규'] - rf['원가_감소']
+    rf['누계_기말'] = rf['누계_기초'] + rf['누계_상각'] - rf['누계_감소']
+    rf['부채_기말'] = rf['부채_기초'] + rf['부채_신규'] + rf['부채_이자'] - rf['부채_지급'] - rf['부채_감소']
+    rf['보증금_기말'] = rf['보증금_기초'] + rf['보증금_신규'] - rf['보증금_감소']
+    rf['할인차금_기말'] = rf['할인차금_기초'] + rf['할인차금_신규'] - rf['할인차금_상각'] - rf['할인차금_감소']
+    return rf
+
+
 def build_lease_class_summary(summary_df: pd.DataFrame) -> dict:
     """기초자산분류(건물등)별 요약 지표 + 기초자산분류×원가구분 감가상각비 피벗 계산.
     (depreciation_schedule.py의 계정과목별 요약표와 동일한 취지)"""
@@ -423,97 +484,170 @@ def build_lease_class_summary(summary_df: pd.DataFrame) -> dict:
             'int_col': int_col, 'dep_col': dep_col, 'cash_col': cash_col}
 
 
-def write_lease_summary_sheet(ws, summary: dict, company: str, year: str, fiscal_month: int, interim: bool = False):
+def write_lease_summary_sheet(ws, summary: dict, company: str, year: str, fiscal_month: int, interim: bool = False,
+                              rf_df: pd.DataFrame = None, summary_df: pd.DataFrame = None):
+    """요약표: 계정별 증감표(기초+증가-감소=기말) + 손익내역 + 계약수 + 기초자산분류별 증감 + 원가구분별 감가상각비.
+    기말잔액은 월별 스케줄에서 직접 뽑은 계약별 요약 기말잔액과 대사해 차이를 표시한다."""
+    bold       = Font(bold=True)
+    center     = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left       = Alignment(horizontal='left', vertical='center')
     total_fill = PatternFill('solid', fgColor='9DC3E6')
-    bold = Font(bold=True)
-    center = Alignment(horizontal='center', vertical='center')
+    book_fill  = PatternFill('solid', fgColor='FFF2CC')
+    sub_fill   = PatternFill('solid', fgColor='F2F2F2')
+    ok_font    = Font(color='2E7D32')
+    ng_font    = Font(color='C00000', bold=True)
 
-    for col in 'ABCDEFGHIJKLMNO':
-        ws.column_dimensions[col].width = 16
+    ws.column_dimensions['A'].width = 30
+    for col in 'BCDEFGHIJKLMNOP':
+        ws.column_dimensions[col].width = 17
 
-    period_note = f', 반기검토(1~{fiscal_month}월)' if interim else ''
-    ws.cell(row=1, column=1, value=f'리스 요약표 (회사: {company}, 연도: {year}{period_note})').font = Font(bold=True, size=13)
+    pstart = _period_start_ym(year, fiscal_month, interim)
+    pend   = f'{year}-{fiscal_month:02d}'
+    ws.cell(row=1, column=1, value=f'리스 요약표 — {company}').font = Font(bold=True, size=14)
+    ws.cell(row=2, column=1, value=f'당기: {pstart} ~ {pend}' + (' (중간결산)' if interim else '')
+            + '   ※ 단위: 원 / 증가·감소는 양수로 표시 (기초 + 증가 − 감소 = 기말)').font = Font(size=10, color='595959')
 
-    r = 3
-    if not summary:
-        ws.cell(row=r, column=1, value='(계약 데이터 없음)')
+    if rf_df is None or rf_df.empty:
+        ws.cell(row=4, column=1, value='(계약 데이터 없음)')
         return
 
-    for i, h in enumerate(SUMMARY_METRIC_COLS, start=1):
-        cell = ws.cell(row=r, column=i, value=h)
-        cell.fill = _HDR_FILL
-        cell.font = _HDR_FONT
-        cell.alignment = center
-        cell.border = _BORDER
-    r += 1
-    t = summary['total']
-    for i, h in enumerate(SUMMARY_METRIC_COLS, start=1):
-        cell = ws.cell(row=r, column=i, value=t[h])
-        cell.border = _BORDER
-        if h != '계약수':
-            cell.number_format = MONEY_FMT
-    r += 2
+    T = rf_df.sum(numeric_only=True)
 
-    ws.cell(row=r, column=1, value='기초자산분류별 내역').font = bold
-    r += 1
-    acct_headers = ['기초자산분류'] + SUMMARY_METRIC_COLS
-    for i, h in enumerate(acct_headers, start=1):
-        cell = ws.cell(row=r, column=i, value=h)
-        cell.fill = _HDR_FILL
-        cell.font = _HDR_FONT
-        cell.alignment = center
-        cell.border = _BORDER
-    r += 1
-    for row in summary['by_class']:
-        cell = ws.cell(row=r, column=1, value=row['기초자산분류'])
-        cell.border = _BORDER
-        for i, h in enumerate(SUMMARY_METRIC_COLS, start=2):
-            cell = ws.cell(row=r, column=i, value=row[h])
-            cell.border = _BORDER
-            if h != '계약수':
-                cell.number_format = MONEY_FMT
-        r += 1
-    cell = ws.cell(row=r, column=1, value='합계')
-    cell.font = bold
-    cell.fill = total_fill
-    cell.border = _BORDER
-    for i, h in enumerate(SUMMARY_METRIC_COLS, start=2):
-        cell = ws.cell(row=r, column=i, value=t[h])
-        cell.border = _BORDER
-        cell.font = bold
-        cell.fill = total_fill
-        if h != '계약수':
-            cell.number_format = MONEY_FMT
-    r += 2
-
-    pivot = summary['pivot']
-    if not pivot.empty:
-        ws.cell(row=r, column=1, value='원가구분별 순 당기감가상각비 (기초자산분류별)').font = bold
-        r += 1
-        cost_cols = list(pivot.columns)
-        headers = ['기초자산분류'] + cost_cols
+    def _hdr_row(r, headers):
         for i, h in enumerate(headers, start=1):
-            cell = ws.cell(row=r, column=i, value=h)
-            cell.fill = _HDR_FILL
-            cell.font = _HDR_FONT
-            cell.alignment = center
-            cell.border = _BORDER
+            c = ws.cell(row=r, column=i, value=h)
+            c.fill = _HDR_FILL; c.font = _HDR_FONT; c.alignment = center; c.border = _BORDER
+        ws.row_dimensions[r].height = 32
+
+    def _val_row(r, label, values, fill=None, font=None, fmt=MONEY_FMT):
+        c = ws.cell(row=r, column=1, value=label)
+        c.border = _BORDER; c.alignment = left
+        if fill: c.fill = fill
+        if font: c.font = font
+        for i, v in enumerate(values, start=2):
+            c = ws.cell(row=r, column=i)
+            c.border = _BORDER
+            if v is not None:
+                c.value = round(float(v))
+                c.number_format = fmt
+            if fill: c.fill = fill
+            if font: c.font = font
+
+    def _section(r, text):
+        ws.cell(row=r, column=1, value=text).font = Font(bold=True, size=12, color='1F3864')
+        return r + 1
+
+    # 명세(월별 스케줄) 기말잔액 — 대사용
+    cols = list(summary_df.columns) if summary_df is not None else []
+    endlb_col  = next((c for c in cols if c.endswith('년말 리스부채')), None)
+    endrou_col = next((c for c in cols if c.endswith('년말 사용권자산')), None)
+    sched_liab = float(summary_df[endlb_col].sum()) if endlb_col else None
+    sched_rou  = float(summary_df[endrou_col].sum()) if endrou_col else None
+    cur_liab   = float(summary_df['유동성대체대상액'].sum()) if '유동성대체대상액' in cols else None
+    ncur_liab  = float(summary_df['비유동성리스부채잔액'].sum()) if '비유동성리스부채잔액' in cols else None
+
+    r = 4
+    # ── 1. 계정별 증감표 ─────────────────────────────────────────────────────
+    r = _section(r, '1. 계정별 증감표')
+    heads = ['계정', '기초잔액', '증가\n(신규리스)', '증가\n(감가상각비·이자비용)',
+             '감소\n(리스료지급·할인차금상각)', '감소\n(만기종료·중도해지)', '기말잔액', '명세 기말잔액', '대사차이']
+    _hdr_row(r, heads); r += 1
+
+    book_beg = T['원가_기초'] - T['누계_기초']
+    book_end = T['원가_기말'] - T['누계_기말']
+    lines = [
+        ('사용권자산(취득원가)', [T['원가_기초'], T['원가_신규'], None, None, T['원가_감소'], T['원가_기말']], None, None),
+        ('(차감) 감가상각누계액', [T['누계_기초'], None, T['누계_상각'], None, T['누계_감소'], T['누계_기말']], None, None),
+        ('사용권자산 장부금액', [book_beg, T['원가_신규'], None, T['누계_상각'], T['원가_감소'] - T['누계_감소'], book_end],
+         sched_rou, book_fill),
+        ('리스부채', [T['부채_기초'], T['부채_신규'], T['부채_이자'], T['부채_지급'], T['부채_감소'], T['부채_기말']],
+         sched_liab, book_fill),
+    ]
+    if T['보증금_기초'] or T['보증금_신규'] or T['보증금_감소']:
+        lines += [
+            ('임차보증금(명목가액)', [T['보증금_기초'], T['보증금_신규'], None, None, T['보증금_감소'], T['보증금_기말']], None, None),
+            ('(차감) 현재가치할인차금', [T['할인차금_기초'], T['할인차금_신규'], None, T['할인차금_상각'],
+                                    T['할인차금_감소'], T['할인차금_기말']], None, None),
+        ]
+    for label, vals, sched_v, fill in lines:
+        diff = None if sched_v is None else vals[-1] - sched_v
+        _val_row(r, label, vals + [sched_v, diff], fill=fill, font=bold if fill else None)
+        if diff is not None:
+            # 명세 기말잔액은 계약별로 원단위 반올림된 값의 합계 → 계약 수 이내 차이는 반올림 차이
+            ws.cell(row=r, column=len(heads)).font = ok_font if abs(diff) <= len(rf_df) else ng_font
         r += 1
+    for label, v in (('   └ 유동성리스부채', cur_liab), ('   └ 비유동성리스부채', ncur_liab)):
+        _val_row(r, label, [None, None, None, None, None, v], fill=sub_fill)
+        r += 1
+    ws.cell(row=r, column=1, value='※ 장부금액 행의 감가상각비는 장부금액을 줄이므로 "감소(리스료지급·할인차금상각)" 열에 표시'
+            ).font = Font(size=9, color='808080')
+    ws.cell(row=r + 1, column=1, value=f'※ 대사차이: 명세 기말잔액(계약별 원단위 반올림 합계)과의 차이, 계약 수({len(rf_df)}건) 이내는 반올림 차이(녹색)'
+            ).font = Font(size=9, color='808080')
+    r += 3
+
+    # ── 2. 당기 손익 내역 ────────────────────────────────────────────────────
+    r = _section(r, '2. 당기 손익·현금흐름 내역')
+    _hdr_row(r, ['항목', '금액', '비고']); r += 1
+    pl = [
+        ('사용권자산 감가상각비', T['누계_상각'], '비용'),
+        ('리스부채 이자비용', T['부채_이자'], '비용'),
+        ('보증금 이자수익(할인차금 상각)', T['할인차금_상각'], '수익'),
+        ('리스해지손익', T['해지손익'], f"+이익/−손실 (해지시 지급액 {round(T['해지지급']):,}원 반영)"),
+        ('리스료 지급액(현금유출)', T['부채_지급'], '원금상환 + 이자지급'),
+    ]
+    for label, v, note in pl:
+        _val_row(r, label, [v])
+        c = ws.cell(row=r, column=3, value=note); c.border = _BORDER
+        r += 1
+    r += 1
+
+    # ── 3. 계약 수 증감 ──────────────────────────────────────────────────────
+    r = _section(r, '3. 계약 수 증감')
+    _hdr_row(r, ['구분', '기초', '신규', '만기·해지', '기말']); r += 1
+    beg_n, new_n, dec_n = int(T['계약_기초']), int(T['계약_신규']), int(T['계약_감소'])
+    _val_row(r, '계약 건수', [beg_n, new_n, dec_n, beg_n + new_n - dec_n], fmt='#,##0')
+    r += 2
+
+    # ── 4. 기초자산분류별 증감 ───────────────────────────────────────────────
+    r = _section(r, '4. 기초자산분류별 증감')
+    g = rf_df.groupby('기초자산분류', sort=False).sum(numeric_only=True)
+    blocks = [
+        ('사용권자산(취득원가)', ['기초잔액', '신규증가', '만기·해지감소', '기말잔액'],
+         ['원가_기초', '원가_신규', '원가_감소', '원가_기말']),
+        ('감가상각누계액', ['기초잔액', '감가상각비', '만기·해지감소', '기말잔액'],
+         ['누계_기초', '누계_상각', '누계_감소', '누계_기말']),
+        ('리스부채', ['기초잔액', '신규증가', '이자비용', '리스료지급', '만기·해지감소', '기말잔액'],
+         ['부채_기초', '부채_신규', '부채_이자', '부채_지급', '부채_감소', '부채_기말']),
+    ]
+    for title, heads2, keys in blocks:
+        ws.cell(row=r, column=1, value=f'▸ {title}').font = bold
+        r += 1
+        _hdr_row(r, ['기초자산분류'] + heads2); r += 1
+        for cls, row in g.iterrows():
+            _val_row(r, cls, [row[k] for k in keys]); r += 1
+        _val_row(r, '합계', [T[k] for k in keys], fill=total_fill, font=bold)
+        r += 2
+    ws.cell(row=r, column=1, value='▸ 사용권자산 장부금액(기말)').font = bold
+    r += 1
+    _hdr_row(r, ['기초자산분류', '취득원가', '감가상각누계액', '장부금액']); r += 1
+    for cls, row in g.iterrows():
+        _val_row(r, cls, [row['원가_기말'], row['누계_기말'], row['원가_기말'] - row['누계_기말']]); r += 1
+    _val_row(r, '합계', [T['원가_기말'], T['누계_기말'], book_end], fill=total_fill, font=bold)
+    r += 2
+
+    # ── 5. 원가구분별 감가상각비 ────────────────────────────────────────────
+    pivot = summary.get('pivot') if summary else None
+    if pivot is not None and not pivot.empty:
+        r = _section(r, '5. 원가구분별 당기 감가상각비 (기초자산분류별)')
+        cost_cols = list(pivot.columns)
+        _hdr_row(r, ['기초자산분류'] + cost_cols); r += 1
         for cls, row in pivot.iterrows():
             is_total = cls == '총계'
-            cell = ws.cell(row=r, column=1, value=cls)
-            cell.border = _BORDER
-            if is_total:
-                cell.font = bold
-                cell.fill = total_fill
-            for i, c in enumerate(cost_cols, start=2):
-                cell = ws.cell(row=r, column=i, value=row[c])
-                cell.number_format = MONEY_FMT
-                cell.border = _BORDER
-                if is_total:
-                    cell.font = bold
-                    cell.fill = total_fill
+            _val_row(r, cls, [row[c] for c in cost_cols], fill=total_fill if is_total else None,
+                     font=bold if is_total else None)
             r += 1
+
+    ws.freeze_panes = 'B4'
 
 
 # ── Excel 저장 ────────────────────────────────────────────────────────────────
@@ -887,14 +1021,15 @@ def _write_subtotal_rows(ws, summary_df: pd.DataFrame, data_end_row: int):
 
 
 def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fiscal_month: int = 12,
-                  company: str = '', year: str = '', interim: bool = False):
+                  company: str = '', year: str = '', interim: bool = False, rf_df: pd.DataFrame = None):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
 
         # ── Sheet 0: 요약표 ──────────────────────────────────────────────────
         ws0 = writer.book.create_sheet('요약표', 0)
-        write_lease_summary_sheet(ws0, build_lease_class_summary(summary_df), company, year, fiscal_month, interim)
+        write_lease_summary_sheet(ws0, build_lease_class_summary(summary_df), company, year, fiscal_month, interim,
+                                  rf_df=rf_df, summary_df=summary_df)
 
         # ── Sheet 1: 계약별 요약 ─────────────────────────────────────────────
         summary_df.to_excel(writer, sheet_name='계약별 요약', index=False)
@@ -998,6 +1133,8 @@ def main():
 
         contracts    = []
         summary_rows = []
+        rf_rows      = []
+        pstart_ym    = _period_start_ym(year, fiscal_month, interim)
 
         for _, row in df_in.iterrows():
             cid   = str(row['리스계약번호']).strip()
@@ -1107,6 +1244,9 @@ def main():
                 summary_row['보증금PV']     = round(deposit_pv)
                 summary_row['보증금할인차금'] = round(deposit_discount)
             summary_rows.append(summary_row)
+            rf = compute_rollforward(sched, init_liab, init_rou, deposit, deposit_discount, derecog,
+                                     pstart_ym, f'{year}-{fiscal_month:02d}')
+            rf_rows.append({'리스계약번호': cid, '기초자산분류': asset_class, '원가구분': cost_type, **rf})
 
         if not contracts:
             print('  [안내] 처리된 계약 없음')
@@ -1115,7 +1255,9 @@ def main():
         summary_df  = pd.DataFrame(summary_rows)
         out_suffix  = f'_interim{fiscal_month:02d}' if interim else ''
         output_path = os.path.join(OUTPUT_DIR, f'lease_schedule_{company}_{year}{out_suffix}.xlsx')
-        save_results(summary_df, contracts, output_path, fiscal_month, company=company, year=year, interim=interim)
+        rf_df       = pd.DataFrame(rf_rows)
+        save_results(summary_df, contracts, output_path, fiscal_month, company=company, year=year, interim=interim,
+                     rf_df=rf_df)
 
         # 회사별 results/ 폴더에도 복사
         company_results = os.path.join(PROJECT_DIR, company, 'results')
