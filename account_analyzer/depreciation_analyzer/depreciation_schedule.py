@@ -34,6 +34,7 @@ INPUT_DIR = os.path.join(HERE, "input_data")
 OUTPUT_DIR = os.path.join(HERE, "output")
 
 SIG_THRESHOLD_ABS = 1000      # 유의차이 절대금액 기준(원)
+TAX_RESIDUAL_AMOUNT = 1000    # 법인세법상 잔존가액(비망가액)
 SIG_THRESHOLD_PCT = 0.01      # 유의차이 비율 기준(1%)
 
 
@@ -322,6 +323,17 @@ def compute_asset(a: dict, fiscal_month: int, target_fy: str, interim_month: int
         else:
             n = _months_between(held_start, held_end)
             당기감가상각비 = max(0.0, min(monthly_rate * n, base_book_before_grant - 잔존가치))
+
+    # 기초 장부가액이 정확히 1,000원(법인세법상 잔존가액)만 남은 기존 자산은 상각이 끝난 것으로 보고
+    # 잔액 1,000원을 상각하지 않는다(회사도 비망가액으로 남겨두고 상각비를 계상하지 않음).
+    tax_residual_kept = (
+        is_existing and 잔존가치 == 0 and not disposed_in_fy and not impair_in_period
+        and abs(base_book_before_grant - TAX_RESIDUAL_AMOUNT) < 1
+    )
+    if tax_residual_kept:
+        당기감가상각비 = 0.0
+        kept_note = "법인세법상 잔존가액(1,000원) 유지 — 당기 상각 제외"
+        result["warning"] = f"{result['warning']} / {kept_note}".strip(" /") if result["warning"] else kept_note
 
     당기정부보조금환입액 = 당기감가상각비 * grant_ratio
 
