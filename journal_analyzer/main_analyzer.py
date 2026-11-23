@@ -861,8 +861,12 @@ def _find_current_ledger_files(current_dir: str) -> list:
     """
     if not os.path.isdir(current_dir):
         return []
-    return [os.path.join(current_dir, f) for f in sorted(os.listdir(current_dir))
-            if '계정별원장' in f and f.endswith('.xlsx') and not f.startswith('~$')]
+    names = sorted(os.listdir(current_dir))
+    # 회사 preprocess가 원본 .xlsx를 '{원본명}_변환.xlsx'로 바꿔둔 경우(예: kyungnam) 원본은
+    # 엔진이 못 읽는 형식이므로 제외하고 변환본만 쓴다. 변환본이 없으면 종전과 동일.
+    return [os.path.join(current_dir, f) for f in names
+            if '계정별원장' in f and f.endswith('.xlsx') and not f.startswith('~$')
+            and f[:-5] + '_변환.xlsx' not in names]
 
 def _clean_ledger_account_name(sheet_name: str) -> str:
     """시트명 '0_당좌예금(10200)' -> '당좌예금' (순번 접두어 + 계정코드 접미어 제거)."""

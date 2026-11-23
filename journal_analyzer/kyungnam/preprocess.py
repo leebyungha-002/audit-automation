@@ -16,7 +16,11 @@ main_analyzer.py 의 load_data() 완료 직후,
   3. preprocess()    : 위 두 단계를 순서대로 호출하는 공개 진입점
 """
 
+import os
+import re
 import sys
+
+import openpyxl
 import pandas as pd
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -50,6 +54,96 @@ COLUMN_MAP: dict[str, str] = {
 
 # PK 컬럼명 (main_analyzer 가 참조할 수 있도록 상수로 노출)
 PK_COL = 'PK'
+
+
+# =============================================================================
+# 계정별원장 변환 (2026-11-23 blue sky 요청: 4번 TB_TO_GL_TEST 시트가 안 나오던 문제)
+#
+#  경남제약 ERP 원장은 시트 1개에 계정이 '계정: 11101010 : 현금' 머리행으로 이어서
+#  나열되고(열: 회계일자/전표번호/적요/차변금액/대변금액/잔액), 기초잔액은 전표번호 칸이
+#  '이월'인 행, 집계행은 '월계'/'누계'. 엔진은 이 형식을 모르므로 공용 더존 7열 형식
+#  (계정 1개 = 시트 1개, 시트명 '순번_계정명')의 '{원본명}_변환.xlsx'로 바꾼다.
+#  변환본이 있으면 엔진은 원본 .xlsx를 읽지 않는다. 원본이 안 바뀌면 재생성 안 함.
+# =============================================================================
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_LEDGER_DIRS = [os.path.join(_DIR, 'data', 'current'), os.path.join(_DIR, 'data', 'previous')]
+_ACCT_HEADER_RE = re.compile(r'^계정:\s*(\S+)\s*:\s*(.*)$')
+_DUZON_HEADER = ['날짜', '적요란', '코드', '거래처', '차변', '대변', '잔액']
+# 엔진이 적요란에서 기초잔액·집계행을 판정하는 단어 — 실거래 적요에 들어 있으면 오판되므로 피한다
+_ENGINE_KEYWORDS = ('전기이월', '기초잔액')
+_ENGINE_SKIP_EXACT = ('월계', '누계', '합계')
+
+
+def _ledger_sources() -> list:
+    out = []
+    for d in _LEDGER_DIRS:
+        if os.path.isdir(d):
+            out += [os.path.join(d, f) for f in sorted(os.listdir(d))
+                    if f.endswith('.xlsx') and '계정별원장' in f
+                    and not f.startswith('~$') and not f.endswith('_변환.xlsx')]
+    return out
+
+
+def _is_kyungnam_ledger(path: str) -> bool:
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        rows = list(wb[wb.sheetnames[0]].iter_rows(min_row=1, max_row=2, values_only=True))
+    finally:
+        wb.close()
+    return (len(rows) == 2 and rows[0][:2] == ('회계일자', '전표번호')
+            and isinstance(rows[1][0], str) and rows[1][0].startswith('계정:'))
+
+
+def _convert_ledger(src: str) -> None:
+    out_path = src[:-5] + '_변환.xlsx'
+    if os.path.isfile(out_path) and os.path.getmtime(out_path) >= max(os.path.getmtime(src),
+                                                                     os.path.getmtime(__file__)):
+        return
+    if not _is_kyungnam_ledger(src):
+        print(f'  [kyungnam/preprocess] 계정별원장 형식 아님 → 변환 안 함: {os.path.basename(src)}')
+        return
+    wb_in = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    wb = openpyxl.Workbook(write_only=True)
+    ws, n_acct, n_open, total_dr, total_cr = None, 0, 0, 0.0, 0.0
+    try:
+        for r in wb_in[wb_in.sheetnames[0]].iter_rows(min_row=2, values_only=True):
+            date, no, desc, dr, cr, bal = (tuple(r) + (None,) * 6)[:6]
+            m = _ACCT_HEADER_RE.match(date) if isinstance(date, str) else None
+            if m:
+                name = m.group(2).strip()
+                # 시트명 금지문자는 공백으로(엔진 계정명 매칭은 공백·/ 무시). 순번 접두어로 시트명은 유일.
+                safe = re.sub(r'[\\/*?:\[\]]', ' ', name)
+                ws = wb.create_sheet(f'{n_acct}_{safe}'[:31])
+                ws.append(_DUZON_HEADER)
+                n_acct += 1
+                continue
+            if ws is None or no in ('월계', '누계'):
+                continue
+            dr, cr = float(dr or 0), float(cr or 0)
+            if no == '이월':
+                ws.append([date, '전기이월', None, None, dr, cr, bal])
+                n_open += 1
+                continue
+            text = re.sub(r'[\s\[\]]', '', str(desc or ''))
+            if any(k in text for k in _ENGINE_KEYWORDS) or text in _ENGINE_SKIP_EXACT:
+                desc = '거래: ' + text.replace('전기이월', '전기·이월').replace('기초잔액', '기초·잔액')
+            ws.append([date, desc, no, None, dr, cr, bal])
+            total_dr += dr
+            total_cr += cr
+    finally:
+        wb_in.close()
+    wb.save(out_path)
+    print(f'  [kyungnam/preprocess] 계정별원장 변환: {os.path.basename(src)} → '
+          f'{os.path.basename(out_path)} ({n_acct}개 계정, 이월행 {n_open}개, '
+          f'거래 차변 {total_dr:,.0f} / 대변 {total_cr:,.0f})')
+
+
+def convert_ledgers() -> None:
+    for src in _ledger_sources():
+        try:
+            _convert_ledger(src)
+        except Exception as e:  # 원장 변환 실패가 분개장 분석 전체를 막지 않게
+            print(f'  [kyungnam/preprocess] 계정별원장 변환 실패: {os.path.basename(src)} — {e}')
 
 
 # =============================================================================
@@ -120,6 +214,8 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     함수 시그니처 :  preprocess(df: pd.DataFrame) -> pd.DataFrame
     모듈 내 반드시 이 이름으로 정의되어야 한다.
     """
+    convert_ledgers()   # 4번 TB_TO_GL_TEST용 계정별원장 변환(원본 그대로면 건너뜀)
+
     print('  [kyungnam/preprocess] 컬럼 매핑 시작')
 
     # Step 1 — 컬럼명 표준화
