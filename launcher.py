@@ -395,7 +395,7 @@ TOOLS = [
     {
         "category": "파일 분류",
         "name": "감사조서 파일 분류 - JS회사 (file_classifier)",
-        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (java_script_companies 회사)",
+        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (java_script_companies 회사)\n▶ [실행] 클릭 → 분류기 창에서 [원본 폴더 선택](회사에서 받은 파일이 든 폴더, 위치 무관)과 [대상 폴더 선택](감사조서 저장 위치, 회사 선택 시 회사 폴더로 자동 지정·변경 가능)을 한 뒤 분류 시작.\n⚠ 파일은 복사가 아니라 이동됨 / 원본 폴더 바로 아래 파일만 처리(하위 폴더 제외)",
         "cmd": ["python", str(ROOT / "workpaper_tools" / "file_classifier" / "main.py"), "--base", "java_script_companies"],
         "cwd": str(ROOT / "workpaper_tools" / "file_classifier"),
         "company": "js",
@@ -404,7 +404,7 @@ TOOLS = [
     {
         "category": "파일 분류",
         "name": "감사조서 파일 분류 - journal회사 (file_classifier)",
-        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (journal_analyzer 회사)",
+        "desc": "오딧로비 업로드를 위한 파일 분류 — 키워드 기반 감사 조서 자동 분류 GUI (journal_analyzer 회사)\n▶ [실행] 클릭 → 분류기 창에서 [원본 폴더 선택](회사에서 받은 파일이 든 폴더, 위치 무관)과 [대상 폴더 선택](감사조서 저장 위치, 회사 선택 시 회사 폴더로 자동 지정·변경 가능)을 한 뒤 분류 시작.\n⚠ 파일은 복사가 아니라 이동됨 / 원본 폴더 바로 아래 파일만 처리(하위 폴더 제외)",
         "cmd": ["python", str(ROOT / "workpaper_tools" / "file_classifier" / "main.py"), "--base", "journal_analyzer"],
         "cwd": str(ROOT / "workpaper_tools" / "file_classifier"),
         "company": "journal",
