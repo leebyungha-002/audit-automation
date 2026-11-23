@@ -228,6 +228,18 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = fill
             print(f'  [kyungnam/preprocess] "{col}" 컬럼 없음 -> 빈 컬럼 생성')
 
+    # Step 2-1 — 회계번호(A0002 등)는 날마다 반복되는 일련번호라 task_list 8번 등에서
+    # 그룹기준열='회계번호'로 묶으면 여러 날 전표가 한 전표로 합쳐진다(2026-11-23 blue sky).
+    # 회계일자(→등록일자)를 앞에 붙여 '20260102_A0002'처럼 날짜별로 유일하게 만든다.
+    # 이미 날짜가 붙은 값(예: 전기 CSV의 '20250101A0001')은 그대로 둔다.
+    if '회계번호' in df.columns and '등록일자' in df.columns:
+        no = df['회계번호'].fillna('').astype(str).str.strip()
+        d = pd.to_datetime(df['등록일자'], errors='coerce', format='mixed').dt.strftime('%Y%m%d')
+        need = no.ne('') & d.notna() & ~no.str.match(r'^\d{8}')
+        df.loc[need, '회계번호'] = d[need] + '_' + no[need]
+        print(f'  [kyungnam/preprocess] 회계번호에 회계일자 결합: {int(need.sum()):,}행 '
+              f'(샘플 {df.loc[need, "회계번호"].head(2).tolist()})')
+
     print(f'  [kyungnam/preprocess] 최종 컬럼: {list(df.columns)}')
 
     # Step 3 — 고유 식별키 생성
