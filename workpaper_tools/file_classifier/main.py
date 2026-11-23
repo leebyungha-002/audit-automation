@@ -99,17 +99,19 @@ class ClassifierWorker(QThread):
             for idx, (src, filename, rel) in enumerate(all_files):
                 cat = self._find_category(filename)
 
-                if cat:
-                    dest_dir = os.path.join(self.target_folder, cat)
+                dest_dir = os.path.join(self.target_folder, cat or '00_미분류(확인필요)')
+                # 이미 목적지 폴더에 있는 파일(예: 미분류 폴더 재분류 시)은 이동·이름변경 안 함
+                already_there = (os.path.normcase(os.path.abspath(os.path.dirname(src)))
+                                 == os.path.normcase(os.path.abspath(dest_dir)))
+                if not already_there:
                     os.makedirs(dest_dir, exist_ok=True)
                     shutil.move(src, self._safe_dest(dest_dir, filename))
+                if cat:
                     self.log_signal.emit(f"  [분류됨]  {rel}  →  [{cat}]")
                     matched += 1
                 else:
-                    dest_dir = os.path.join(self.target_folder, '00_미분류(확인필요)')
-                    os.makedirs(dest_dir, exist_ok=True)
-                    shutil.move(src, self._safe_dest(dest_dir, filename))
-                    self.log_signal.emit(f"  [미분류]  {rel}  →  [00_미분류(확인필요)]")
+                    self.log_signal.emit(f"  [미분류]  {rel}  →  [00_미분류(확인필요)]"
+                                         + ("  (그대로 유지)" if already_there else ""))
                     unmatched += 1
 
                 self.progress_signal.emit(int((idx + 1) / total * 100))
