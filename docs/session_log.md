@@ -3875,3 +3875,15 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 3. 예전 CSV 원장 정리, file_classifier 파일명 _125949 접미어 제거 여부 확인
 
 ---
+
+## 2026-11-23 17:00
+
+**완료 작업**: 감가상각 앱 — 기초장부가 1,000원(법인세법 잔존가액)만 남은 기존 자산(잔존가치 0 입력)은 당기 상각 제외. kyungnam interim09 재생성, 1,000원 상각 806건 → 0원 확인.
+**변경 파일**: account_analyzer/depreciation_analyzer/depreciation_schedule.py
+**미해결 이슈**: kyungnam interim09 당기상각비 계산 1,164,157,048 vs 회사계상 774,221,278 (차이 약 3.9억) 원인 미확인. TB_TO_GL 허위차이 2종 수정 여부 미결.
+**다음 할 일**:
+1. kyungnam 감가상각 잔여 차이 원인 분석
+2. TB_TO_GL 허위차이 수정 여부 결정
+3. kyungnam 전체 분석 재실행
+
+---
