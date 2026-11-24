@@ -3922,3 +3922,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 1. kyungnam 리스 결과 장부 대사 계속
 
 ---
+
+## 2026-11-24 14:30
+
+**완료 작업**: ascendio 신규 회사 분개장 미인식 원인 파악·해결 — 승인일/승인번호/계정과목명/차변금액/대변금액 비표준 컬럼 + '차변계정과목'(텍스트)이 금액으로 오인돼 차대 0원 + 끝 합계행. `journal_analyzer/ascendio/preprocess.py` 신규(컬럼 매핑, 차변/대변계정과목 → 차측/대측계정(원본) 개명, 합계행 제거). 검증: 7,438행, 1~9월, 계정 134개, 전표 1,743건, 차대 174,717,776,822원 일치.
+**변경 파일**: journal_analyzer/ascendio/preprocess.py
+**미해결 이슈**: task_list_ascendio.xlsx settings ClientName이 '㈜경남제약'(kyungnam 복사본) — 사용자 수정 필요. 시트명 '25_손익월별분析' 한자 오타. 분석목록 파라미터는 kyungnam 것 그대로일 수 있음.
+**다음 할 일**:
+1. ascendio ClientName 수정 후 전체 분석 재실행
+2. ascendio 분석목록·계정 파라미터를 ascendio 계정체계로 정비
+
+---
