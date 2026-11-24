@@ -300,9 +300,11 @@ def build_schedule(c: dict, fiscal_month: int = 12) -> tuple:
 
 # ── 연간 집계 ─────────────────────────────────────────────────────────────────
 
-def _annual_summary(sched: pd.DataFrame, fiscal_month: int = 12) -> pd.DataFrame:
-    """월별 스케줄 → 연간 집계 (리스부채 + 사용권자산)"""
-    fm_str = f'-{fiscal_month:02d}'
+def _annual_summary(sched: pd.DataFrame, fiscal_month: int = 12, snap_month: int = None) -> pd.DataFrame:
+    """월별 스케줄 → 연간 집계 (리스부채 + 사용권자산)
+    fiscal_month: 연도 구분 기준월 / snap_month: 유동성·비유동성 스냅샷 월(기본=fiscal_month).
+    중간결산(1~9월 등)은 연도는 달력연도(12)로 나누고 유동성은 중간결산월 말 값을 쓴다."""
+    fm_str = f'-{(snap_month or fiscal_month):02d}'
     fy_col = sched['연월'].apply(lambda ym: _fiscal_year(ym, fiscal_month))
     rows = []
     for yr, grp in sched.groupby(fy_col, sort=True):
@@ -694,8 +696,11 @@ def _col_width(ws, widths: dict, default=14):
         ws.column_dimensions[get_column_letter(ci)].width = widths.get(hdr, default)
 
 
-def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched: pd.DataFrame, fiscal_month: int = 12):
-    """단일 계약 시트: 계약정보 → 리스부채 연간요약 → 사용권자산 연간요약 → 월별상세"""
+def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched: pd.DataFrame, fiscal_month: int = 12,
+                         interim: bool = False):
+    """단일 계약 시트: 계약정보 → 리스부채 연간요약 → 사용권자산 연간요약 → 월별상세
+    interim(중간결산): 연간 요약은 달력연도(1~12월)로 구분, 유동성 열만 중간결산월 말 기준으로 표시."""
+    group_fm = 12 if interim else fiscal_month
 
     CTR = Alignment(horizontal='center', vertical='center')
     RGT = Alignment(horizontal='right',  vertical='center')
@@ -776,10 +781,12 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
               '기말리스부채잔액', '유동성리스부채', '비유동성리스부채']
     L_DATA = L_HDRS[1:]
     L_SUM  = {'이자비용', '현금지급액', '원금상환액', '해지감소_리스부채'}
+    L_LABELS = [f'{h}({fiscal_month}월말)' if interim and h in ('유동성리스부채', '비유동성리스부채') else h
+                for h in L_HDRS]
 
     _title(cur, '■  리스부채 상각 연간 요약', len(L_HDRS))
     cur += 1
-    for ci, h in enumerate(L_HDRS, 1):
+    for ci, h in enumerate(L_LABELS, 1):
         _hdr(cur, ci, h)
     cur += 1
 
@@ -804,7 +811,7 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
     ar_rou['취득원가']  = rou_init
     ar_rou['상각누계액'] = rou_init - ar_rou['기말사용권자산']
     derecog  = info.get('derecog') or {}
-    derec_fy = _fiscal_year(derecog['연월'], fiscal_month) if derecog.get('연월') else None
+    derec_fy = _fiscal_year(derecog['연월'], group_fm) if derecog.get('연월') else None
     ar_rou['감소_취득원가'] = 0.0
     ar_rou['감소_상각누계액'] = 0.0
     if derec_fy is not None:
@@ -841,7 +848,7 @@ def _write_contract_sheet(ws, cid: str, info: dict, annual: pd.DataFrame, sched:
 
     # ── 4. 보증금 현재가치할인차금 연간 상각표 ───────────────────────────────────
     if has_deposit:
-        dep_annual = _deposit_annual_summary(sched, deposit, fiscal_month)
+        dep_annual = _deposit_annual_summary(sched, deposit, group_fm)
         if not dep_annual.empty:
             D_HDRS = ['연도', '기초보증금PV', '기초현가할인차금', '당기이자수익', '기말보증금PV', '기말현가할인차금']
             D_DATA = D_HDRS[1:]
@@ -1072,7 +1079,7 @@ def save_results(summary_df: pd.DataFrame, contracts: list, output_path: str, fi
             raw   = f"{c['cid']}_{desc}" if desc else f"계약_{c['cid']}"
             sname = re.sub(r'[\[\]*?:/\\]', '', raw)[:31]
             ws    = writer.book.create_sheet(title=sname)
-            _write_contract_sheet(ws, c['cid'], c['info'], c['annual'], c['sched'], fiscal_month)
+            _write_contract_sheet(ws, c['cid'], c['info'], c['annual'], c['sched'], fiscal_month, interim=interim)
 
     print(f'  → {os.path.basename(output_path)} 저장 완료')
 
@@ -1149,7 +1156,8 @@ def main():
                 print(f'[오류] {e}')
                 continue
 
-            annual = _annual_summary(sched, fiscal_month)
+            # 중간결산은 회계연도를 이동시키지 않음 → 연간 요약은 달력연도로 구분, 유동성은 중간결산월 말 기준
+            annual = _annual_summary(sched, 12 if interim else fiscal_month, snap_month=fiscal_month)
 
             # 당기 집계 (summary_df 컬럼용)
             if interim:
