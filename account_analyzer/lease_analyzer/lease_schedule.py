@@ -374,10 +374,13 @@ def _period_start_ym(year: str, fiscal_month: int, interim: bool) -> str:
 
 
 def compute_rollforward(sched: pd.DataFrame, init_liab: float, init_rou: float, deposit: float,
-                        deposit_discount: float, derecog: dict, pstart: str, pend: str) -> dict:
+                        deposit_discount: float, derecog: dict, pstart: str, pend: str,
+                        commence_ym: str = None) -> dict:
     """계약 1건의 당기 계정별 증감(기초·신규·상각/이자·지급·만기해지감소·기말).
-    스케줄 연월 라벨 기준: 첫 월이 당기 이전이면 기초 보유, 당기 중이면 신규, 감소월이 당기 중이면 당기감소."""
-    first_ym = str(sched.iloc[0]['연월'])
+    기초/신규 구분은 리스개시일(commence_ym) 기준: 개시월이 당기 이전이면 기초 보유, 당기 중이면 신규.
+    (K-IFRS 1116: 사용권자산·리스부채는 개시일에 인식 — '상각개시=익월'로 스케줄 첫 라벨이 당기로
+     밀려도 전기 개시 계약은 기초잔액에 포함해야 함) 감소월이 당기 중이면 당기감소."""
+    first_ym = commence_ym or str(sched.iloc[0]['연월'])
     d_ym     = derecog['연월']
     existed  = first_ym < pstart and d_ym >= pstart
     is_new   = pstart <= first_ym <= pend
@@ -1245,7 +1248,8 @@ def main():
                 summary_row['보증금할인차금'] = round(deposit_discount)
             summary_rows.append(summary_row)
             rf = compute_rollforward(sched, init_liab, init_rou, deposit, deposit_discount, derecog,
-                                     pstart_ym, f'{year}-{fiscal_month:02d}')
+                                     pstart_ym, f'{year}-{fiscal_month:02d}',
+                                     commence_ym=pd.Timestamp(row['리스개시일']).strftime('%Y-%m'))
             rf_rows.append({'리스계약번호': cid, '기초자산분류': asset_class, '원가구분': cost_type, **rf})
 
         if not contracts:
