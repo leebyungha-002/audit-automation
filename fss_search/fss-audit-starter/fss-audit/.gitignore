@@ -1,0 +1,5 @@
+.env
+.venv/
+*.db
+downloads/
+__pycache__/

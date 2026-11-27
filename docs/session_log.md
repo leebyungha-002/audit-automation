@@ -3954,3 +3954,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 1. 평가인 수정 보고서 수령 → 입력파일 외부평가·매도청구권금액 갱신 후 재실행
 
 ---
+
+## 2026-11-28 08:30
+
+**완료 작업**: 금감원 회계업무자료 Open API 검색앱(fss_search/fss-audit-starter/fss-audit) 완성. 홈페이지 '상세 및 테스트'에서 확인한 회계 API 6종(K-IFRS·일반기준 질의회신, 내부회계, 심사·감리지적사례, 외부감사 업무자료·FAQ) 엔드포인트 추가, 수집 로직 store.collect로 통합(API 하나 실패해도 나머지 계속), 관련기준서(relStand)·쟁점분야(issRealm) 검색, 구분 필터, 본문 발췌 열, 자료별 저장건수 표시. pytest 16건 통과.
+**변경 파일**: fss_search/fss-audit-starter/fss-audit/ fss_client.py, store.py, app.py, main.py, tests/test_core.py, tests/test_app.py, 개발지시서.md
+**미해결 이슈**: 이 PC 환경에서 fss.or.kr 접속 불가로 실제 호출 미검증. 6개 API URL은 상세페이지 요약 기준(원문 대조 필요). 호출한도·최대조회기간·페이징·오류코드 미확인.
+**다음 할 일**:
+1. .env에 FSS_API_KEY 설정 후 `python main.py sync 2026 2026`으로 7개 API 실제 응답 확인
+2. 실패하는 API가 있으면 홈페이지 상세페이지와 URL·결과변수 대조
+
+---
