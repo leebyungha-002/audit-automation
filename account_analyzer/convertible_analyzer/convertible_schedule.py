@@ -208,7 +208,7 @@ def build_terms(path):
         f = _pct(r.get('행사가능비율(%)'), 0.0)
         holder = str(r.get('보유자') or '').strip()
         method = str(r.get('평가방법') or '').strip()
-        method = '콜행사반영' if method == '콜행사반영' else '별도격자'
+        method = norm_call_method(method)
         asset = str(r.get('자산인식(Y/N)') or '').strip().upper() == 'Y'
         disc = str(r.get('할인방식') or '').strip()
         disc = disc if disc in E.CALL_DISCOUNTS else 'TF분할'
@@ -230,13 +230,23 @@ def build_terms(path):
             t['calls'].append({'시작일': min(r['행사시작일'] for r in brs), '종료일': sched[-1][0],
                                '가격함수': (lambda sc: (lambda dd: next((pr for d, pr in sc if d >= dd), sc[-1][1])))(sched),
                                '행사일정': sched, '행사가능비율': b0['행사가능비율'], '보유자': b0['보유자'],
-                               '평가방법': '별도격자', '할인방식': b0['할인방식'], '자산인식': b0['자산인식'] == 'Y'})
+                               '평가방법': b0['평가방법'], '할인방식': b0['할인방식'], '자산인식': b0['자산인식'] == 'Y'})
     for t in out.values():
         t['puts'].sort()
         t['put_rows'].sort(key=lambda x: x['행사일'])
         t['계약서근거'] = [{kk: ('' if (vv is None or (isinstance(vv, float) and pd.isna(vv))) else vv)
                        for kk, vv in row.items()} for row in basis.get(t['회차'], [])]
     return out
+
+
+def norm_call_method(v):
+    """매도청구Call 평가방법 표기 정규화 → 별도격자 / 콜행사반영 / W/WO총액교환."""
+    v = str(v or '').strip().upper().replace(' ', '')
+    if v == '콜행사반영':
+        return '콜행사반영'
+    if any(k in v for k in ('W/WO', 'WWO', 'WITH', '총액교환')) or v == 'WW':
+        return 'W/WO총액교환'
+    return '별도격자'
 
 
 TENOR_COLS = [('3M', 0.25), ('6M', 0.5), ('9M', 0.75), ('1Y', 1), ('1.5Y', 1.5), ('2Y', 2), ('2.5Y', 2.5),
@@ -1114,15 +1124,18 @@ def save(results, out_path, company, fy_label, fy_start, fy_end, input_path):
             bd = v.get('매도청구권_할인방식별') or {}
             if bd:
                 ext = v['외부'].get('매도청구권')
-                crow.append([r['회차'], v['평가기준일']] + [bd.get(d) for d in E.CALL_DISCOUNTS] +
+                meths = '·'.join(sorted({c['평가방법'] for c in r['terms']['calls']})) or '-'
+                crow.append([r['회차'], v['평가기준일'], meths] + [bd.get(d) for d in E.CALL_DISCOUNTS] +
                             [ext, (bd.get('위험이자율', 0) - ext) / ext if ext else None])
     if crow:
         w.blank()
         w.title('매도청구권 — 할인방식별 재계산')
-        w.table(['회차', '평가기준일'] + list(E.CALL_DISCOUNTS) + ['외부평가', '위험이자율 기준 차이율'], crow,
+        w.table(['회차', '평가기준일', '평가방법'] + list(E.CALL_DISCOUNTS) + ['외부평가', '위험이자율 기준 차이율'], crow,
                 {'위험이자율 기준 차이율': '0.0%'})
         w.note('위험이자율: 콜가치 전체를 신용위험 할인(평가기관 실무) / TF분할: 주식성분 무위험·채권성분 위험 할인 / '
                '무위험이자율: 전체 무위험 할인. 선택한 할인방식(매도청구Call 시트)이 총가치·회계처리에 반영됨')
+        w.note('W/WO총액교환: MIN[Call, MAX(Put, Con, HV)], 콜 행사기간 전환 불가 — 위험이자율은 Call 노드 행사가를 위험 할인, '
+               'TF분할·무위험이자율은 무위험 할인(행사가는 콜 권리자가 지급, 평가인 리뷰 #2 수정 요청 방식)')
     w.blank()
     w.title('민감도 (총가치)')
     srows = [[r['회차'], s['평가기준일'], s['시나리오'], s['총가치'], s['전환권'], s['총가치 변동'], s['변동률']]
@@ -1144,6 +1157,8 @@ def main():
     ap.add_argument('--fiscal-year', type=int, default=None, help='생략 시 파일명 fy 뒤 숫자')
     ap.add_argument('--interim-month', type=int, default=None, help='중간결산월(예: 9 → 9월말 기준)')
     ap.add_argument('--steps-per-year', type=int, default=252, help='격자 연간 단계 수(기본 252)')
+    ap.add_argument('--call-method', choices=['별도격자', 'W/WO총액교환', '콜행사반영'], default=None,
+                    help='매도청구권 평가방법 강제. 생략 시 입력파일(매도청구Call 평가방법) 기준')
     ap.add_argument('--put-split', choices=['Y', 'N'], default=None,
                     help='조기상환권 분리 강제(Y=파생상품부채 분리, N=부채요소 포함). 생략 시 입력파일 기준')
     a = ap.parse_args()
@@ -1171,6 +1186,15 @@ def main():
         for t in terms.values():
             t['풋분리'] = a.put_split == 'Y'
         print(f"  조기상환권: {'분리' if a.put_split == 'Y' else '비분리'} (실행 옵션 — 입력파일 값 무시)")
+    if a.call_method:
+        for t in terms.values():
+            for c in t['calls'] + t['call_rows']:
+                c['평가방법'] = a.call_method
+                if a.call_method == 'W/WO총액교환':   # 리뷰어 요청 방식: Call 노드 무위험 할인
+                    c['할인방식'] = '무위험이자율'
+        print(f'  매도청구권 평가방법: {a.call_method}'
+              + (' · Call 노드 무위험 할인' if a.call_method == 'W/WO총액교환' else '')
+              + ' (실행 옵션 — 입력파일 값 무시)')
     for k, t in terms.items():
         print(f'  - {k}: 액면 {t["액면"]:,.0f}, 만기상환율 {t["만기상환율"]:.4%}, '
               f'Put {len(t["puts"])}건, Call {len(t["calls"])}건')
@@ -1183,6 +1207,8 @@ def main():
     suffix = f'_{a.interim_month:02d}월' if a.interim_month else ''
     if a.put_split:   # 분리/비분리 결과를 나란히 비교할 수 있게 파일명 구분
         suffix += '_풋분리' if a.put_split == 'Y' else '_풋비분리'
+    if a.call_method:
+        suffix += {'별도격자': '_콜별도격자', 'W/WO총액교환': '_콜WW', '콜행사반영': '_콜행사반영'}[a.call_method]
     out = os.path.join(OUTPUT_DIR, f'convertible_schedule_{company}_{fy}{suffix}.xlsx')
     save(results, out, company, f'FY{fy}{suffix}', fy_start, fy_end, path)
     print(f'[완료] {out}')

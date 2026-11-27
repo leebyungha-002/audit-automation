@@ -332,6 +332,9 @@ def value_components(terms: dict, mkt: dict, val_date: date, steps_per_year=252,
       '별도격자'   : 매도청구권 = f × 미국형 콜(기초자산 = 콜 없는 CB 노드가치, 행사가) — 평가보고서 실무
                      (사채권자 미전환 의무보유 조건이 있는 지정인 매도청구권)
       '콜행사반영' : 매도청구권 = f × (V콜없음 − V콜100%) — 발행회사 조기상환(투자자 전환 선택 가능)
+      'W/WO총액교환': 매도청구권 = f × (V콜없음 − V콜) — 총액교환형 콜(평가인 리뷰 #2 수정 요청 방식)
+                     V콜 노드 = MIN[Call, MAX(Put, Con, HV)], 콜 행사기간(시작일~종료일) 중 전환 불가,
+                     Call 노드 행사가 할인: TF분할·무위험이자율 → 무위험(행사가는 콜 권리자가 지급), 위험이자율 → 위험
     반환 dict:
       총가치          : 전환사채(콜 없음) − 매도청구권
       전환사채_콜제외  : 전환·Put 포함 CB
@@ -355,8 +358,10 @@ def value_components(terms: dict, mkt: dict, val_date: date, steps_per_year=252,
 
     call_val = 0.0
     by_disc = {}
-    sep = [c for c in calls if (c.get('평가방법') or call_method) != '콜행사반영']
-    exe = [c for c in calls if (c.get('평가방법') or call_method) == '콜행사반영']
+    meth = lambda c: c.get('평가방법') or call_method  # noqa: E731
+    sep = [c for c in calls if meth(c) not in ('콜행사반영', 'W/WO총액교환')]
+    exe = [c for c in calls if meth(c) == '콜행사반영']
+    ww = [c for c in calls if meth(c) == 'W/WO총액교환']
     if sep:
         w0 = min(c['시작일'] for c in sep)
         w1 = max(c['종료일'] for c in sep)
@@ -380,6 +385,25 @@ def value_components(terms: dict, mkt: dict, val_date: date, steps_per_year=252,
         v_call, _ = tf_lattice(puts=puts, call_window=(c['시작일'], c['종료일']),
                                call_price_fn=c['가격함수'], **common)
         call_val += c['행사가능비율'] * (v_nocall - v_call)
+    for c in ww:
+        if c.get('행사일정'):
+            sched = {d: pr for d, pr in c['행사일정'] if d > val_date}
+        else:   # 청구기간 매일 행사 가능(미국형) — 격자 단계로 묶임
+            d, sched = max(c['시작일'], val_date + timedelta(days=1)), {}
+            while d <= c['종료일']:
+                sched[d] = c['가격함수'](d)
+                d += timedelta(days=1)
+        if not sched:
+            continue
+        block = (c['시작일'], c['종료일'])
+        res = {}
+        for cash in ('무위험이자율', '위험이자율'):
+            v_w, _ = tf_lattice(puts=puts, call_steps=sched, call_cash=cash, no_conv=block, **common)
+            res[cash] = c['행사가능비율'] * (v_nocall - v_w)
+        res['TF분할'] = res['무위험이자율']
+        for disc in CALL_DISCOUNTS:
+            by_disc[disc] = by_disc.get(disc, 0.0) + res[disc]
+        call_val += res[c.get('할인방식') or 'TF분할']
     return {
         '총가치': v_nocall - call_val,
         '전환사채_콜제외': v_nocall,

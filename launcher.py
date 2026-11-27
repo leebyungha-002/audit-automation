@@ -359,7 +359,7 @@ TOOLS = [
     {
         "category": "전환사채 평가 검증",
         "name": "전환사채 전환권평가·회계처리 검증 (convertible_schedule)",
-        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 발행일 분개, 유효이자율 상각표, 분기별 전환권조정 상각표(1분기·반기·3분기·결산, 연도 소계·검증), 전환·조기상환 처리, 회사계상 대사.\n조기상환권 분리 선택(입력파일 기준/분리/비분리): 분리 시 Put을 파생상품부채로 인식하고 주계약만 상각, 파생상품(Put·매도청구권) 평가시점별 공정가치·평가손익 표. 내재 Put 밀접관련 검토 시트(K-IFRS 1109 B4.3.5(5), 행사일별 행사가격 vs 상각후원가).\nTF 이항격자(주별 52 / 일별 252단계 선택)로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
+        "desc": "⚠ 실행 전 account_analyzer/convertible_analyzer/input_data/ 폴더에 convertible_{회사명}_information_fy{연도}.xlsx 파일을 먼저 업로드하세요 (build_template.py로 표준 템플릿 생성 가능).\nK-IFRS 1032 부채·자본(전환권대가) 분리와 발행일 분개, 유효이자율 상각표, 분기별 전환권조정 상각표(1분기·반기·3분기·결산, 연도 소계·검증), 전환·조기상환 처리, 회사계상 대사.\n매도청구권 평가방법 선택(입력파일 기준/별도격자/W/WO 총액교환형). 조기상환권 분리 선택(입력파일 기준/분리/비분리): 분리 시 Put을 파생상품부채로 인식하고 주계약만 상각, 파생상품(Put·매도청구권) 평가시점별 공정가치·평가손익 표. 내재 Put 밀접관련 검토 시트(K-IFRS 1109 B4.3.5(5), 행사일별 행사가격 vs 상각후원가).\nTF 이항격자(주별 52 / 일별 252단계 선택)로 공정가치(전환권·조기상환청구권·매도청구권) 독립 재계산 후 외부평가보고서와 대사, 민감도. 유동성 분류·리픽싱·최대주주 콜 검토사항 자동 표시",
         "cmd": ["python", str(ROOT / "account_analyzer" / "convertible_analyzer" / "convertible_schedule.py")],
         "cwd": str(ROOT / "account_analyzer" / "convertible_analyzer"),
         "company": "cb_file",
@@ -678,6 +678,14 @@ class Launcher(QMainWindow):
         self._cb_put_combo.setFont(QFont("맑은 고딕", 10))
         self._cb_put_combo.addItems(["입력파일 기준", "분리 (파생상품부채)", "비분리 (부채요소 포함)"])
         cb_layout.addWidget(self._cb_put_combo)
+        cb_layout.addSpacing(16)
+        cb_layout.addWidget(QLabel("매도청구권:"))
+        self._cb_call_combo = QComboBox()
+        self._cb_call_combo.setFont(QFont("맑은 고딕", 10))
+        self._cb_call_combo.addItems(["입력파일 기준", "별도격자 (Compound)", "W/WO 총액교환형"])
+        self._cb_call_combo.setToolTip("W/WO 총액교환형: MIN[Call, MAX(Put, Con, HV)], 콜 행사기간 전환 불가, "
+                                       "Call 노드 무위험 할인(평가인 리뷰 #2 수정 요청 방식)")
+        cb_layout.addWidget(self._cb_call_combo)
         cb_layout.addStretch()
         right_layout.addWidget(self._cb_row)
 
@@ -1026,6 +1034,9 @@ class Launcher(QMainWindow):
             put_opt = {1: "Y", 2: "N"}.get(self._cb_put_combo.currentIndex())
             if put_opt:
                 cmd += ["--put-split", put_opt]
+            call_opt = {1: "별도격자", 2: "W/WO총액교환"}.get(self._cb_call_combo.currentIndex())
+            if call_opt:
+                cmd += ["--call-method", call_opt]
             fy_month = _FY_MONTH_BY_INDEX.get(self._fy_combo.currentIndex(), 12)
             if self._interim_check.isChecked():
                 # 반기(1~6월) 검토: 결산월은 12월 그대로, 당기말 결산기준일만 6월말로 앞당김
