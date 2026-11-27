@@ -149,7 +149,8 @@ class Curve:
 
 def tf_lattice(S0, sigma, r_f, r_c, q, val_date, maturity, conv_ratio, redemption,
                coupons, conv_window, puts=(), call_window=None, call_price_fn=None,
-               steps_per_year=252, min_steps=200, allow_conversion=True, keep=None):
+               steps_per_year=252, min_steps=200, allow_conversion=True, keep=None,
+               call_steps=None, call_cash='위험이자율', no_conv=None):
     """액면 1 기준 CB 가치.
 
     coupons     : [(일자, 금액)] (val_date 이후분만 사용)
@@ -159,6 +160,10 @@ def tf_lattice(S0, sigma, r_f, r_c, q, val_date, maturity, conv_ratio, redemptio
                   — 콜 행사 시 투자자는 전환(가능하면)과 행사가 수령 중 유리한 쪽 선택
     r_f, r_c    : 연복리 단일금리(float) 또는 Curve(기간구조) — 단계별 선도이자율로 할인
     keep        : (시작일, 종료일) 지정 시 그 구간 단계별 노드가치를 함께 반환(별도 콜옵션 평가용)
+    call_steps  : {일자: 행사가} — 총액교환형 W/WO(평가인 리뷰 #2): 해당 일자에만
+                  V = MIN[Call, MAX(Put, Con, HV)] (버뮤다형, 콜이 Put보다 우선)
+    call_cash   : call_steps로 콜 행사된 노드의 행사가 현금 할인 — '무위험이자율'(B=0) / '위험이자율'(B=행사가)
+    no_conv     : (시작일, 종료일) 이 구간은 전환 불가(콜 행사기간 중 미전환 의무보유)
     반환: (총가치 V, 현금부분 B) 또는 keep 지정 시 (V, B, 격자정보 dict)
     """
     T = yf(val_date, maturity)
@@ -199,6 +204,8 @@ def tf_lattice(S0, sigma, r_f, r_c, q, val_date, maturity, conv_ratio, redemptio
     if keep:
         w0, w1 = max(0, step_of(keep[0])), min(N, step_of(keep[1]))
         hist = {}
+    cstep = {step_of(dd): pr for dd, pr in (call_steps or {}).items() if val_date < dd < maturity}
+    nc0, nc1 = (step_of(no_conv[0]), step_of(no_conv[1])) if no_conv else (1, 0)
 
     def S_at(i):
         j = np.arange(i + 1)
@@ -223,7 +230,24 @@ def tf_lattice(S0, sigma, r_f, r_c, q, val_date, maturity, conv_ratio, redemptio
             Bh = Bh + cpn[i]
         V, B = Vh, Bh
         conv = conv_ratio * S_at(i)
-        can_conv = allow_conversion and c0 <= i <= c1
+        can_conv = allow_conversion and c0 <= i <= c1 and not (nc0 <= i <= nc1)
+        if i in cstep:
+            # 총액교환형 W/WO: MIN[Call, MAX(Put, Con, HV)] — Put·전환 반영 후 콜로 상한
+            if i in put_at:
+                m = put_at[i] > V
+                V = np.where(m, put_at[i], V)
+                B = np.where(m, put_at[i], B)
+            if can_conv:
+                m = conv > V
+                V = np.where(m, conv, V)
+                B = np.where(m, 0.0, B)
+            cp = cstep[i]
+            called = V > cp
+            V = np.where(called, cp, V)
+            B = np.where(called, 0.0 if call_cash == '무위험이자율' else cp, B)
+            if keep and w0 <= i <= w1:
+                hist[i] = (V.copy(), B.copy())
+            continue
         if k0 <= i <= k1 and i > 0:
             cp = call_price_fn(val_date + timedelta(days=i * dt * 365))
             cap = np.maximum(cp, conv) if can_conv else np.full_like(V, cp)
