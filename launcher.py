@@ -210,6 +210,7 @@ def detect_cb_input_files() -> list[tuple[str, str]]:
 
 
 AFC_DIR = ROOT / "workpaper_tools" / "audit_findings_checklist"
+FSS_DIR = ROOT / "fss_search" / "fss-audit-starter" / "fss-audit"
 
 # 감리 지적사항 체크리스트 단계 — (표시명, main.py 인자, 회사 선택 방식)
 # 회사 선택 방식: None=불필요, "accounts"=input_accounts에 계정리스트가 있는 회사,
@@ -450,6 +451,17 @@ TOOLS = [
         "cwd": str(AFC_DIR),
         "company": "afc",
         "extra": "afc_step",
+    },
+    {
+        "category": "금감원 자료 검색",
+        "name": "금감원 회계 참고자료 검색 (fss_search)",
+        "desc": "금감원 회계업무자료 Open API(주석공시 모범사례·K-IFRS/일반기준 질의회신·내부회계·심사감리지적사례·외부감사 업무자료/FAQ)를 수집해 로컬 DB에 쌓고 키워드로 검색하는 화면.\n"
+                "▶ [실행] 클릭 → 브라우저에 검색 화면(http://localhost:8510)이 열림. 왼쪽 사이드바에서 연도·자료를 골라 [수집 및 저장], 가운데에서 검색어 입력(관련 기준서 번호도 검색됨). 첨부파일은 금감원 주소만 내려받음.\n"
+                "⚠ fss_search/fss-audit-starter/fss-audit/.env 에 FSS_API_KEY(32자리 인증키)를 먼저 넣어야 수집됨 (.env.example 참고). 사용을 마치면 [중지]를 눌러 서버를 종료하세요.",
+        "cmd": ["python", str(FSS_DIR / "run_app.py")],
+        "cwd": str(FSS_DIR),
+        "company": None,
+        "extra": None,
     },
 ]
 
