@@ -4253,6 +4253,303 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
     return out or {'손익월별분석': pd.DataFrame({'결과': ['손익구분에 해당하는 계정 데이터 없음']})}
 
 
+# ── 28. 채권채무조회서 발송대상 표본 선정 ─────────────────────────────────────
+# 2026-11-28 blue sky 요청. 모집단 = 계정별 '거래처별 기말잔액'.
+#   · data/confirmation 폴더에 회사가 낸 거래처별 잔액명세(전기 계정별_거래처별명세와 같은
+#     형식: 계정별 시트 또는 계정명/거래처명/잔액 한 시트)가 있으면 그것이 모집단이고,
+#     전기명세+당기 분개장 롤포워드(20번 로직)가 되면 거래처별로 대사한다.
+#   · 명세가 없으면 롤포워드 결과를 모집단으로 쓴다.
+# 선정: 개별유의금액 이상 전수 → 나머지는 계정별로 MUS(기본)/금액상위/무작위/체계적
+#       (15번 _sampling_select·_sampling_mus_size 재사용). 채무도 잔액 기준만 선정
+#       (거래액 기준 완전성 추가선정은 하지 않음 — blue sky 결정).
+# 결과: 표본설계(모집단·산정기준·선정수·추출방법 문서화) / 발송대상 / 거래처별발송목록 /
+#       모집단_{계정}(전체 거래처와 선정·제외 사유).
+_CONF_DIR_NAME = 'confirmation'
+_CONF_LIAB_KEYWORDS = ('매입', '미지급', '선수', '예수', '차입', '보증금(부채)', '부채')
+_CONF_TRACK_COLS = ['발송일', '회신일', '회신금액', '차이', '차이조정내역', '대체적절차', '비고']
+_CONF_METHOD_DESC = {
+    'MUS': '금액단위표본추출(MUS) — 잔액이 클수록 뽑힐 확률이 높음. 모집단을 거래처명 순으로 '
+           '나열해 잔액을 누적하고, 시작점(난수)부터 표본구간마다 걸리는 거래처를 선정',
+    '금액상위': '잔액 큰 순으로 선정 (목표커버리지가 있으면 그 비율을 채울 때까지)',
+    '무작위': '거래처 단위 단순무작위 추출 (난수 시드 고정)',
+    '체계적': '거래처명 순 나열 후 일정 간격(모집단 건수 ÷ 표본수)마다 선정, 시작점은 난수',
+}
+
+
+def _conf_kind(acct: str, raw: str) -> tuple:
+    """구분 입력값 → ('채권'|'채무', 추정여부)."""
+    v = (raw or '').strip()
+    if v in ('채권', '자산', '차변'):
+        return '채권', False
+    if v in ('채무', '부채', '대변'):
+        return '채무', False
+    return ('채무' if any(k in acct for k in _CONF_LIAB_KEYWORDS) else '채권'), True
+
+
+def _conf_balance_file():
+    """data/confirmation 폴더의 회사제출 거래처별 잔액명세 (첫 번째 엑셀). 없으면 None."""
+    if not _COMPANY_DIR:
+        return None
+    d = os.path.join(_COMPANY_DIR, 'data', _CONF_DIR_NAME)
+    if not os.path.isdir(d):
+        return None
+    files = sorted(f for f in os.listdir(d)
+                   if f.lower().endswith(('.xlsx', '.xls')) and not f.startswith('~$'))
+    return os.path.join(d, files[0]) if files else None
+
+
+def _conf_rollforward(df: pd.DataFrame, acct: str, kind: str) -> tuple:
+    """20번(잔액증감분석) 로직으로 거래처별 기말잔액 계산. ({거래처: 잔액} 또는 None, 설명)."""
+    prev_file = _find_prev_detail_file(os.path.join(_COMPANY_DIR or '', 'data', 'previous'))
+    if not prev_file:
+        return None, '전기 거래처별명세 없음(data/previous) — 분개장 롤포워드 불가'
+    has_prev = bool(_find_prev_account_balances(pd.ExcelFile(prev_file), acct))
+    res = analyze_balance_movement(df, [{'계정명': acct, '구분': '자산' if kind == '채권' else '부채'}])
+    tbl = next((v for v in res.values() if isinstance(v, pd.DataFrame)
+                and {'거래처명', '기말잔액'} <= set(v.columns)), None)
+    if tbl is None:
+        return None, '분개장 롤포워드 결과 없음 (계정명 확인)'
+    tbl = tbl[tbl['거래처명'].astype(str).str.replace(' ', '') != '합계']
+    bal = tbl.groupby('거래처명')['기말잔액'].sum().to_dict()
+    note = f'전기명세({os.path.basename(prev_file)}) 기초잔액 + 당기 분개장 증감'
+    if not has_prev:
+        note += ' — ⚠ 전기명세에 이 계정이 없어 기초잔액을 0으로 계산함(확인 필요)'
+    return bal, note
+
+
+def _conf_select(elig: pd.DataFrame, p: dict, method: str) -> tuple:
+    """elig(거래처명 순, '_amt' 포함)에서 표본 선정.
+    반환: (사유 dict{index: 사유}, 개별유의 건수, 방법추출 건수, 산정근거 문구, 추출조건 dict, MUS정보)"""
+    reasons = {}
+    key_amt = _sampling_param_amount(p.get('개별유의금액'))
+    if key_amt:
+        for i in elig.index[elig['_amt'] >= key_amt]:
+            reasons[i] = f'개별유의금액 이상 전수({key_amt:,.0f}원↑)'
+    key_n = len(reasons)
+    rest = elig.drop(index=list(reasons))
+    mus_info, extra = None, {}
+
+    cover = _ai_param_num(p.get('목표커버리지'), None)
+    cover = cover / 100 if cover is not None and cover > 1 else cover
+    use_table = _nv(str(p.get('통계표사용', ''))).upper() in ('Y', 'O', 'TRUE')
+    if use_table:
+        conf = _ai_param_num(p.get('신뢰수준'), 0.95)
+        conf = conf / 100 if conf > 1 else conf
+        tm = _sampling_param_amount(p.get('허용왜곡표시'))
+        em = _sampling_param_amount(p.get('예상왜곡표시')) or 0.0
+        if not tm:
+            raise ValueError('통계표사용=Y인데 허용왜곡표시가 비어 있음 '
+                             '(허용왜곡표시를 넣거나, 표본크기를 직접 정하려면 통계표사용=N)')
+        n, basis, mus_info = _sampling_mus_size(float(rest['_amt'].sum()), conf, tm, em)
+    elif method == '금액상위' and cover:
+        total = float(elig['_amt'].sum())
+        covered = float(elig.loc[list(reasons), '_amt'].sum())
+        n = 0
+        for amt in rest['_amt'].sort_values(ascending=False):
+            if total and covered / total >= cover:
+                break
+            covered += amt
+            n += 1
+        basis = (f'목표커버리지 {cover:.0%}: 잔액 큰 순으로 누적해 추출모집단 잔액의 {cover:.0%} 이상이 '
+                 f'될 때까지 선정 → {n}건 (개별유의 전수분 {key_n}건도 커버리지에 포함해 계산)')
+    else:
+        n = int(_ai_param_num(p.get('샘플크기'), _SAMPLING_DEFAULT_SIZE))
+        basis = f'입력값 {n}건' + ('' if _nv(str(p.get('샘플크기', ''))) else ' (샘플크기 미입력 → 기본값)')
+
+    rng = np.random.default_rng(_SAMPLING_SEED)
+    idx, why, extra = _sampling_select(rest, n, method, rng)
+    reasons.update(why)
+    return reasons, key_n, len(idx), basis, extra, mus_info, key_amt, n
+
+
+def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
+    """28. 채권채무조회서 발송대상 표본 선정 + 표본설계 문서화."""
+    rows = [p for p in params_list if _nv(p.get('계정과목', '') or p.get('계정명', ''))]
+    if not rows:
+        return {'표본설계': pd.DataFrame({'안내': [
+            '28_채권채무조회서 시트에 계정과목·구분(채권/채무)을 적고 실행여부를 Y로 두세요.']})}
+
+    bal_file = _conf_balance_file()
+    bal_xl = pd.ExcelFile(bal_file) if bal_file else None
+    dates = pd.to_datetime(df[COL_DATE], errors='coerce') if COL_DATE in df.columns else pd.Series(dtype='datetime64[ns]')
+    base = dates.max()
+    base_txt = f'{base:%Y-%m-%d}' if pd.notna(base) else '(분개장 일자 없음)'
+
+    doc = [('[공통]', '', ''),
+           ('조회 기준일', base_txt, '분석 대상 분개장의 마지막 전표일자(분석목록 기준월 반영)'),
+           ('모집단 자료', os.path.basename(bal_file) if bal_file else '회사제출 잔액명세 없음',
+            f'data/{_CONF_DIR_NAME} 폴더 — 있으면 명세가 모집단, 없으면 분개장 롤포워드가 모집단'),
+           ('난수 시드', _SAMPLING_SEED, '같은 입력이면 재실행해도 같은 표본 (조서 재현성)'),
+           ('', '', '')]
+    out, fmt, send, pops = {}, {}, [], {}
+    seq = {'채권': 0, '채무': 0}
+    mus_used = False
+
+    for p in rows:
+        acct = _nv(p.get('계정과목', '') or p.get('계정명', ''))
+        kind, guessed = _conf_kind(acct, _nv(str(p.get('구분', ''))))
+        method = _nv(p.get('샘플링방법', '')) or 'MUS'
+        method = next((m for m in _SAMPLING_METHODS if m.upper() == method.upper()), method)
+        head = f'[{acct} — {kind}{" (구분 미입력 → 계정명으로 추정)" if guessed else ""}]'
+        if method not in _SAMPLING_METHODS:
+            doc += [(head, '', ''), ('오류', f'샘플링방법 "{method}" — {"/".join(_SAMPLING_METHODS)} 중 선택', ''),
+                    ('', '', '')]
+            continue
+
+        stmt = _find_prev_account_balances(bal_xl, acct) if bal_xl is not None else {}
+        rf, rf_note = _conf_rollforward(df, acct, kind)
+        if stmt:
+            src = f'회사제출 잔액명세 ({os.path.basename(bal_file)})'
+            bal = stmt
+        elif rf is not None:
+            src, bal = f'분개장 롤포워드: {rf_note}', rf
+        else:
+            msg = (f'모집단 없음 — 잔액명세에 계정 없음 / {rf_note}' if bal_xl is not None
+                   else f'모집단 없음 — {rf_note}. data/{_CONF_DIR_NAME}에 거래처별 잔액명세를 넣으세요')
+            doc += [(head, '', ''), ('오류', msg, ''), ('', '', '')]
+            print(f'    [채권채무조회서] {acct}: {msg}', flush=True)
+            continue
+
+        pop = pd.DataFrame({'거래처명': list(bal), '기말잔액': [float(v) for v in bal.values()]})
+        recon = None
+        if stmt and rf is not None:
+            pop['분개장계산잔액'] = pop['거래처명'].map(rf).fillna(0.0)
+            only_rf = {k: v for k, v in rf.items() if k not in stmt and round(v, 0) != 0}
+            if only_rf:
+                pop = pd.concat([pop, pd.DataFrame({'거래처명': list(only_rf), '기말잔액': 0.0,
+                                                    '분개장계산잔액': list(only_rf.values())})],
+                                ignore_index=True)
+            pop['차이'] = pop['기말잔액'] - pop['분개장계산잔액']
+            diff_n = int((pop['차이'].round(0) != 0).sum())
+            recon = (float(pop['기말잔액'].sum()), float(pop['분개장계산잔액'].sum()), diff_n)
+
+        name = pop['거래처명'].astype(str).str.strip()
+        amt = pop['기말잔액']
+        min_amt = _sampling_param_amount(p.get('소액제외기준'))
+        status = pd.Series('표본추출 모집단', index=pop.index)
+        status[name.isin(['', '(거래처미지정)', 'nan'])] = '제외: 거래처 미지정'
+        status[(status == '표본추출 모집단') & (amt.round(0) == 0)] = '제외: 잔액 0'
+        status[(status == '표본추출 모집단') & (amt < 0)] = '제외: (-)잔액 — 별도 검토'
+        if min_amt:
+            status[(status == '표본추출 모집단') & (amt < min_amt)] = f'제외: 소액({min_amt:,.0f}원 미만)'
+        pop['분류'] = status
+
+        elig = pop[status == '표본추출 모집단'].copy()
+        elig['_amt'] = elig['기말잔액']
+        elig = elig.sort_values('거래처명', kind='stable')
+        try:
+            reasons, key_n, meth_n, basis, extra, mus_info, key_amt, n = _conf_select(elig, p, method)
+        except ValueError as e:
+            doc += [(head, '', ''), ('오류', str(e), ''), ('', '', '')]
+            continue
+        mus_used |= mus_info is not None
+
+        pop['선정사유'] = pop.index.map(lambda i: reasons.get(i, ''))
+        pop['조회번호'] = ''
+        sel = pop.loc[[i for i in elig.index if i in reasons]].sort_values('기말잔액', ascending=False)
+        for i in sel.index:
+            seq[kind] += 1
+            pop.at[i, '조회번호'] = f'{kind}-{seq[kind]:03d}'
+            send.append({'조회번호': pop.at[i, '조회번호'], '구분': kind, '계정명': acct,
+                         '거래처명': pop.at[i, '거래처명'], '기말잔액': pop.at[i, '기말잔액'],
+                         '선정사유': reasons[i]})
+        pops.setdefault(acct, {}).update(dict(zip(pop['거래처명'], pop['기말잔액'])))
+
+        # ── 문서화 블록 ──
+        def _cnt(mask):
+            return f"{int(mask.sum()):,}건 / {pop.loc[mask, '기말잔액'].sum():,.0f}원"
+        total_n, total_amt = len(pop), float(pop['기말잔액'].sum())
+        elig_amt = float(elig['_amt'].sum())
+        sel_amt = float(sel['기말잔액'].sum())
+        key_sel = sel[sel['선정사유'].str.startswith('개별유의')]
+        doc += [
+            (head, '', ''),
+            ('1. 모집단', '', ''),
+            ('  정의', f'{base_txt} 현재 {acct} 거래처별 기말잔액', '조회서 발송 단위 = 거래처'),
+            ('  출처', src, ''),
+        ]
+        if recon:
+            doc.append(('  분개장 대사', f'명세 {recon[0]:,.0f}원 vs 분개장 계산 {recon[1]:,.0f}원 '
+                                         f'(차이 {recon[0] - recon[1]:,.0f}원)',
+                        f'거래처별 차이 {recon[2]}건 — 모집단_ 시트의 차이 열 확인'))
+        elif stmt:
+            doc.append(('  분개장 대사', '대사 불가', rf_note))
+        doc += [
+            ('  전체 거래처', f'{total_n:,}건 / {total_amt:,.0f}원', ''),
+            ('  제외 — (-)잔액', _cnt(status.str.startswith('제외: (-)')), '조회 대상에서 빼고 별도 검토(선수금 성격 등)'),
+            ('  제외 — 잔액 0', _cnt(status == '제외: 잔액 0'), ''),
+            ('  제외 — 거래처 미지정', _cnt(status == '제외: 거래처 미지정'), '조회 불가 — 내역 별도 확인'),
+        ]
+        if min_amt:
+            doc.append(('  제외 — 소액', _cnt(status.str.startswith('제외: 소액')),
+                        f'소액제외기준 {min_amt:,.0f}원 미만 (감사인 판단)'))
+        doc += [
+            ('  표본추출 모집단', f'{len(elig):,}건 / {elig_amt:,.0f}원', '잔액 > 0, 거래처 지정'),
+            ('2. 표본산정기준', '', ''),
+            ('  개별유의금액', f'{key_amt:,.0f}원 이상 전수' if key_amt else '미지정',
+             '전수 선정분은 표본크기와 별도'),
+            ('  표본추출방법', method, _CONF_METHOD_DESC[method]),
+            ('  표본크기 산정', basis, ''),
+        ]
+        if mus_info:
+            doc += [('  신뢰수준', f"{mus_info['level']:.0%}", '통계표 수준'),
+                    ('  허용왜곡표시(TM)', f"{mus_info['tm']:,.0f}원", ''),
+                    ('  예상왜곡표시(EM)', f"{mus_info['em']:,.0f}원", '')]
+        doc += [
+            ('3. 표본선정수', '', ''),
+            ('  개별유의 전수', f"{key_n:,}건 / {key_sel['기말잔액'].sum():,.0f}원", ''),
+            (f'  {method} 추출', f"{meth_n:,}건 / {sel_amt - key_sel['기말잔액'].sum():,.0f}원",
+             f'목표 {n}건' + (' — 구간초과 거래처는 1건으로 셈' if method == 'MUS' else '')),
+            ('  합계', f'{len(sel):,}건 / {sel_amt:,.0f}원',
+             f'커버리지: 추출모집단 대비 {sel_amt / elig_amt:.1%}' if elig_amt else ''),
+            ('4. 추출방법', '', ''),
+            ('  정렬기준', '거래처명 오름차순', 'MUS·체계적 누적/간격 계산 순서'),
+            ('  추출조건', ', '.join(f'{k} {v}' for k, v in extra.items()) or '-', ''),
+            ('  난수 시드', _SAMPLING_SEED, ''),
+            ('', '', ''),
+        ]
+
+        sname = _safe_sheet(f"모집단_{re.sub(r'[^가-힣a-zA-Z0-9]', '', acct)}")
+        while sname in out:
+            sname = _safe_sheet(f'{sname[:28]}_{len(out)}')
+        cols = ['거래처명', '기말잔액'] + [c for c in ('분개장계산잔액', '차이') if c in pop.columns] \
+            + ['분류', '선정사유', '조회번호']
+        out[sname] = pop.sort_values('기말잔액', ascending=False)[cols].reset_index(drop=True)
+        fmt[sname] = {c: '#,##0' for c in ('기말잔액', '분개장계산잔액', '차이')}
+        print(f'    [채권채무조회서] {acct}({kind}, {method}) 모집단 {len(elig):,}건 → 표본 {len(sel)}건 '
+              f'(전수 {key_n}·{method} {meth_n})', flush=True)
+
+    if mus_used:
+        doc += [('[MUS 통계표 — 왜곡표시 0건 기준 신뢰계수, 예상왜곡표시는 EM×EF로 반영]', '', ''),
+                ('신뢰수준', '신뢰계수(RF)', '확장계수(EF)')]
+        doc += [(f'{lv:.0%}', rf_, ef) for lv, (rf_, ef) in sorted(_MUS_FACTORS.items())]
+        doc.append(('산식', 'n = 모집단금액 × RF ÷ (TM − EM × EF)',
+                    'AICPA 감사샘플링 가이드(Audit Sampling)'))
+
+    result = {'표본설계': pd.DataFrame(doc, columns=['항목', '내용', '비고'])}
+    if send:
+        sd = pd.DataFrame(send)
+        sd.insert(0, 'No', range(1, len(sd) + 1))
+        for c in _CONF_TRACK_COLS:
+            sd[c] = ''
+        result['발송대상'] = sd
+        fmt['발송대상'] = {'기말잔액': '#,##0', '회신금액': '#,##0', '차이': '#,##0'}
+        # 거래처별 1통: 선정된 거래처의 대상 계정 잔액을 모두 적어 한 장으로 발송
+        accts = list(pops)
+        merged = []
+        for vendor, g in sd.groupby('거래처명', sort=False):
+            row = {'거래처명': vendor, '구분': '/'.join(pd.unique(g['구분'])),
+                   '조회번호': ', '.join(g['조회번호']), '선정계정': ', '.join(pd.unique(g['계정명']))}
+            for a in accts:
+                row[a] = pops[a].get(vendor, 0.0)
+            merged.append(row)
+        result['거래처별발송목록'] = pd.DataFrame(merged)
+        fmt['거래처별발송목록'] = {a: '#,##0' for a in accts}
+    result.update(out)
+    result['_number_format_cols'] = fmt
+    return result
+
+
 # =============================================================================
 # 4. 분석 레지스트리  {번호: (이름, 함수)}
 # =============================================================================
@@ -4283,6 +4580,7 @@ ANALYSIS_REGISTRY: dict = {
     25: ('손익월별분析',     analyze_pl_comparison),
     26: ('AI계정별분석_실행', analyze_ai_review),
     27: ('감가상각_평가손익분석', analyze_depreciation_valuation),
+    28: ('채권채무조회서',   analyze_confirmation_sampling),
 }
 
 # 결과를 메인 파일이 아닌 별도 파일로 저장하는 task 번호 집합

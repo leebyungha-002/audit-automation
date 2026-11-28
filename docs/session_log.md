@@ -3975,3 +3975,14 @@ blue sky가 검토는 내일 이어서 하기로 함. 오늘 작업 종료.
 1. .env에 FSS_API_KEY 설정 → 런처에서 실행해 7개 API 수집 확인
 
 ---
+
+## 2026-11-28 10:30
+
+**완료 작업**: journal_analyzer 28번 '채권채무조회서' 신규 — 거래처별 기말잔액 모집단에서 조회서 발송대상 표본 선정 + 표본설계 문서화. 모집단은 data/confirmation 회사제출 거래처별 잔액명세(있으면, 분개장 롤포워드와 거래처별 대사) → 없으면 전기명세+당기 분개장 롤포워드(20번 로직 재사용). (-)잔액·잔액0·거래처미지정·소액 제외 후 사유 표시, 개별유의금액 이상 전수 + 계정별 MUS(기본)/금액상위(목표커버리지)/무작위/체계적(15번 헬퍼 재사용, 시드 42). 채무도 잔액 기준만(blue sky 결정). 결과 시트: 표본설계/발송대상(회신관리란)/거래처별발송목록/모집단_계정. 전 회사 task_list에 분석목록 28번(실행여부 N)·28_채권채무조회서 시트·작성가이드 행 추가. graphy·sejoong 실데이터 검증.
+**변경 파일**: journal_analyzer/main_analyzer.py, 13개 회사 task_list_*.xlsx
+**미해결 이슈**: task_list 중 graphy·jymts·kindus·kyungnam·live_pure·samdong·samdong_material은 기존 미커밋 수정이 섞여 있어, ascendio·Dai-il-nanang은 미추적 파일이라 커밋에서 제외(brantree·daesun·kindustnc·sejoong만 커밋).
+**다음 할 일**:
+1. 실제 감사 회사에서 28번 실행여부 Y로 바꾸고 계정·개별유의금액·허용왜곡표시 입력 후 실행
+2. 회사제출 잔액명세가 있으면 data/confirmation에 넣고 대사 차이 검토
+
+---
