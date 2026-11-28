@@ -4260,12 +4260,15 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
 #     전기명세+당기 분개장 롤포워드(20번 로직)가 되면 거래처별로 대사한다.
 #   · 명세가 없으면 롤포워드 결과를 모집단으로 쓴다.
 # 선정: 개별유의금액 이상 전수 → 나머지는 계정별로 MUS(기본)/금액상위/무작위/체계적
-#       (15번 _sampling_select·_sampling_mus_size 재사용). 채무도 잔액 기준만 선정
-#       (거래액 기준 완전성 추가선정은 하지 않음 — blue sky 결정).
+#       (15번 _sampling_select·_sampling_mus_size 재사용).
+#       채무는 잔액 기준 표본에 더해, 잔액이 작거나 0이어도 당기 거래액(대변 발생액)이 큰
+#       거래처를 '완전성 추가선정'으로 함께 뽑는다(2026-11-28 blue sky 요청 — 과소계상 위험).
+#       거래액상위건수(기본 10, 0이면 끔)·거래액기준금액(이상 전부)으로 지정.
 # 결과: 표본설계(모집단·산정기준·선정수·추출방법 문서화) / 발송대상 / 거래처별발송목록 /
 #       모집단_{계정}(전체 거래처와 선정·제외 사유).
 _CONF_DIR_NAME = 'confirmation'
 _CONF_LIAB_KEYWORDS = ('매입', '미지급', '선수', '예수', '차입', '보증금(부채)', '부채')
+_CONF_COMPLETENESS_DEFAULT_N = 10   # 채무 완전성 추가선정 기본 건수
 _CONF_TRACK_COLS = ['발송일', '회신일', '회신금액', '차이', '차이조정내역', '대체적절차', '비고']
 _CONF_METHOD_DESC = {
     'MUS': '금액단위표본추출(MUS) — 잔액이 클수록 뽑힐 확률이 높음. 모집단을 거래처명 순으로 '
@@ -4315,6 +4318,42 @@ def _conf_rollforward(df: pd.DataFrame, acct: str, kind: str) -> tuple:
     if not has_prev:
         note += ' — ⚠ 전기명세에 이 계정이 없어 기초잔액을 0으로 계산함(확인 필요)'
     return bal, note
+
+
+def _conf_period_credit(df: pd.DataFrame, acct: str) -> dict:
+    """계정의 거래처별 당기 대변 발생액(채무 증가 = 매입 등 기중 거래액). 20번과 같은 계정 매칭."""
+    if COL_CLIENT not in df.columns:
+        return {}
+    mask = _account_match_flexible(df[COL_ACCOUNT], acct)
+    if '이자' not in acct and not _account_match_exact(df[COL_ACCOUNT], acct).any():
+        mask = mask & ~df[COL_ACCOUNT].astype(str).str.contains('이자', na=False)
+    sub = df[mask]
+    amt = pd.to_numeric(sub[COL_CREDIT], errors='coerce').fillna(0)
+    vend = sub[COL_CLIENT].fillna('').astype(str).str.strip()
+    g = amt.groupby(vend).sum()
+    return {k: float(v) for k, v in g.items() if k and k != 'nan' and v > 0}
+
+
+def _conf_completeness(pop: pd.DataFrame, reasons: dict, p: dict) -> tuple:
+    """채무 완전성 추가선정: 잔액 표본에 없는 거래처 중 당기거래액 큰 곳.
+    반환: (추가 사유 dict, 기준 문구)"""
+    top_n = max(int(_ai_param_num(p.get('거래액상위건수'), _CONF_COMPLETENESS_DEFAULT_N)), 0)
+    thr = _sampling_param_amount(p.get('거래액기준금액'))
+    cand = pop[(pop['당기거래액'] > 0) & ~pop.index.isin(list(reasons))
+               & (pop['분류'] != '제외: 거래처 미지정')].sort_values('당기거래액', ascending=False)
+    add = {}
+    if thr:
+        for i in cand.index[cand['당기거래액'] >= thr]:
+            add[i] = f'완전성: 당기거래액 {pop.at[i, "당기거래액"]:,.0f}원 ≥ 기준 {thr:,.0f}원'
+    for rank, i in enumerate([i for i in cand.index if i not in add][:top_n], start=1):
+        add[i] = f'완전성: 당기거래액 상위 {rank}위({pop.at[i, "당기거래액"]:,.0f}원)'
+    parts = []
+    if thr:
+        parts.append(f'당기거래액 {thr:,.0f}원 이상 전부')
+    if top_n:
+        parts.append(f'그 밖의 거래처 중 당기거래액 상위 {top_n}건'
+                     + ('' if _nv(str(p.get('거래액상위건수', ''))) else ' (거래액상위건수 미입력 → 기본값)'))
+    return add, ' + '.join(parts) or '추가선정 안 함 (거래액상위건수 0)'
 
 
 def _conf_select(elig: pd.DataFrame, p: dict, method: str) -> tuple:
@@ -4423,6 +4462,19 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
             diff_n = int((pop['차이'].round(0) != 0).sum())
             recon = (float(pop['기말잔액'].sum()), float(pop['분개장계산잔액'].sum()), diff_n)
 
+        # 채무: 거래처별 당기거래액. 잔액 모집단에 없는(잔액 0) 거래 거래처도 잔액 0으로 포함
+        credit = _conf_period_credit(df, acct) if kind == '채무' else {}
+        if credit:
+            known = set(pop['거래처명'])
+            missing = [v for v in credit if v not in known]
+            if missing:
+                extra_rows = pd.DataFrame({'거래처명': missing, '기말잔액': 0.0})
+                for c in ('분개장계산잔액', '차이'):
+                    if c in pop.columns:
+                        extra_rows[c] = 0.0
+                pop = pd.concat([pop, extra_rows], ignore_index=True)
+            pop['당기거래액'] = pop['거래처명'].map(credit).fillna(0.0)
+
         name = pop['거래처명'].astype(str).str.strip()
         amt = pop['기말잔액']
         min_amt = _sampling_param_amount(p.get('소액제외기준'))
@@ -4443,15 +4495,22 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
             doc += [(head, '', ''), ('오류', str(e), ''), ('', '', '')]
             continue
         mus_used |= mus_info is not None
+        comp, comp_basis = {}, ''
+        if kind == '채무' and '당기거래액' in pop.columns:
+            comp, comp_basis = _conf_completeness(pop, reasons, p)
+            reasons.update(comp)
 
         pop['선정사유'] = pop.index.map(lambda i: reasons.get(i, ''))
         pop['조회번호'] = ''
-        sel = pop.loc[[i for i in elig.index if i in reasons]].sort_values('기말잔액', ascending=False)
+        sel = pop.loc[[i for i in pop.index if i in reasons]].copy()
+        sel['_comp'] = sel.index.isin(list(comp))
+        sel = sel.sort_values(['_comp', '기말잔액'], ascending=[True, False])
         for i in sel.index:
             seq[kind] += 1
             pop.at[i, '조회번호'] = f'{kind}-{seq[kind]:03d}'
             send.append({'조회번호': pop.at[i, '조회번호'], '구분': kind, '계정명': acct,
                          '거래처명': pop.at[i, '거래처명'], '기말잔액': pop.at[i, '기말잔액'],
+                         '당기거래액': pop.at[i, '당기거래액'] if '당기거래액' in pop.columns else None,
                          '선정사유': reasons[i]})
         pops.setdefault(acct, {}).update(dict(zip(pop['거래처명'], pop['기말잔액'])))
 
@@ -4460,7 +4519,9 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
             return f"{int(mask.sum()):,}건 / {pop.loc[mask, '기말잔액'].sum():,.0f}원"
         total_n, total_amt = len(pop), float(pop['기말잔액'].sum())
         elig_amt = float(elig['_amt'].sum())
-        sel_amt = float(sel['기말잔액'].sum())
+        bal_sel = sel[~sel['_comp']]
+        comp_sel = sel[sel['_comp']]
+        sel_amt = float(bal_sel['기말잔액'].sum())
         key_sel = sel[sel['선정사유'].str.startswith('개별유의')]
         doc += [
             (head, '', ''),
@@ -4500,8 +4561,27 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
             ('  개별유의 전수', f"{key_n:,}건 / {key_sel['기말잔액'].sum():,.0f}원", ''),
             (f'  {method} 추출', f"{meth_n:,}건 / {sel_amt - key_sel['기말잔액'].sum():,.0f}원",
              f'목표 {n}건' + (' — 구간초과 거래처는 1건으로 셈' if method == 'MUS' else '')),
-            ('  합계', f'{len(sel):,}건 / {sel_amt:,.0f}원',
+            ('  잔액기준 소계', f'{len(bal_sel):,}건 / {sel_amt:,.0f}원',
              f'커버리지: 추출모집단 대비 {sel_amt / elig_amt:.1%}' if elig_amt else ''),
+        ]
+        if kind == '채무':
+            tot_cr = float(pop['당기거래액'].sum()) if '당기거래액' in pop.columns else 0.0
+            if tot_cr:
+                sel_cr = float(sel['당기거래액'].sum())
+                outside = int((comp_sel['분류'] != '표본추출 모집단').sum())
+                doc += [
+                    ('  완전성 추가선정', f'{len(comp_sel):,}건 / 잔액 {comp_sel["기말잔액"].sum():,.0f}원 · '
+                                      f'당기거래액 {comp_sel["당기거래액"].sum():,.0f}원',
+                     f'기준: {comp_basis}. 그중 잔액 0·소액·(-)잔액 등 잔액 모집단 밖 거래처 {outside}건'),
+                    ('  당기거래액 모집단', f"{int((pop['당기거래액'] > 0).sum()):,}건 / {tot_cr:,.0f}원",
+                     '해당 계정 대변 발생액(채무 증가) — 과소계상(완전성) 위험 대응'),
+                    ('  당기거래액 커버리지', f'{sel_cr / tot_cr:.1%}',
+                     '선정 거래처 전체(잔액기준+완전성)의 당기거래액 비중'),
+                ]
+            else:
+                doc.append(('  완전성 추가선정', '해당 없음', '분개장에 이 계정의 거래처별 대변 발생액이 없음'))
+        doc += [
+            ('  합계', f'{len(sel):,}건 / 잔액 {float(sel["기말잔액"].sum()):,.0f}원', ''),
             ('4. 추출방법', '', ''),
             ('  정렬기준', '거래처명 오름차순', 'MUS·체계적 누적/간격 계산 순서'),
             ('  추출조건', ', '.join(f'{k} {v}' for k, v in extra.items()) or '-', ''),
@@ -4512,12 +4592,12 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
         sname = _safe_sheet(f"모집단_{re.sub(r'[^가-힣a-zA-Z0-9]', '', acct)}")
         while sname in out:
             sname = _safe_sheet(f'{sname[:28]}_{len(out)}')
-        cols = ['거래처명', '기말잔액'] + [c for c in ('분개장계산잔액', '차이') if c in pop.columns] \
+        cols = ['거래처명', '기말잔액'] + [c for c in ('분개장계산잔액', '차이', '당기거래액') if c in pop.columns] \
             + ['분류', '선정사유', '조회번호']
         out[sname] = pop.sort_values('기말잔액', ascending=False)[cols].reset_index(drop=True)
-        fmt[sname] = {c: '#,##0' for c in ('기말잔액', '분개장계산잔액', '차이')}
+        fmt[sname] = {c: '#,##0' for c in ('기말잔액', '분개장계산잔액', '차이', '당기거래액')}
         print(f'    [채권채무조회서] {acct}({kind}, {method}) 모집단 {len(elig):,}건 → 표본 {len(sel)}건 '
-              f'(전수 {key_n}·{method} {meth_n})', flush=True)
+              f'(전수 {key_n}·{method} {meth_n}' + (f'·완전성 {len(comp)}' if comp else '') + ')', flush=True)
 
     if mus_used:
         doc += [('[MUS 통계표 — 왜곡표시 0건 기준 신뢰계수, 예상왜곡표시는 EM×EF로 반영]', '', ''),
@@ -4532,8 +4612,10 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
         sd.insert(0, 'No', range(1, len(sd) + 1))
         for c in _CONF_TRACK_COLS:
             sd[c] = ''
+        if sd['당기거래액'].isna().all():
+            sd = sd.drop(columns=['당기거래액'])
         result['발송대상'] = sd
-        fmt['발송대상'] = {'기말잔액': '#,##0', '회신금액': '#,##0', '차이': '#,##0'}
+        fmt['발송대상'] = {'기말잔액': '#,##0', '당기거래액': '#,##0', '회신금액': '#,##0', '차이': '#,##0'}
         # 거래처별 1통: 선정된 거래처의 대상 계정 잔액을 모두 적어 한 장으로 발송
         accts = list(pops)
         merged = []
