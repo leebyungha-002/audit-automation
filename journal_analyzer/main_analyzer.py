@@ -4261,8 +4261,9 @@ def analyze_pl_comparison(df: pd.DataFrame, params_list: list) -> dict:
 #   · 명세가 없으면 롤포워드 결과를 모집단으로 쓴다.
 # 선정: 개별유의금액 이상 전수 → 나머지는 계정별로 MUS(기본)/금액상위/무작위/체계적
 #       (15번 _sampling_select·_sampling_mus_size 재사용).
-#       채무는 잔액 기준 표본에 더해, 잔액이 작거나 0이어도 당기 거래액(대변 발생액)이 큰
+#       채무는 잔액 기준 표본에 더해, 잔액이 작아도 당기 거래액(대변 발생액)이 큰
 #       거래처를 '완전성 추가선정'으로 함께 뽑는다(2026-11-28 blue sky 요청 — 과소계상 위험).
+#       단 기말잔액 0원 거래처는 추가선정에서도 제외(같은 날 blue sky 요청).
 #       거래액상위건수(기본 10, 0이면 끔)·거래액기준금액(이상 전부)으로 지정.
 # 결과: 표본설계(모집단·산정기준·선정수·추출방법 문서화) / 발송대상 / 거래처별발송목록 /
 #       모집단_{계정}(전체 거래처와 선정·제외 사유).
@@ -4335,12 +4336,13 @@ def _conf_period_credit(df: pd.DataFrame, acct: str) -> dict:
 
 
 def _conf_completeness(pop: pd.DataFrame, reasons: dict, p: dict) -> tuple:
-    """채무 완전성 추가선정: 잔액 표본에 없는 거래처 중 당기거래액 큰 곳.
+    """채무 완전성 추가선정: 잔액 표본에 없는 거래처 중 당기거래액 큰 곳(기말잔액 0원 거래처 제외).
     반환: (추가 사유 dict, 기준 문구)"""
     top_n = max(int(_ai_param_num(p.get('거래액상위건수'), _CONF_COMPLETENESS_DEFAULT_N)), 0)
     thr = _sampling_param_amount(p.get('거래액기준금액'))
     cand = pop[(pop['당기거래액'] > 0) & ~pop.index.isin(list(reasons))
-               & (pop['분류'] != '제외: 거래처 미지정')].sort_values('당기거래액', ascending=False)
+               & (pop['분류'] != '제외: 거래처 미지정')
+               & (pop['기말잔액'].round(0) != 0)].sort_values('당기거래액', ascending=False)
     add = {}
     if thr:
         for i in cand.index[cand['당기거래액'] >= thr]:
@@ -4462,7 +4464,8 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
             diff_n = int((pop['차이'].round(0) != 0).sum())
             recon = (float(pop['기말잔액'].sum()), float(pop['분개장계산잔액'].sum()), diff_n)
 
-        # 채무: 거래처별 당기거래액. 잔액 모집단에 없는(잔액 0) 거래 거래처도 잔액 0으로 포함
+        # 채무: 거래처별 당기거래액. 잔액 모집단에 없는 거래 거래처도 잔액 0으로 넣는다
+        # (추가선정 대상은 아니고, 당기거래액 모집단·커버리지 계산을 빠짐없이 하기 위함)
         credit = _conf_period_credit(df, acct) if kind == '채무' else {}
         if credit:
             known = set(pop['거래처명'])
@@ -4572,7 +4575,7 @@ def analyze_confirmation_sampling(df: pd.DataFrame, params_list: list) -> dict:
                 doc += [
                     ('  완전성 추가선정', f'{len(comp_sel):,}건 / 잔액 {comp_sel["기말잔액"].sum():,.0f}원 · '
                                       f'당기거래액 {comp_sel["당기거래액"].sum():,.0f}원',
-                     f'기준: {comp_basis}. 그중 잔액 0·소액·(-)잔액 등 잔액 모집단 밖 거래처 {outside}건'),
+                     f'기준: {comp_basis} (기말잔액 0원 거래처 제외). 그중 소액·(-)잔액 등 잔액 모집단 밖 거래처 {outside}건'),
                     ('  당기거래액 모집단', f"{int((pop['당기거래액'] > 0).sum()):,}건 / {tot_cr:,.0f}원",
                      '해당 계정 대변 발생액(채무 증가) — 과소계상(완전성) 위험 대응'),
                     ('  당기거래액 커버리지', f'{sel_cr / tot_cr:.1%}',
